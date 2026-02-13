@@ -33,7 +33,7 @@ uv sync
 
 ### 准备 `.env`
 
-项目根目录需要 `.env` 文件：
+项目根目录需要 `.env` 文件：（有多个agents的话准备多个.env即可，比如.env.agent1 .env.agent2）
 
 ```
 FEISHU_APP_ID=cli_xxxxx
