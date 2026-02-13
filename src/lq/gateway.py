@@ -155,11 +155,12 @@ class AssistantGateway:
         feishu_thread.start()
         logger.info("飞书 WebSocket 线程已启动")
 
-        # 并发运行消费者、心跳和 inbox 轮询
+        # 并发运行消费者、心跳、inbox 轮询和会话自动保存
         await asyncio.gather(
             self._consume_messages(router, loop),
             heartbeat.run_forever(self.shutdown_event),
             self._poll_inbox(router),
+            self._auto_save_sessions(session_mgr),
         )
 
         # 关闭时保存会话
@@ -315,6 +316,17 @@ class AssistantGateway:
                 break
             except Exception:
                 logger.exception("inbox 轮询异常")
+
+    async def _auto_save_sessions(self, session_mgr: SessionManager) -> None:
+        """每 60 秒自动保存会话，防止崩溃丢失"""
+        while not self.shutdown_event.is_set():
+            try:
+                await asyncio.sleep(60)
+                session_mgr.save()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("自动保存会话失败")
 
     def _setup_logging(self) -> None:
         log_dir = self.home / "logs"
