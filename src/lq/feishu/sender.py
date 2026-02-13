@@ -18,6 +18,16 @@ from lark_oapi.api.im.v1 import (
 
 logger = logging.getLogger(__name__)
 
+_RECEIVE_ID_TYPE_MAP = {"oc_": "chat_id", "ou_": "open_id", "on_": "union_id"}
+
+
+def _infer_receive_id_type(receive_id: str) -> str:
+    """根据 ID 前缀推断 receive_id_type，默认 chat_id。"""
+    for prefix, id_type in _RECEIVE_ID_TYPE_MAP.items():
+        if receive_id.startswith(prefix):
+            return id_type
+    return "chat_id"
+
 
 def _build_markdown_card(text: str) -> dict:
     """将包含复杂 Markdown 的文本构建为飞书卡片（卡片支持 Markdown 渲染）。"""
@@ -73,6 +83,7 @@ class FeishuSender:
         self._token_expires_at: float = 0.0  # Unix timestamp
         self._user_name_cache: dict[str, str] = {}  # open_id → 名字
         self._cached_chats: set[str] = set()  # 已拉取成员的 chat_id
+        self._left_chats: set[str] = set()    # bot 已退出的 chat_id
 
     async def send_text(self, chat_id: str, text: str) -> str | None:
         """发送文本消息到指定会话，返回 message_id。
@@ -82,9 +93,10 @@ class FeishuSender:
             card = _build_markdown_card(text)
             return await self.send_card(chat_id, card)
         text = _strip_markdown(text)
+        id_type = _infer_receive_id_type(chat_id)
         req = (
             CreateMessageRequest.builder()
-            .receive_id_type("chat_id")
+            .receive_id_type(id_type)
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
@@ -96,7 +108,7 @@ class FeishuSender:
         )
         resp = await self.client.im.v1.message.acreate(req)
         if resp.code != 0:
-            logger.error("发送消息失败: code=%d msg=%s", resp.code, resp.msg)
+            logger.error("发送消息失败: code=%d msg=%s, receive_id_type=%s", resp.code, resp.msg, id_type)
             return None
         msg_id = resp.data.message_id
         logger.debug("消息已发送: %s -> %s", chat_id, msg_id)
@@ -131,9 +143,10 @@ class FeishuSender:
 
     async def send_card(self, chat_id: str, card_json: dict) -> str | None:
         """发送卡片消息"""
+        id_type = _infer_receive_id_type(chat_id)
         req = (
             CreateMessageRequest.builder()
-            .receive_id_type("chat_id")
+            .receive_id_type(id_type)
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
@@ -206,7 +219,7 @@ class FeishuSender:
 
     async def _cache_chat_members(self, chat_id: str) -> None:
         """通过群成员 API 批量缓存 chat 内所有成员的名字（含机器人）。"""
-        if chat_id in self._cached_chats:
+        if chat_id in self._cached_chats or chat_id in self._left_chats:
             return
         try:
             token = await self._get_tenant_token()
@@ -229,8 +242,18 @@ class FeishuSender:
                     self._user_name_cache[mid] = name
             self._cached_chats.add(chat_id)
             logger.info("缓存群 %s 成员 %d 人", chat_id[-8:], len(items))
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                self._left_chats.add(chat_id)
+                logger.warning("Bot 已不在群 %s，标记为已退出", chat_id)
+            else:
+                logger.warning("拉取群成员异常: %s HTTP %d", chat_id, e.response.status_code)
         except Exception as e:
             logger.warning("拉取群成员异常: %s %s", chat_id, e)
+
+    def is_chat_left(self, chat_id: str) -> bool:
+        """检查 bot 是否已退出某群聊（基于成员 API 400 检测）"""
+        return chat_id in self._left_chats
 
     async def fetch_chat_messages(self, chat_id: str, count: int = 10) -> list[dict]:
         """拉取群聊最近消息（含机器人消息），返回按时间正序排列的消息列表。

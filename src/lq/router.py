@@ -342,7 +342,7 @@ class MessageRouter:
 
         system = self.memory.build_context(chat_id=chat_id)
         system += (
-            "\n\n你正在和用户私聊。请直接、简洁地回复。"
+            f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
             "如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
             "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
@@ -589,8 +589,11 @@ class MessageRouter:
                 )
 
             elif name == "send_message":
+                target = input_data.get("chat_id", "")
+                if not target.startswith(("oc_", "ou_", "on_")):
+                    target = chat_id  # LLM 给了无效 ID，回退到当前会话
                 msg_id = await self.sender.send_text(
-                    input_data["chat_id"],
+                    target,
                     input_data["text"],
                 )
                 if msg_id:
@@ -614,14 +617,19 @@ class MessageRouter:
                 if delay < 0:
                     return {"success": False, "error": "计划时间已过去"}
 
-                target_chat_id = input_data["chat_id"]
+                target_chat_id = input_data.get("chat_id", "")
+                if not target_chat_id.startswith(("oc_", "ou_", "on_")):
+                    target_chat_id = chat_id  # LLM 给了无效 ID，回退到当前会话
                 target_text = input_data["text"]
                 sender_ref = self.sender
 
                 async def _delayed_send():
                     await asyncio.sleep(delay)
-                    await sender_ref.send_text(target_chat_id, target_text)
-                    logger.info("定时消息已发送: chat=%s", target_chat_id)
+                    msg_id = await sender_ref.send_text(target_chat_id, target_text)
+                    if msg_id:
+                        logger.info("定时消息已发送: chat=%s", target_chat_id)
+                    else:
+                        logger.error("定时消息发送失败: chat=%s", target_chat_id)
 
                 asyncio.ensure_future(_delayed_send())
                 return {"success": True, "message": f"已计划在 {send_at_str} 发送消息"}
@@ -743,7 +751,7 @@ class MessageRouter:
 
         system = self.memory.build_context(chat_id=message.chat_id)
         system += (
-            f"\n\n你在群聊中被 {sender_name} @at 了，请针对对方的问题简洁回复。"
+            f"\n\n你在群聊中被 {sender_name} @at 了。当前会话 chat_id={message.chat_id}。请针对对方的问题简洁回复。"
             f"{group_context}"
             "\n如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
