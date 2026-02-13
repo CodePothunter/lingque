@@ -53,8 +53,8 @@ class PostProcessor:
         Returns:
             执行结果列表（可能为空）。
         """
-        # 1) 确定性意图检测
-        intents = self.detector.detect(user_message, llm_response, tools_called)
+        # 1) LLM 意图检测
+        intents = await self.detector.detect(user_message, llm_response, tools_called)
         if not intents:
             return []
 

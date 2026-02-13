@@ -23,12 +23,15 @@ class Session:
         self.messages: list[dict] = []
         self._summary: str = ""
 
-    def add_message(self, role: str, content: str) -> None:
-        self.messages.append({
+    def add_message(self, role: str, content: str, sender_name: str = "") -> None:
+        msg: dict = {
             "role": role,
             "content": content,
             "timestamp": time.time(),
-        })
+        }
+        if sender_name:
+            msg["sender_name"] = sender_name
+        self.messages.append(msg)
 
     def get_messages(self) -> list[dict[str, str]]:
         """返回用于 API 调用的消息列表（包含摘要前缀和时间戳）"""
@@ -47,9 +50,17 @@ class Session:
             })
         for m in self.messages:
             ts = m.get("timestamp")
+            name = m.get("sender_name", "")
+            # 用 XML 属性注入元数据，LLM 能理解但不会模仿到回复里
+            parts = []
             if ts:
                 t = datetime.fromtimestamp(ts, tz=CST).strftime("%H:%M")
-                content = f"[{t}] {m['content']}"
+                parts.append(f"time={t}")
+            if name:
+                parts.append(f"from={name}")
+            if parts:
+                meta = " ".join(parts)
+                content = f"<msg {meta}>{m['content']}</msg>"
             else:
                 content = m["content"]
             msgs.append({"role": m["role"], "content": content})

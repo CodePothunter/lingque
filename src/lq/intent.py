@@ -1,10 +1,20 @@
-"""确定性意图检测器 — 纯正则，零 LLM 成本"""
+"""意图检测器 — LLM 判断未执行的工具调用"""
 
 from __future__ import annotations
 
-import re
+import json
+import logging
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# PostProcessor 可补救的工具列表及描述
+RECOVERABLE_TOOLS = {
+    "write_memory": "用户要求记住某件事，但助手没有调用 write_memory 工具",
+    "schedule_message": "用户要求定时提醒，但助手没有调用 schedule_message 工具",
+    "calendar_create_event": "用户要求创建日程/会议，但助手没有调用 calendar_create_event 工具",
+}
 
 
 @dataclass
@@ -18,178 +28,67 @@ class DetectedIntent:
     evidence: str = ""
 
 
-@dataclass
-class IntentRule:
-    """单条意图检测规则"""
-    intent_type: str
-    tool_name: str
-    user_patterns: list[re.Pattern]
-    response_patterns: list[re.Pattern]
-    param_extractor: Callable[[str, str], dict] | None = None
-
-
-def _extract_memory_params(user_msg: str, _llm_resp: str) -> dict:
-    """尝试从用户消息中提取 write_memory 参数"""
-    # "记住X" / "别忘了X" → content = X
-    for pat in (
-        r"(?:记住|记一下|别忘了|帮我记|请记)\s*[，,：:]*\s*(.+)",
-        r"(.+?)\s*(?:记住|记一下|别忘了)",
-    ):
-        m = re.search(pat, user_msg, re.DOTALL)
-        if m:
-            content = m.group(1).strip()
-            if content:
-                return {"section": "重要信息", "content": content}
-    return {}
-
-
-def _extract_reminder_params(user_msg: str, _llm_resp: str) -> dict:
-    """尝试从用户消息中提取 schedule_message 的文本部分"""
-    # "提醒我X" / "X分钟后提醒我Y"
-    for pat in (
-        r"提醒[我]?\s*(.+)",
-        r"(.+?)\s*提醒[我]?",
-    ):
-        m = re.search(pat, user_msg)
-        if m:
-            raw = m.group(1).strip()
-            # 去掉时间前缀部分，保留动作
-            cleaned = re.sub(
-                r"^(\d+|[一二两三四五六七八九十]+)\s*(?:个)?\s*(?:分钟|小时|天)\s*(?:后|之后)?\s*",
-                "", raw,
-            )
-            cleaned = re.sub(
-                r"^(?:今天|明天|后天|大后天)?\s*(?:凌晨|早上|上午|中午|下午|傍晚|晚上|晚)?"
-                r"\s*(?:\d{1,2}|[一二两三四五六七八九十]+)\s*(?:点|时|:|：)"
-                r"\s*(?:(?:\d{1,2}|半)\s*(?:分)?)?\s*",
-                "", cleaned,
-            )
-            if cleaned:
-                return {"text": cleaned}
-    return {}
-
-
-def _extract_calendar_params(user_msg: str, _llm_resp: str) -> dict:
-    """尝试从用户消息中提取 calendar_create_event 的标题"""
-    for pat in (
-        r"(?:建|创建|安排|加|添加)\s*(?:一个|一场)?\s*(.+?)\s*(?:会议|日程|活动|事件)",
-        r"(?:会议|日程|活动|事件)\s*[：:]*\s*(.+)",
-    ):
-        m = re.search(pat, user_msg)
-        if m:
-            summary = m.group(1).strip()
-            if summary:
-                return {"summary": summary}
-    return {}
-
-
-# ──── 内置规则 ────
-
-_BUILTIN_RULES: list[IntentRule] = [
-    IntentRule(
-        intent_type="memory_write",
-        tool_name="write_memory",
-        user_patterns=[
-            re.compile(r"记住|记一下|别忘了|帮我记|记得|请记"),
-        ],
-        response_patterns=[
-            re.compile(r"记住了|好的|知道了|明白|了解|没问题|已经记|记下"),
-        ],
-        param_extractor=_extract_memory_params,
-    ),
-    IntentRule(
-        intent_type="schedule_reminder",
-        tool_name="schedule_message",
-        user_patterns=[
-            re.compile(
-                r"(\d+|[一二两三四五六七八九十半]+)\s*(?:个)?\s*(?:分钟|小时|天)\s*(?:后|之后)?\s*提醒"
-            ),
-            re.compile(
-                r"(?:今天|明天|后天|大后天)?\s*(?:凌晨|早上|上午|中午|下午|傍晚|晚上|晚)?"
-                r"\s*(?:\d{1,2}|[一二两三四五六七八九十]+)\s*(?:点|时|:|：).*提醒"
-            ),
-            re.compile(r"提醒我?.*(?:分钟|小时|天|点|时)"),
-            re.compile(r"(?:分钟|小时|天)\s*(?:后|之后)\s*(?:提醒|叫我|通知)"),
-        ],
-        response_patterns=[
-            re.compile(r"好的|没问题|设置|提醒|知道了|放心|已|搞定|安排"),
-        ],
-        param_extractor=_extract_reminder_params,
-    ),
-    IntentRule(
-        intent_type="calendar_create",
-        tool_name="calendar_create_event",
-        user_patterns=[
-            re.compile(r"(?:建|创建|安排|加|添加)\s*(?:一个|一场)?\s*.*?(?:会议|日程|活动|事件)"),
-            re.compile(r"(?:会议|日程|活动|事件)\s*.*?(?:建|创建|安排|加|添加)"),
-        ],
-        response_patterns=[
-            re.compile(r"好的|已经|创建|安排|没问题|搞定|知道了|已"),
-        ],
-        param_extractor=_extract_calendar_params,
-    ),
-]
-
-
 class IntentDetector:
-    """确定性意图检测：用户消息 + LLM 回复 → 未执行的意图列表"""
+    """LLM 意图检测：判断用户消息中是否有未执行的工具调用意图"""
 
-    def __init__(self) -> None:
-        self._rules: list[IntentRule] = list(_BUILTIN_RULES)
+    def __init__(self, executor: Any) -> None:
+        self.executor = executor
 
-    def add_rule(self, rule: IntentRule) -> None:
-        self._rules.append(rule)
-
-    def detect(
+    async def detect(
         self,
         user_message: str,
         llm_response: str,
         tools_called: list[str],
     ) -> list[DetectedIntent]:
-        """检测用户消息中未被 LLM 工具调用覆盖的意图。
+        """检测用户消息中未被 LLM 工具调用覆盖的意图。"""
+        # 快速跳过：如果没有可补救的工具空间，直接返回
+        uncalled = {k: v for k, v in RECOVERABLE_TOOLS.items() if k not in tools_called}
+        if not uncalled:
+            return []
 
-        如果 tool_name 已在 tools_called 中 → 跳过（不重复执行）。
-        """
-        results: list[DetectedIntent] = []
+        tool_desc = "\n".join(f"- {name}: {desc}" for name, desc in uncalled.items())
 
-        for rule in self._rules:
-            # 已执行 → 跳过
-            if rule.tool_name in tools_called:
-                continue
+        prompt = (
+            "判断以下对话中，用户是否明确要求执行某个操作，但助手的回复中没有实际执行。\n\n"
+            f"用户消息：{user_message}\n"
+            f"助手回复：{llm_response}\n"
+            f"助手已调用的工具：{', '.join(tools_called) if tools_called else '无'}\n\n"
+            f"可能遗漏的操作：\n{tool_desc}\n\n"
+            "注意：\n"
+            "- 只有用户**明确要求**执行的操作才算遗漏（如「记住我的生日」「5分钟后提醒我」）\n"
+            "- 用户在**描述**、**询问**、**闲聊**时提到「记住」「提醒」等词不算遗漏\n"
+            "- 「你记住了吗」「这么快就记住了」等陈述/疑问句不是指令\n"
+            "- 如果助手已经通过工具完成了操作，不算遗漏\n\n"
+            '输出 JSON：{"missed": [{"tool": "工具名"}]} 或 {"missed": []}\n'
+            "只输出 JSON。"
+        )
 
-            # 用户消息匹配
-            user_match = None
-            for pat in rule.user_patterns:
-                user_match = pat.search(user_message)
-                if user_match:
-                    break
-            if not user_match:
-                continue
+        try:
+            raw = await self.executor.quick_judge(prompt)
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            result = json.loads(raw)
 
-            # LLM 回复匹配（LLM 表示要做但没调工具）
-            resp_match = None
-            for pat in rule.response_patterns:
-                resp_match = pat.search(llm_response)
-                if resp_match:
-                    break
-            if not resp_match:
-                continue
+            intents = []
+            for item in result.get("missed", []):
+                tool_name = item.get("tool", "")
+                if tool_name in uncalled:
+                    # 映射 tool_name → intent_type
+                    intent_type = {
+                        "write_memory": "memory_write",
+                        "schedule_message": "schedule_reminder",
+                        "calendar_create_event": "calendar_create",
+                    }.get(tool_name, tool_name)
+                    intents.append(DetectedIntent(
+                        intent_type=intent_type,
+                        tool_name=tool_name,
+                        confidence=0.8,
+                        needs_subagent=True,
+                        evidence="LLM 判断",
+                    ))
+            return intents
 
-            # 尝试提取参数
-            params: dict = {}
-            if rule.param_extractor:
-                params = rule.param_extractor(user_message, llm_response)
-
-            needs_subagent = not params
-            confidence = 0.9 if params else 0.7
-
-            results.append(DetectedIntent(
-                intent_type=rule.intent_type,
-                tool_name=rule.tool_name,
-                confidence=confidence,
-                extracted_params=params,
-                needs_subagent=needs_subagent,
-                evidence=f"user='{user_match.group()[:40]}' resp='{resp_match.group()[:40]}'",
-            ))
-
-        return results
+        except (json.JSONDecodeError, Exception):
+            logger.warning("IntentDetector LLM 判断失败")
+            return []

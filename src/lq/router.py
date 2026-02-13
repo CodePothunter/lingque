@@ -297,7 +297,7 @@ class MessageRouter:
             return
 
         chat_id = message.chat_id
-        sender_name = await self.sender.get_user_name(event.sender.sender_id.open_id)
+        sender_name = await self.sender.get_user_name(event.sender.sender_id.open_id, chat_id=chat_id)
         logger.info("收到私聊 [%s]: %s", sender_name, text[:80])
 
         # 防抖：收集连续消息，延迟后统一处理
@@ -361,7 +361,7 @@ class MessageRouter:
         # 使用会话管理器维护上下文
         if self.session_mgr:
             session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("user", combined_text)
+            session.add_message("user", combined_text, sender_name=sender_name)
             messages = session.get_messages()
         else:
             messages = [{"role": "user", "content": combined_text}]
@@ -377,7 +377,7 @@ class MessageRouter:
 
         if self.session_mgr and reply_text:
             session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("assistant", reply_text)
+            session.add_message("assistant", reply_text, sender_name="你")
             if session.should_compact():
                 await self._compact_session(session)
 
@@ -400,6 +400,7 @@ class MessageRouter:
         messages: list[dict],
         chat_id: str,
         reply_to_message_id: str,
+        text_transform: Any = None,
     ) -> str:
         """执行带工具调用的完整对话循环。
 
@@ -440,7 +441,8 @@ class MessageRouter:
                 logger.info("检测到未完成意图，催促 LLM 行动 (%d/2)", nudge_count)
                 # 先把当前文本发给用户作为中间状态
                 if resp.text.strip():
-                    await self._send_reply(resp.text, chat_id, reply_to_message_id)
+                    out = text_transform(resp.text) if text_transform else resp.text
+                    await self._send_reply(out, chat_id, reply_to_message_id)
                     reply_to_message_id = None  # 后续用 send_text 而非 reply
                 # 追加 user 消息催促继续
                 continued_messages = resp.messages + [
@@ -455,8 +457,10 @@ class MessageRouter:
 
         # 发送最终文本回复
         if resp.text:
-            logger.info("回复: %s", resp.text[:80])
-            await self._send_reply(resp.text, chat_id, reply_to_message_id)
+            final = text_transform(resp.text) if text_transform else resp.text
+            logger.info("回复: %s", final[:80])
+            await self._send_reply(final, chat_id, reply_to_message_id)
+            resp.text = final  # 确保返回值也是处理后的文本
 
         # 后处理：检测未执行的意图并补救
         if self.post_processor and resp.text:
@@ -476,8 +480,18 @@ class MessageRouter:
 
         return resp.text
 
+    # 清理 LLM 模仿的元数据格式
+    _CLEAN_RE = __import__("re").compile(
+        r"\[\d{1,2}:\d{2}(?:\s+[^\]]+)?\]\s*"  # [17:32] 或 [17:32 你]
+        r"|<msg\s[^>]*>"                          # <msg time=17:32 from=你>
+        r"|</msg>",                                # </msg>
+    )
+
     async def _send_reply(self, text: str, chat_id: str, reply_to_message_id: str | None) -> None:
         """发送回复：优先 reply_text，fallback 到 send_text"""
+        text = self._CLEAN_RE.sub("", text).strip()
+        if not text:
+            return
         if reply_to_message_id and not reply_to_message_id.startswith("inbox_"):
             await self.sender.reply_text(reply_to_message_id, text)
         elif chat_id and chat_id != "local_cli":
@@ -650,6 +664,8 @@ class MessageRouter:
 
         # 第一层规则：极短无实质消息直接忽略
         text = self._extract_text(message)
+        # 解析 @占位符为真名
+        text = self._resolve_at_mentions(text, mentions)
         if not text:
             logger.debug("群聊旁听: 非文本消息，跳过")
             return
@@ -658,7 +674,7 @@ class MessageRouter:
             return
 
         sender_id = event.sender.sender_id.open_id
-        sender_name = await self.sender.get_user_name(sender_id)
+        sender_name = await self.sender.get_user_name(sender_id, chat_id=chat_id)
         logger.info("群聊旁听 [%s] %s: %s", chat_id[-8:], sender_name, text[:50])
 
         # 第二层：缓冲区
@@ -696,7 +712,7 @@ class MessageRouter:
             return
 
         sender_id = event.sender.sender_id.open_id
-        text = self._strip_at_mentions(text).strip()
+        text = self._resolve_at_mentions(text, getattr(message, "mentions", None)).strip()
         if not text:
             # 空 @：从缓冲区取该用户最近的消息作为上下文
             buf = self.group_buffers.get(message.chat_id)
@@ -709,15 +725,16 @@ class MessageRouter:
             if not text:
                 text = "（@了我但没说具体内容）"
 
-        sender_name = await self.sender.get_user_name(sender_id)
+        sender_name = await self.sender.get_user_name(sender_id, chat_id=message.chat_id)
         logger.info("群聊 @at [%s]: %s", sender_name, text[:50])
 
-        # 构建群聊上下文
+        # 构建群聊上下文（含 API 补充的机器人消息）
         group_context = ""
         buf = self.group_buffers.get(message.chat_id)
         if buf:
             recent = buf.get_recent(10)
             if recent:
+                recent = await self._enrich_with_api_messages(message.chat_id, recent)
                 lines = []
                 for m in recent:
                     name = m.get("sender_name", "未知")
@@ -746,14 +763,54 @@ class MessageRouter:
 
         if self.session_mgr:
             session = self.session_mgr.get_or_create(message.chat_id)
-            session.add_message("user", text)
+            session.add_message("user", text, sender_name=sender_name)
             messages = session.get_messages()
         else:
             messages = [{"role": "user", "content": text}]
 
-        await self._reply_with_tool_loop(
+        reply_text = await self._reply_with_tool_loop(
             system, messages, message.chat_id, message.message_id
         )
+
+        if reply_text and self.session_mgr:
+            session = self.session_mgr.get_or_create(message.chat_id)
+            session.add_message("assistant", reply_text, sender_name="你")
+
+    async def _enrich_with_api_messages(self, chat_id: str, buffer_msgs: list[dict]) -> list[dict]:
+        """用 API 拉取的消息补充缓冲区，填入事件机制收不到的机器人消息。"""
+        try:
+            api_msgs = await self.sender.fetch_chat_messages(chat_id, 15)
+        except Exception:
+            return buffer_msgs
+        if not api_msgs:
+            return buffer_msgs
+
+        known_ids = {m["message_id"] for m in buffer_msgs}
+        merged = list(buffer_msgs)
+
+        for am in api_msgs:
+            if am["message_id"] in known_ids:
+                continue
+            # 解析发送者名字：app 类型先查缓存，不走通讯录 API（会 400）
+            sid = am.get("sender_id", "")
+            if not sid:
+                sender_name = "未知"
+            elif am.get("sender_type") == "app":
+                sender_name = self.sender._user_name_cache.get(sid, sid[-6:])
+            else:
+                sender_name = await self.sender.get_user_name(sid, chat_id=chat_id)
+            merged.append({
+                "text": am["text"],
+                "sender_id": am["sender_id"],
+                "sender_name": sender_name,
+                "message_id": am["message_id"],
+                "chat_id": chat_id,
+            })
+            known_ids.add(am["message_id"])
+
+        # 按 message_id 排序（飞书 message_id 含时间序，字典序即时间序）
+        merged.sort(key=lambda m: m["message_id"])
+        return merged[-15:]  # 最多保留 15 条
 
     async def _evaluate_buffer(self, chat_id: str) -> None:
         """第三层：LLM 判断是否介入群聊"""
@@ -766,6 +823,9 @@ class MessageRouter:
             return
 
         buf.mark_evaluated()
+
+        # 从 API 拉取近期消息，补充事件机制收不到的机器人消息
+        recent = await self._enrich_with_api_messages(chat_id, recent)
 
         soul = self.memory.read_soul()
         conversation = "\n".join(
@@ -813,20 +873,41 @@ class MessageRouter:
             f"\n\n你决定主动参与群聊对话。原因：{judgment.get('reason', '')}\n"
             f"最近的群聊消息：\n{conversation}\n\n"
             "如果要提及某人，使用 @名字 格式。回复保持简洁自然。"
+            "\n\n<constraints>"
+            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
+            "\n- 回复务必简短精炼，不要长篇大论"
+            "\n- 禁止使用 emoji"
+            "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
+            "\n- 当需要查询实时信息（如汇率、天气、新闻等）时，"
+            "直接调用 create_custom_tool 创建工具获取数据，不要凭记忆编造。"
+            "\n- 如果之前给了错误信息被指出，大方承认并纠正，不要嘴硬。"
+            "\n</constraints>"
         )
 
-        reply = await self.executor.reply(system, "请根据上下文生成一条自然的群聊回复。")
-
-        # 将 @名字 替换为飞书 <at> 标记
-        reply = self._replace_at_mentions(reply, name_to_id)
-
-        # 校验 reply_to_message_id 是否为合法的飞书消息 ID（om_ 开头）
+        # 校验 reply_to_message_id
         reply_to = judgment.get("reply_to_message_id")
         valid_msg_ids = {m["message_id"] for m in recent}
-        if reply_to and isinstance(reply_to, str) and reply_to.startswith("om_") and reply_to in valid_msg_ids:
-            await self.sender.reply_text(reply_to, reply)
+        if not (reply_to and isinstance(reply_to, str) and reply_to.startswith("om_") and reply_to in valid_msg_ids):
+            reply_to = None
+
+        # 走工具循环，支持创建工具 + 联网查询
+        # text_transform 在发送前将 @名字 替换为飞书 <at> 标记
+        transform = lambda t: self._replace_at_mentions(t, name_to_id)
+
+        if self.session_mgr:
+            session = self.session_mgr.get_or_create(chat_id)
+            session.add_message("user", f"[群聊旁听]\n{conversation}", sender_name="群聊")
+            messages = session.get_messages()
         else:
-            await self.sender.send_text(chat_id, reply)
+            messages = [{"role": "user", "content": f"[群聊旁听]\n{conversation}"}]
+
+        reply_text = await self._reply_with_tool_loop(
+            system, messages, chat_id, reply_to, text_transform=transform,
+        )
+
+        if reply_text and self.session_mgr:
+            session = self.session_mgr.get_or_create(chat_id)
+            session.add_message("assistant", reply_text, sender_name="你")
 
     @staticmethod
     def _replace_at_mentions(text: str, name_to_id: dict[str, str]) -> str:
@@ -901,7 +982,30 @@ class MessageRouter:
         msg_type = getattr(message, "message_type", None) or ""
         return msg_type in self._NON_TEXT_TYPES
 
-    def _strip_at_mentions(self, text: str) -> str:
-        """移除 @at 标记"""
-        import re
-        return re.sub(r"@\S+\s*", "", text).strip()
+    def _resolve_at_mentions(self, text: str, mentions: Any) -> str:
+        """将 @占位符替换为真名，仅移除 bot 自己的 @。
+
+        飞书文本中 @mention 表现为 @_user_1 等占位符，
+        mentions 数组包含 key(@_user_1) → id(open_id) + name 映射。
+        """
+        if not mentions:
+            # 无 mentions 信息，回退：只删 @_user_ 占位符
+            import re
+            return re.sub(r"@_user_\d+\s*", "", text).strip()
+
+        for m in mentions:
+            key = getattr(m, "key", "")
+            if not key:
+                continue
+            open_id = ""
+            if hasattr(m, "id") and hasattr(m.id, "open_id"):
+                open_id = m.id.open_id
+            name = getattr(m, "name", "") or ""
+
+            if open_id == self.bot_open_id:
+                # 移除 bot 自己的 @
+                text = text.replace(key, "")
+            elif name:
+                # 其他用户的 @ 替换为真名
+                text = text.replace(key, f"@{name}")
+        return text.strip()

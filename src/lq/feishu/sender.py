@@ -72,6 +72,7 @@ class FeishuSender:
         self._tenant_access_token: str | None = None
         self._token_expires_at: float = 0.0  # Unix timestamp
         self._user_name_cache: dict[str, str] = {}  # open_id → 名字
+        self._cached_chats: set[str] = set()  # 已拉取成员的 chat_id
 
     async def send_text(self, chat_id: str, text: str) -> str | None:
         """发送文本消息到指定会话，返回 message_id。
@@ -185,33 +186,97 @@ class FeishuSender:
         )
         return bot
 
-    async def get_user_name(self, open_id: str) -> str:
-        """获取用户名，带内存缓存。"""
+    async def get_user_name(self, open_id: str, chat_id: str = "") -> str:
+        """获取用户名，带内存缓存。通过群成员 API 批量拉取。"""
         cached = self._user_name_cache.get(open_id)
         if cached is not None:
             return cached
 
-        try:
-            token = await self._get_tenant_token()
-            async with httpx.AsyncClient() as http:
-                resp = await http.get(
-                    f"https://open.feishu.cn/open-apis/contact/v3/users/{open_id}",
-                    params={"user_id_type": "open_id"},
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            name = data.get("data", {}).get("user", {}).get("name", "")
-            if name:
-                self._user_name_cache[open_id] = name
-                return name
-        except Exception:
-            logger.warning("获取用户名失败: %s", open_id)
+        # 如果有 chat_id，通过群成员列表批量缓存
+        if chat_id:
+            await self._cache_chat_members(chat_id)
+            cached = self._user_name_cache.get(open_id)
+            if cached is not None:
+                return cached
 
         # 回退：用 open_id 尾部
         fallback = open_id[-6:]
         self._user_name_cache[open_id] = fallback
         return fallback
+
+    async def _cache_chat_members(self, chat_id: str) -> None:
+        """通过群成员 API 批量缓存 chat 内所有成员的名字（含机器人）。"""
+        if chat_id in self._cached_chats:
+            return
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}/members",
+                    params={"member_id_type": "open_id", "page_size": 100},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            if data.get("code") != 0:
+                logger.warning("拉取群成员失败: code=%d msg=%s", data.get("code"), data.get("msg"))
+                return
+            items = data.get("data", {}).get("items", [])
+            for item in items:
+                mid = item.get("member_id", "")
+                name = item.get("name", "")
+                if mid and name:
+                    self._user_name_cache[mid] = name
+            self._cached_chats.add(chat_id)
+            logger.info("缓存群 %s 成员 %d 人", chat_id[-8:], len(items))
+        except Exception as e:
+            logger.warning("拉取群成员异常: %s %s", chat_id, e)
+
+    async def fetch_chat_messages(self, chat_id: str, count: int = 10) -> list[dict]:
+        """拉取群聊最近消息（含机器人消息），返回按时间正序排列的消息列表。
+
+        每条消息格式: {message_id, sender_id, text, sender_type}
+        sender_type: "user" 或 "app"
+        """
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    "https://open.feishu.cn/open-apis/im/v1/messages",
+                    params={
+                        "container_id_type": "chat",
+                        "container_id": chat_id,
+                        "sort_type": "ByCreateTimeDesc",
+                        "page_size": count,
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            if data.get("code") != 0:
+                logger.warning("拉取群消息失败: code=%d msg=%s", data.get("code"), data.get("msg"))
+                return []
+            items = data.get("data", {}).get("items", [])
+            results = []
+            for item in reversed(items):  # API 返回倒序，反转为正序
+                try:
+                    body = json.loads(item.get("body", {}).get("content", "{}"))
+                    text = body.get("text", "")
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    text = ""
+                if not text:
+                    continue
+                sender = item.get("sender", {})
+                results.append({
+                    "message_id": item.get("message_id", ""),
+                    "sender_id": sender.get("id", ""),
+                    "sender_type": sender.get("sender_type", "user"),
+                    "text": text,
+                })
+            return results
+        except Exception as e:
+            logger.warning("拉取群消息异常: %s %s", chat_id, e)
+            return []
 
     async def _get_tenant_token(self) -> str:
         """获取 tenant_access_token，过期前自动刷新"""

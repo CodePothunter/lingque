@@ -81,7 +81,10 @@ class AssistantGateway:
         bot_open_id = bot_info.get("open_id", self.config.feishu.bot_open_id)
         if bot_open_id:
             self.config.feishu.bot_open_id = bot_open_id
-        logger.info("Bot open_id: %s", bot_open_id)
+        bot_name = bot_info.get("bot_name", "")
+        if bot_open_id and bot_name:
+            sender._user_name_cache[bot_open_id] = bot_name
+        logger.info("Bot open_id: %s name: %s", bot_open_id, bot_name)
 
         # 初始化核心组件
         memory = MemoryManager(self.home)
@@ -119,7 +122,7 @@ class AssistantGateway:
         from lq.subagent import SubAgent
         from lq.postprocessor import PostProcessor
 
-        detector = IntentDetector()
+        detector = IntentDetector(executor)
         subagent = SubAgent(executor)
         post_processor = PostProcessor(
             detector, subagent, router._execute_tool, router._send_reply,

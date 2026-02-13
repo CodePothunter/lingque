@@ -7,11 +7,24 @@ import json
 import logging
 from typing import Any
 
+import re
+
 import anthropic
 
 from lq.config import APIConfig
 
 logger = logging.getLogger(__name__)
+
+# 清理模型输出中的推理标签（<think>...</think>）
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _clean_output(text: str) -> str:
+    """移除模型输出中的推理标签和残留片段"""
+    text = _THINK_RE.sub("", text)
+    # 处理不完整的 </think> 标签（模型被截断时）
+    text = text.replace("</think>", "")
+    return text.strip()
 
 # 可重试的 HTTP 状态码
 RETRYABLE_STATUS = {429, 500, 502, 503, 529}
@@ -108,7 +121,7 @@ class DirectAPIExecutor:
             messages=[{"role": "user", "content": user_message}],
         )
         self._record_usage(resp, "reply")
-        text = resp.content[0].text
+        text = _clean_output(resp.content[0].text)
         logger.debug("API 回复 (%d tokens): %s...", resp.usage.output_tokens, text[:80])
         return text
 
@@ -127,7 +140,7 @@ class DirectAPIExecutor:
             messages=messages,
         )
         self._record_usage(resp, "reply_with_history")
-        return resp.content[0].text
+        return _clean_output(resp.content[0].text)
 
     async def quick_judge(self, prompt: str) -> str:
         """低成本快速判断（用于介入评估等）"""
@@ -138,7 +151,7 @@ class DirectAPIExecutor:
             messages=[{"role": "user", "content": prompt}],
         )
         self._record_usage(resp, "quick_judge")
-        return resp.content[0].text
+        return _clean_output(resp.content[0].text)
 
     async def reply_with_tools(
         self,
@@ -173,15 +186,17 @@ class DirectAPIExecutor:
                     "input": block.input,
                 })
 
+        combined_text = _clean_output("\n".join(text_parts))
+
         if not pending_tools or resp.stop_reason == "end_turn":
             return ToolResponse(
-                text="\n".join(text_parts),
+                text=combined_text,
                 tool_calls=tool_calls,
             )
 
         tool_calls.extend(pending_tools)
         return ToolResponse(
-            text="\n".join(text_parts),
+            text=combined_text,
             tool_calls=tool_calls,
             pending=True,
             raw_response=resp,
