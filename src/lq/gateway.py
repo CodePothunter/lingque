@@ -81,7 +81,7 @@ class AssistantGateway:
         bot_open_id = bot_info.get("open_id", self.config.feishu.bot_open_id)
         if bot_open_id:
             self.config.feishu.bot_open_id = bot_open_id
-        bot_name = bot_info.get("bot_name", "")
+        bot_name = bot_info.get("app_name") or bot_info.get("bot_name") or self.config.name
         if bot_open_id and bot_name:
             sender._user_name_cache[bot_open_id] = bot_name
         logger.info("Bot open_id: %s name: %s", bot_open_id, bot_name)
@@ -109,7 +109,7 @@ class AssistantGateway:
             logger.warning("日历模块加载失败", exc_info=True)
 
         # 创建路由器并注入依赖
-        router = MessageRouter(executor, memory, sender, bot_open_id)
+        router = MessageRouter(executor, memory, sender, bot_open_id, bot_name)
         router.session_mgr = session_mgr
         router.calendar = calendar
         router.stats = stats

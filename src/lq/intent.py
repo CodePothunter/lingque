@@ -46,6 +46,25 @@ class IntentDetector:
         if not uncalled:
             return []
 
+        # 互斥：定时消息和日历事件是相似意图，已调一个就不检测另一个
+        if "schedule_message" in tools_called:
+            uncalled.pop("calendar_create_event", None)
+        if "calendar_create_event" in tools_called:
+            uncalled.pop("schedule_message", None)
+        # 如果已调用自定义工具或 create_custom_tool，说明 LLM 已在执行任务，不检测日历
+        if "create_custom_tool" in tools_called or any(
+            t not in RECOVERABLE_TOOLS and t not in (
+                "write_memory", "send_message", "send_card",
+                "read_self_file", "write_self_file",
+                "list_custom_tools", "test_custom_tool",
+                "delete_custom_tool", "toggle_custom_tool",
+            ) for t in tools_called
+        ):
+            uncalled.pop("calendar_create_event", None)
+            uncalled.pop("schedule_message", None)
+        if not uncalled:
+            return []
+
         tool_desc = "\n".join(f"- {name}: {desc}" for name, desc in uncalled.items())
 
         prompt = (

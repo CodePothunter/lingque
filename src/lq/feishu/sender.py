@@ -193,8 +193,8 @@ class FeishuSender:
             data = resp.json()
         bot = data.get("bot", {})
         logger.info(
-            "机器人信息: name=%s open_id=%s",
-            bot.get("bot_name"),
+            "机器人信息: app_name=%s open_id=%s",
+            bot.get("app_name"),
             bot.get("open_id"),
         )
         return bot

@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 # 禁止在自定义工具中 import 的模块
 BLOCKED_IMPORTS = frozenset({
-    "os", "subprocess", "shutil", "sys", "socket", "ctypes",
-    "signal", "multiprocessing", "threading",
+    "subprocess", "shutil", "ctypes",
+    "signal", "multiprocessing",
 })
 
 

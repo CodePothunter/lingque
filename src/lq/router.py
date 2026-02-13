@@ -235,17 +235,25 @@ class MessageRouter:
         memory: MemoryManager,
         sender: FeishuSender,
         bot_open_id: str,
+        bot_name: str = "",
     ) -> None:
         self.executor = executor
         self.memory = memory
         self.sender = sender
         self.bot_open_id = bot_open_id
+        self.bot_name = bot_name
 
         # 群聊缓冲区
         self.group_buffers: dict[str, MessageBuffer] = {}
         # 私聊防抖：chat_id → {texts, message_id, timer, event}
         self._private_pending: dict[str, dict] = {}
         self._private_debounce_seconds: float = 1.5
+        # 群聊 bot 消息轮询计数（防止 bot 间无限对话，用户消息重置）
+        self._bot_poll_count: dict[str, int] = {}
+        self._bot_poll_timers: dict[str, asyncio.TimerHandle] = {}
+        self._bot_seen_ids: dict[str, set[str]] = {}  # chat_id → 已处理的 message_id
+        # 回复去重：chat_id → 上次发送的文本，防止 bot 轮询循环导致重复回复
+        self._last_reply_per_chat: dict[str, str] = {}
         # Phase 3+: 注入依赖
         self.session_mgr: Any = None
         self.calendar: Any = None
@@ -282,6 +290,12 @@ class MessageRouter:
         if chat_type == "p2p":
             await self._handle_private(event)
         elif chat_type == "group":
+            if self.sender.is_chat_left(message.chat_id):
+                logger.debug("忽略已退出群 %s 的消息", message.chat_id[-8:])
+                return
+            self._bot_poll_count.pop(message.chat_id, None)
+            self._bot_seen_ids.pop(message.chat_id, None)
+            self._last_reply_per_chat.pop(message.chat_id, None)
             await self._handle_group(event)
 
     async def _handle_private(self, event: Any) -> None:
@@ -391,8 +405,23 @@ class MessageRouter:
             all_tools.extend(self.tool_registry.get_definitions())
         return all_tools
 
-    # 检测 LLM 回复中是否暗示要继续行动但没有调用工具
-    _INTENT_KEYWORDS = ("创建", "搞定", "马上", "稍等", "先", "正在", "开始")
+    # 行动前奏短语：只有极短回复以这些开头时才认为 LLM 想做事但没调工具
+    _PREAMBLE_STARTS = (
+        "好的，我", "好，我", "我来", "稍等", "马上",
+        "让我", "我去", "好的，让我", "好，让我",
+    )
+
+    @staticmethod
+    def _is_action_preamble(text: str) -> bool:
+        """判断 LLM 回复是否是未完成的行动前奏。
+
+        只有极短的（≤50字）、以行动短语开头的回复才被视为前奏。
+        正常长度的对话回复不会触发，避免误催促。
+        """
+        text = text.strip()
+        if len(text) > 50:
+            return False
+        return any(text.startswith(p) for p in MessageRouter._PREAMBLE_STARTS)
 
     async def _reply_with_tool_loop(
         self,
@@ -401,6 +430,7 @@ class MessageRouter:
         chat_id: str,
         reply_to_message_id: str,
         text_transform: Any = None,
+        allow_nudge: bool = True,
     ) -> str:
         """执行带工具调用的完整对话循环。
 
@@ -433,20 +463,21 @@ class MessageRouter:
                 resp = await self.executor.continue_after_tools(
                     system, resp.messages, all_tools, tool_results, resp.raw_response
                 )
-            elif resp.text and nudge_count < 2 and any(
-                kw in resp.text for kw in self._INTENT_KEYWORDS
+            elif (
+                allow_nudge
+                and resp.text
+                and nudge_count < 1
+                and self._is_action_preamble(resp.text)
             ):
-                # LLM 表示要行动但只输出了文本没调用工具 → 催促一轮
+                # LLM 输出了极短的行动前奏（"好的，我来..."）但没调工具 → 催促一次
                 nudge_count += 1
-                logger.info("检测到未完成意图，催促 LLM 行动 (%d/2)", nudge_count)
-                # 先把当前文本发给用户作为中间状态
-                if resp.text.strip():
-                    out = text_transform(resp.text) if text_transform else resp.text
-                    await self._send_reply(out, chat_id, reply_to_message_id)
-                    reply_to_message_id = None  # 后续用 send_text 而非 reply
-                # 追加 user 消息催促继续
+                logger.info(
+                    "检测到行动前奏，催促执行 (%d/1) 原文: %s",
+                    nudge_count, resp.text[:100],
+                )
+                # 不发送前奏文本给用户（"好的，我来..."不是有效回复）
                 continued_messages = resp.messages + [
-                    {"role": "user", "content": "请直接使用工具执行，不要只说不做。"}
+                    {"role": "user", "content": "继续，直接调用工具即可。"}
                 ]
                 resp = await self.executor.reply_with_tools(
                     system, continued_messages, all_tools
@@ -492,6 +523,12 @@ class MessageRouter:
         text = self._CLEAN_RE.sub("", text).strip()
         if not text:
             return
+        # 去重：跳过与上次完全相同的回复（防止 bot 轮询循环导致复读）
+        if chat_id and self._last_reply_per_chat.get(chat_id) == text:
+            logger.info("跳过重复回复 chat=%s text=%s", chat_id[-8:], text[:60])
+            return
+        if chat_id:
+            self._last_reply_per_chat[chat_id] = text
         if reply_to_message_id and not reply_to_message_id.startswith("inbox_"):
             await self.sender.reply_text(reply_to_message_id, text)
         elif chat_id and chat_id != "local_cli":
@@ -590,11 +627,16 @@ class MessageRouter:
 
             elif name == "send_message":
                 target = input_data.get("chat_id", "")
-                if not target.startswith(("oc_", "ou_", "on_")):
-                    target = chat_id  # LLM 给了无效 ID，回退到当前会话
+                if not target.startswith(("oc_", "ou_", "on_")) or len(target) < 20:
+                    target = chat_id  # LLM 给了无效或截断的 ID，回退到当前会话
+                # 自动将 @名字 转换为飞书 <at> 标签
+                text_to_send = input_data["text"]
+                cache_map = {n: oid for oid, n in self.sender._user_name_cache.items() if n and oid.startswith("ou_")}
+                if cache_map:
+                    text_to_send = self._replace_at_mentions(text_to_send, cache_map)
                 msg_id = await self.sender.send_text(
                     target,
-                    input_data["text"],
+                    text_to_send,
                 )
                 if msg_id:
                     return {"success": True, "message_id": msg_id}
@@ -618,8 +660,8 @@ class MessageRouter:
                     return {"success": False, "error": "计划时间已过去"}
 
                 target_chat_id = input_data.get("chat_id", "")
-                if not target_chat_id.startswith(("oc_", "ou_", "on_")):
-                    target_chat_id = chat_id  # LLM 给了无效 ID，回退到当前会话
+                if not target_chat_id.startswith(("oc_", "ou_", "on_")) or len(target_chat_id) < 20:
+                    target_chat_id = chat_id  # LLM 给了无效或截断的 ID，回退到当前会话
                 target_text = input_data["text"]
                 sender_ref = self.sender
 
@@ -666,6 +708,12 @@ class MessageRouter:
                     is_at_me = True
                     break
 
+        # 文本层兜底：飞书有时不解析 @，以纯文本 "@bot名" 发出
+        if not is_at_me and self.bot_name:
+            raw_text = self._extract_text(message)
+            if raw_text and f"@{self.bot_name}" in raw_text:
+                is_at_me = True
+
         if is_at_me:
             await self._handle_group_at(event)
             return
@@ -683,6 +731,9 @@ class MessageRouter:
 
         sender_id = event.sender.sender_id.open_id
         sender_name = await self.sender.get_user_name(sender_id, chat_id=chat_id)
+        if self.sender.is_chat_left(chat_id):
+            logger.info("Bot 已退出群 %s，忽略旁听消息", chat_id[-8:])
+            return
         logger.info("群聊旁听 [%s] %s: %s", chat_id[-8:], sender_name, text[:50])
 
         # 第二层：缓冲区
@@ -734,6 +785,9 @@ class MessageRouter:
                 text = "（@了我但没说具体内容）"
 
         sender_name = await self.sender.get_user_name(sender_id, chat_id=message.chat_id)
+        if self.sender.is_chat_left(message.chat_id):
+            logger.info("Bot 已退出群 %s，忽略 @at 消息", message.chat_id[-8:])
+            return
         logger.info("群聊 @at [%s]: %s", sender_name, text[:50])
 
         # 构建群聊上下文（含 API 补充的机器人消息）
@@ -746,7 +800,10 @@ class MessageRouter:
                 lines = []
                 for m in recent:
                     name = m.get("sender_name", "未知")
-                    lines.append(f"{name}：{m['text']}")
+                    if m.get("sender_id") == self.bot_open_id:
+                        lines.append(f"{name}（你自己）：{m['text']}")
+                    else:
+                        lines.append(f"{name}：{m['text']}")
                 group_context = "\n群聊近期消息：\n" + "\n".join(lines)
 
         system = self.memory.build_context(chat_id=message.chat_id)
@@ -755,19 +812,31 @@ class MessageRouter:
             f"{group_context}"
             "\n如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
-            "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
+            "如果用户明确要求你执行某个任务且现有工具不够，可以用 create_custom_tool 创建工具来完成。"
             "\n\n<constraints>"
             "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
             "\n- 回复务必简短精炼，不要长篇大论"
             "\n- 禁止使用 emoji"
             "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
-            "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
-            "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
-            "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
-            "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
-            "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
+            "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
+            "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
             "\n</constraints>"
         )
+
+        # 构建 name_to_id 映射，用于 @名字 → <at> 标签转换
+        name_to_id: dict[str, str] = {}
+        name_to_id[sender_name] = sender_id
+        buf = self.group_buffers.get(message.chat_id)
+        if buf:
+            for m in buf.get_recent(15):
+                n = m.get("sender_name", "")
+                if n:
+                    name_to_id[n] = m["sender_id"]
+        # 补充群成员缓存中的 bot 名字
+        for oid, n in self.sender._user_name_cache.items():
+            if oid.startswith("ou_") and n:
+                name_to_id[n] = oid
+        transform = lambda t: self._replace_at_mentions(t, name_to_id)
 
         if self.session_mgr:
             session = self.session_mgr.get_or_create(message.chat_id)
@@ -777,12 +846,16 @@ class MessageRouter:
             messages = [{"role": "user", "content": text}]
 
         reply_text = await self._reply_with_tool_loop(
-            system, messages, message.chat_id, message.message_id
+            system, messages, message.chat_id, message.message_id,
+            text_transform=transform,
         )
 
         if reply_text and self.session_mgr:
             session = self.session_mgr.get_or_create(message.chat_id)
             session.add_message("assistant", reply_text, sender_name="你")
+
+        if reply_text:
+            self._schedule_bot_poll(message.chat_id)
 
     async def _enrich_with_api_messages(self, chat_id: str, buffer_msgs: list[dict]) -> list[dict]:
         """用 API 拉取的消息补充缓冲区，填入事件机制收不到的机器人消息。"""
@@ -811,6 +884,7 @@ class MessageRouter:
                 "text": am["text"],
                 "sender_id": am["sender_id"],
                 "sender_name": sender_name,
+                "sender_type": am.get("sender_type", "user"),
                 "message_id": am["message_id"],
                 "chat_id": chat_id,
             })
@@ -836,17 +910,47 @@ class MessageRouter:
         recent = await self._enrich_with_api_messages(chat_id, recent)
 
         soul = self.memory.read_soul()
-        conversation = "\n".join(
-            f"[{m['message_id']}] {m.get('sender_name', '未知')}：{m['text']}" for m in recent
-        )
+        # 标注自己的消息，其他人（含 bot）正常记录名字
+        my_name = self.bot_name or self.sender._user_name_cache.get(self.bot_open_id, "")
+        lines: list[str] = []
+        has_my_reply = False
+        for m in recent:
+            name = m.get("sender_name", "未知")
+            if m.get("sender_id") == self.bot_open_id:
+                lines.append(f"[{m['message_id']}] {name}（你自己）：{m['text']}")
+                has_my_reply = True
+            else:
+                lines.append(f"[{m['message_id']}] {name}：{m['text']}")
+        conversation = "\n".join(lines)
+
+        # 如果最后一条消息就是自己发的，不需要再次介入
+        if recent and recent[-1].get("sender_id") == self.bot_open_id:
+            logger.debug("最后一条消息是自己发的，跳过评估")
+            return
+
+        # 如果已经发言过，且之后没有任何新消息，不再介入
+        if has_my_reply:
+            my_last_idx = max(
+                i for i, m in enumerate(recent)
+                if m.get("sender_id") == self.bot_open_id
+            )
+            new_msgs_after = recent[my_last_idx + 1:]
+            if not new_msgs_after:
+                logger.debug("已发言且无新消息，跳过评估")
+                return
 
         prompt = (
-            f"你是一个 AI 助理。以下是你的人格定义：\n{soul}\n\n"
+            f"你是一个 AI 助理（名字：{my_name or '未知'}）。以下是你的人格定义：\n{soul}\n\n"
             f"以下是群聊中的最近消息（方括号内是消息ID）：\n{conversation}\n\n"
             "请判断你是否应该主动参与这个对话。考虑：\n"
-            "1. 对话是否涉及你能帮助的话题？\n"
+            "1. 对话是否与你相关或涉及你能帮助的话题？\n"
             "2. 你的介入是否会增加价值？\n"
-            "3. 这是否只是闲聊/情绪表达（不应介入）？\n\n"
+            "3. 如果群里有另一个 bot 已经在处理这个话题，你就不要重复介入\n"
+            "4. 如果对方是在和另一个 bot 对话，且没有涉及你，不要介入\n"
+            "5. 这是否只是闲聊/情绪表达（通常不应介入）？\n"
+            "6. 如果有人直接叫你的名字或提到你，应该介入\n"
+            "7. 如果你已经在对话中发过言（标记为「你自己」），除非有人直接问你新问题或 @你，否则不要再发言\n"
+            "8. 例外：如果用户明确要求你与其他人/bot 互动（如「你俩聊一下」「跟xx说说话」），即使对方是 bot 也应该积极配合\n\n"
             '仅输出 JSON: {"should_intervene": true/false, "reason": "简短原因", "reply_to_message_id": "要回复的消息ID或null"}'
         )
 
@@ -868,13 +972,16 @@ class MessageRouter:
     async def _intervene(self, chat_id: str, recent: list[dict], judgment: dict) -> None:
         """执行群聊介入"""
         system = self.memory.build_context(chat_id=chat_id)
-        # 用真实名字构建对话上下文
+        # 用真实名字构建对话上下文，标注 bot 消息
         name_to_id: dict[str, str] = {}
         lines: list[str] = []
         for m in recent:
             name = m.get("sender_name", "未知")
             name_to_id[name] = m["sender_id"]
-            lines.append(f"{name}：{m['text']}")
+            if m.get("sender_id") == self.bot_open_id:
+                lines.append(f"{name}（你自己）：{m['text']}")
+            else:
+                lines.append(f"{name}：{m['text']}")
         conversation = "\n".join(lines)
 
         system += (
@@ -886,9 +993,11 @@ class MessageRouter:
             "\n- 回复务必简短精炼，不要长篇大论"
             "\n- 禁止使用 emoji"
             "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
-            "\n- 当需要查询实时信息（如汇率、天气、新闻等）时，"
-            "直接调用 create_custom_tool 创建工具获取数据，不要凭记忆编造。"
-            "\n- 如果之前给了错误信息被指出，大方承认并纠正，不要嘴硬。"
+            "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
+            "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
+            "\n- 如果之前给了错误信息被指出，大方承认并纠正，不要嘴硬"
+            "\n- 不要编造实时数据（天气、汇率等），需要时先用 create_custom_tool 获取"
+            "\n- 如果群里有另一个 bot 已经回复了相同话题，不要重复相同内容；可以补充或接话"
             "\n</constraints>"
         )
 
@@ -910,12 +1019,16 @@ class MessageRouter:
             messages = [{"role": "user", "content": f"[群聊旁听]\n{conversation}"}]
 
         reply_text = await self._reply_with_tool_loop(
-            system, messages, chat_id, reply_to, text_transform=transform,
+            system, messages, chat_id, reply_to,
+            text_transform=transform, allow_nudge=False,
         )
 
         if reply_text and self.session_mgr:
             session = self.session_mgr.get_or_create(chat_id)
             session.add_message("assistant", reply_text, sender_name="你")
+
+        if reply_text:
+            self._schedule_bot_poll(chat_id)
 
     @staticmethod
     def _replace_at_mentions(text: str, name_to_id: dict[str, str]) -> str:
@@ -924,6 +1037,112 @@ class MessageRouter:
             tag = f'<at user_id="{name_to_id[name]}">{name}</at>'
             text = text.replace(f"@{name}", tag)
         return text
+
+    def _schedule_bot_poll(self, chat_id: str, delay: float = 5.0) -> None:
+        """群聊回复后，延迟拉取其他 bot 的消息（WS 收不到 bot 消息）。
+        带防抖：同一群聊连续回复只保留最后一次定时器。
+        """
+        old = self._bot_poll_timers.pop(chat_id, None)
+        if old:
+            old.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+            handle = loop.call_later(
+                delay,
+                lambda cid=chat_id: asyncio.ensure_future(self._poll_bot_messages(cid)),
+            )
+            self._bot_poll_timers[chat_id] = handle
+            logger.debug("已安排 bot 消息轮询: 群 %s, %ds 后", chat_id[-8:], delay)
+        except Exception:
+            logger.exception("安排 bot 轮询失败")
+
+    async def _poll_bot_messages(self, chat_id: str) -> None:
+        """延迟拉取群聊 API 消息，补充 WS 收不到的 bot 消息并触发评估。"""
+        self._bot_poll_timers.pop(chat_id, None)
+
+        count = self._bot_poll_count.get(chat_id, 0)
+        if count >= 5:
+            logger.debug("群 %s bot 轮询已达上限，跳过", chat_id[-8:])
+            return
+
+        try:
+            api_msgs = await self.sender.fetch_chat_messages(chat_id, 10)
+        except Exception:
+            return
+        if not api_msgs:
+            return
+
+        buf = self.group_buffers.get(chat_id)
+        if not buf:
+            buf = MessageBuffer()
+            self.group_buffers[chat_id] = buf
+
+        # 双重去重：缓冲区已有 + 之前轮询已见
+        known_ids = {m["message_id"] for m in buf.get_recent(20)}
+        seen = self._bot_seen_ids.setdefault(chat_id, set())
+        known_ids |= seen
+
+        new_count = 0
+        newly_added: set[str] = set()  # 本轮新增的 message_id
+        for am in api_msgs:
+            mid = am["message_id"]
+            if mid in known_ids:
+                continue
+            if am.get("sender_type") != "app":
+                continue
+            # 跳过自己发的消息（只关心其他 bot 的消息）
+            if am.get("sender_id") == self.bot_open_id:
+                seen.add(mid)  # 标记已见，避免下次重复检查
+                continue
+            sender_name = self.sender._user_name_cache.get(
+                am["sender_id"], am["sender_id"][-6:]
+            )
+            buf.add({
+                "text": am["text"],
+                "sender_id": am["sender_id"],
+                "sender_name": sender_name,
+                "sender_type": "app",
+                "message_id": mid,
+                "chat_id": chat_id,
+            })
+            seen.add(mid)
+            newly_added.add(mid)
+            new_count += 1
+
+        if new_count:
+            self._bot_poll_count[chat_id] = count + 1
+            # 仅检查本轮新增消息是否以文本方式 @了自己
+            at_me = False
+            if self.bot_name:
+                at_tag = f"@{self.bot_name}"
+                for am in api_msgs:
+                    if am["message_id"] not in newly_added:
+                        continue
+                    if am.get("text") and at_tag in am["text"]:
+                        at_me = True
+                        break
+            if at_me:
+                logger.info(
+                    "补充 %d 条 bot 消息到群 %s，检测到文本 @%s，直接介入",
+                    new_count, chat_id[-8:], self.bot_name,
+                )
+                recent = buf.get_recent(20)
+                judgment = {"intervene": True, "reason": f"被其他 bot 以文本方式 @{self.bot_name}"}
+                await self._intervene(chat_id, recent, judgment)
+                # 取消 _intervene 内部触发的 bot_poll，避免 bot 互@循环
+                timer = self._bot_poll_timers.pop(chat_id, None)
+                if timer:
+                    timer.cancel()
+            else:
+                logger.info(
+                    "补充 %d 条 bot 消息到群 %s，触发评估 (%d/%d)",
+                    new_count, chat_id[-8:], count + 1, 5,
+                )
+                await self._evaluate_buffer(chat_id)
+                # 取消 _intervene 内部触发的 bot_poll，避免 evaluate→intervene→poll 循环
+                timer = self._bot_poll_timers.pop(chat_id, None)
+                if timer:
+                    timer.cancel()
 
     async def _compact_session(self, session: Any) -> None:
         """压缩会话"""
