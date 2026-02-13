@@ -15,6 +15,8 @@ class MemoryManager:
         self.workspace = workspace
         self.memory_dir = workspace / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.chat_memories_dir = workspace / "chat_memories"
+        self.chat_memories_dir.mkdir(parents=True, exist_ok=True)
 
     def read_soul(self) -> str:
         soul_path = self.workspace / "SOUL.md"
@@ -48,6 +50,12 @@ class MemoryManager:
         memory = self.read_memory()
         if memory:
             parts.append(f"<memory>\n{memory}\n</memory>")
+
+        # 注入 per-chat 长期记忆（区别于全局 MEMORY.md）
+        if chat_id:
+            chat_mem = self.read_chat_memory(chat_id)
+            if chat_mem:
+                parts.append(f"<chat_memory>\n{chat_mem}\n</chat_memory>")
 
         # 按 chat_id 过滤日志，避免跨聊天窗口泄露
         if chat_id:
@@ -97,7 +105,8 @@ class MemoryManager:
             "- 使用 schedule_message 工具定时发送消息（如「5分钟后提醒我」）\n"
             "- 使用 calendar_create_event / calendar_list_events 工具创建和查询日历事件\n"
             "- 使用 read_self_file / write_self_file 工具读写配置文件（SOUL.md、MEMORY.md、HEARTBEAT.md）\n"
-            "- 使用 write_memory 工具将重要信息写入长期记忆\n"
+            "- 使用 write_memory 工具将跨聊天通用的重要信息写入全局长期记忆\n"
+            "- 使用 write_chat_memory 工具将仅与当前对话相关的信息写入聊天专属记忆\n"
             "- 使用 create_custom_tool 工具创建新的自定义工具来扩展自身能力\n"
             "- 使用 send_card 工具发送结构化卡片消息\n\n"
             "### 自主能力扩展（重要）\n"
@@ -226,6 +235,53 @@ class MemoryManager:
         path = self.workspace / filename
         path.write_text(content, encoding="utf-8")
         logger.info("%s 已更新 (%d 字节)", filename, len(content))
+
+    # ── Chat Memory（per-chat 长期记忆）API ──
+
+    def _chat_memory_path(self, chat_id: str) -> Path:
+        """返回指定 chat_id 的记忆文件路径"""
+        # 用 chat_id 作文件名（飞书 chat_id 是 oc_ 开头的 ASCII 串，安全作文件名）
+        return self.chat_memories_dir / f"{chat_id}.md"
+
+    def read_chat_memory(self, chat_id: str) -> str:
+        """读取指定聊天窗口的专属长期记忆"""
+        path = self._chat_memory_path(chat_id)
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return ""
+
+    def update_chat_memory(self, chat_id: str, section: str, content: str) -> None:
+        """更新指定聊天窗口记忆中的特定段落（类似 update_memory 但 per-chat）"""
+        path = self._chat_memory_path(chat_id)
+        if not path.exists():
+            path.write_text(
+                f"# 聊天记忆\n\n## {section}\n{content}\n", encoding="utf-8"
+            )
+            logger.info("创建 chat_memory [%s] section=%s", chat_id[-8:], section)
+            return
+
+        text = path.read_text(encoding="utf-8")
+        pattern = rf"(## {re.escape(section)}\n)(.*?)(\n## |\Z)"
+        match = re.search(pattern, text, re.DOTALL)
+
+        if match:
+            replacement = f"{match.group(1)}{content}\n{match.group(3)}"
+            text = text[: match.start()] + replacement + text[match.end():]
+        else:
+            text = text.rstrip() + f"\n\n## {section}\n{content}\n"
+
+        path.write_text(text, encoding="utf-8")
+        logger.info("chat_memory [%s] section=%s 已更新", chat_id[-8:], section)
+
+    def append_chat_memory(self, chat_id: str, content: str) -> None:
+        """追加内容到指定聊天窗口的记忆末尾"""
+        path = self._chat_memory_path(chat_id)
+        if not path.exists():
+            path.write_text(f"# 聊天记忆\n\n{content.rstrip()}\n", encoding="utf-8")
+        else:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{content.rstrip()}\n")
+        logger.info("chat_memory [%s] 已追加", chat_id[-8:])
 
     def _read_daily(self, d: date) -> str:
         path = self.memory_dir / f"{d.isoformat()}.md"

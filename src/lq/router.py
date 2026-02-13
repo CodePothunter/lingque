@@ -35,6 +35,24 @@ TOOLS = [
         },
     },
     {
+        "name": "write_chat_memory",
+        "description": "将信息写入当前聊天窗口的专属记忆（chat_memory）。与 write_memory（全局记忆）不同，chat_memory 只在当前聊天窗口中可见。用于记住与当前对话者相关的信息，如对方的偏好、聊天中的要点和约定等。全局通用的信息请用 write_memory，仅与当前对话相关的信息请用 write_chat_memory。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "description": "记忆分区名（如：关于对方、聊天要点、约定事项）",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "要记录的内容，支持 Markdown 格式",
+                },
+            },
+            "required": ["section", "content"],
+        },
+    },
+    {
         "name": "calendar_create_event",
         "description": "在飞书日历中创建一个新事件/日程。时间必须使用 ISO 8601 格式并包含时区偏移，例如 2026-02-13T15:00:00+08:00。请根据当前时间计算用户说的相对时间（如「5分钟后」「明天下午3点」）。",
         "input_schema": {
@@ -317,10 +335,9 @@ class MessageRouter:
         # 防抖：收集连续消息，延迟后统一处理
         pending = self._private_pending.get(chat_id)
         if pending:
-            # 已有待处理消息，追加文本并更新 message_id（回复最后一条）
+            # 已有待处理消息，追加文本（保留首条 message_id 用于回复线程）
             pending["texts"].append(text)
-            pending["message_id"] = message.message_id
-            pending["sender_name"] = sender_name
+            # message_id 保持首条不变，确保回复线程指向正确的消息
             # 重置定时器
             if pending.get("timer"):
                 pending["timer"].cancel()
@@ -357,9 +374,14 @@ class MessageRouter:
         system = self.memory.build_context(chat_id=chat_id)
         system += (
             f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
-            "如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
             "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
+            "\n\n<memory_guidance>"
+            "\n你有两种记忆工具，请根据信息的性质选用："
+            "\n- write_memory：写入全局记忆（MEMORY.md），用于跨聊天通用的信息（如用户生日、公司信息、通用偏好）"
+            "\n- write_chat_memory：写入当前聊天的专属记忆，用于仅与当前对话相关的信息（如与这个人的约定、聊天中的要点、对方的个人偏好）"
+            "\n当用户说「记住」什么时，判断这个信息是通用的还是专属于当前对话的，选择对应工具。"
+            "\n</memory_guidance>"
             "\n\n<constraints>"
             "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
             "\n- 回复务必简短精炼，不要长篇大论"
@@ -546,7 +568,15 @@ class MessageRouter:
                     input_data["section"],
                     input_data["content"],
                 )
-                return {"success": True, "message": "已写入记忆"}
+                return {"success": True, "message": "已写入全局记忆"}
+
+            elif name == "write_chat_memory":
+                self.memory.update_chat_memory(
+                    chat_id,
+                    input_data["section"],
+                    input_data["content"],
+                )
+                return {"success": True, "message": "已写入当前聊天记忆"}
 
             elif name == "calendar_create_event":
                 if not self.calendar:
@@ -810,9 +840,12 @@ class MessageRouter:
         system += (
             f"\n\n你在群聊中被 {sender_name} @at 了。当前会话 chat_id={message.chat_id}。请针对对方的问题简洁回复。"
             f"{group_context}"
-            "\n如果用户要求记住什么，使用 write_memory 工具。"
-            "如果涉及日程，使用 calendar 工具。"
+            "\n如果涉及日程，使用 calendar 工具。"
             "如果用户明确要求你执行某个任务且现有工具不够，可以用 create_custom_tool 创建工具来完成。"
+            "\n\n<memory_guidance>"
+            "\n- write_memory：写入全局记忆，用于跨聊天通用的信息"
+            "\n- write_chat_memory：写入当前群聊的专属记忆，用于仅与本群相关的信息（如群聊话题、群友特点）"
+            "\n</memory_guidance>"
             "\n\n<constraints>"
             "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
             "\n- 回复务必简短精炼，不要长篇大论"
@@ -853,6 +886,8 @@ class MessageRouter:
         if reply_text and self.session_mgr:
             session = self.session_mgr.get_or_create(message.chat_id)
             session.add_message("assistant", reply_text, sender_name="你")
+            if session.should_compact():
+                await self._compact_session(session)
 
         if reply_text:
             self._schedule_bot_poll(message.chat_id)
@@ -1026,6 +1061,8 @@ class MessageRouter:
         if reply_text and self.session_mgr:
             session = self.session_mgr.get_or_create(chat_id)
             session.add_message("assistant", reply_text, sender_name="你")
+            if session.should_compact():
+                await self._compact_session(session)
 
         if reply_text:
             self._schedule_bot_poll(chat_id)
@@ -1145,11 +1182,17 @@ class MessageRouter:
                     timer.cancel()
 
     async def _compact_session(self, session: Any) -> None:
-        """压缩会话"""
+        """压缩会话：提取长期记忆到 chat_memory，生成摘要后裁剪消息"""
         flush_prompt = self.memory.flush_before_compaction(session.messages)
         extracted = await self.executor.reply("", flush_prompt)
         if extracted.strip() and extracted.strip() != "无":
             self.memory.append_daily(f"### 会话记忆提取\n{extracted}\n", chat_id=session.chat_id)
+            # 同时写入 per-chat 长期记忆，避免 daily log 过期后丢失
+            from datetime import date as _date
+            self.memory.append_chat_memory(
+                session.chat_id,
+                f"\n## 记忆提取 ({_date.today().isoformat()})\n{extracted}\n",
+            )
 
         summary_prompt = (
             "请用 2-3 句话总结以下对话的关键内容：\n"

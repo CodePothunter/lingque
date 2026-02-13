@@ -107,11 +107,13 @@ class SessionManager:
         return self._sessions[chat_id]
 
     def save(self) -> None:
-        """保存所有活跃会话"""
+        """保存所有活跃会话（原子写入：先写临时文件再 rename）"""
         path = self.sessions_dir / "current.json"
+        tmp = path.with_suffix(".tmp")
         data = {cid: s.to_dict() for cid, s in self._sessions.items()}
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)
 
     def archive(self, chat_id: str, slug: str = "") -> None:
         """归档会话"""

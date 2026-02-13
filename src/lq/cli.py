@@ -81,7 +81,7 @@ def init(name: str, from_env: str | None) -> None:
 
     # 创建目录结构
     home.mkdir(parents=True, exist_ok=True)
-    for sub in ("memory", "sessions", "sessions/archive", "groups", "logs"):
+    for sub in ("memory", "sessions", "sessions/archive", "groups", "logs", "chat_memories"):
         (home / sub).mkdir(parents=True, exist_ok=True)
 
     # 写入配置
