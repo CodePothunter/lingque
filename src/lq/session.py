@@ -1,4 +1,4 @@
-"""会话管理"""
+"""会话管理 — token 感知的上下文窗口管理"""
 
 from __future__ import annotations
 
@@ -12,19 +12,50 @@ CST = timezone(timedelta(hours=8))
 
 logger = logging.getLogger(__name__)
 
-MAX_MESSAGES = 50  # compaction 阈值
+# ── Token 估算 ──
+
+def estimate_tokens(text: str) -> int:
+    """粗略估算文本的 token 数。
+
+    中文约 1.5 token/字符，英文约 0.75 token/单词(~4字符)。
+    混合内容取加权平均。实际误差约 ±20%，用于预算控制足够。
+    """
+    if not text:
+        return 0
+    cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff'
+                    or '\u3000' <= c <= '\u303f'
+                    or '\uff00' <= c <= '\uffef')
+    ascii_count = len(text) - cjk_count
+    return int(cjk_count * 1.5 + ascii_count * 0.3)
+
+
+# ── 常量 ──
+
+# token 预算：为对话历史保留的最大 token 数
+# Claude 的上下文窗口为 200k，预留 system prompt + 输出空间
+MAX_CONTEXT_TOKENS = 40_000
+# 压缩后目标 token 数（保留多少近期消息）
+COMPACT_TARGET_TOKENS = 15_000
+# 触发压缩的 token 阈值
+COMPACT_THRESHOLD_TOKENS = 30_000
+# 兼容旧逻辑：最大消息条数（作为备用触发器）
+MAX_MESSAGES = 80
 
 
 class Session:
-    """单个会话的消息历史"""
+    """单个会话的消息历史，支持 token 感知的上下文管理"""
 
     def __init__(self, chat_id: str) -> None:
         self.chat_id = chat_id
         self.messages: list[dict] = []
         self._summary: str = ""
+        self._total_tokens: int = 0  # 缓存的 token 计数
         self._dirty: bool = False  # 标记自上次保存后是否有变动
 
+    # ── 消息管理 ──
+
     def add_message(self, role: str, content: str, sender_name: str = "") -> None:
+        """添加一条消息到历史"""
         msg: dict = {
             "role": role,
             "content": content,
@@ -32,58 +63,190 @@ class Session:
         }
         if sender_name:
             msg["sender_name"] = sender_name
+        tokens = estimate_tokens(content)
+        msg["_tokens"] = tokens
         self.messages.append(msg)
+        self._total_tokens += tokens
         self._dirty = True
 
-    def get_messages(self) -> list[dict[str, str]]:
-        """返回用于 API 调用的消息列表（包含摘要前缀和时间戳）"""
-        msgs = []
+    def add_tool_use(self, tool_name: str, tool_input: dict, tool_use_id: str) -> None:
+        """记录工具调用（assistant 角色的 tool_use）"""
+        # 用简洁格式存储，避免占用过多 token
+        input_str = json.dumps(tool_input, ensure_ascii=False)
+        if len(input_str) > 500:
+            input_str = input_str[:497] + "..."
+        content = f"[tool_use: {tool_name}({input_str})]"
+        tokens = estimate_tokens(content)
+        self.messages.append({
+            "role": "assistant",
+            "content": content,
+            "timestamp": time.time(),
+            "is_tool_use": True,
+            "tool_name": tool_name,
+            "tool_use_id": tool_use_id,
+            "_tokens": tokens,
+        })
+        self._total_tokens += tokens
+        self._dirty = True
+
+    def add_tool_result(self, tool_use_id: str, result: str) -> None:
+        """记录工具执行结果"""
+        # 截断过长的结果
+        if len(result) > 1000:
+            result = result[:997] + "..."
+        content = f"[tool_result: {result}]"
+        tokens = estimate_tokens(content)
+        self.messages.append({
+            "role": "user",
+            "content": content,
+            "timestamp": time.time(),
+            "is_tool_result": True,
+            "tool_use_id": tool_use_id,
+            "_tokens": tokens,
+        })
+        self._total_tokens += tokens
+        self._dirty = True
+
+    # ── 上下文构建 ──
+
+    def get_messages(self, token_budget: int = MAX_CONTEXT_TOKENS) -> list[dict[str, str]]:
+        """返回用于 API 调用的消息列表，遵守 token 预算。
+
+        策略：从最新消息往前取，直到用完预算。
+        如果有摘要，在开头注入摘要上下文。
+        """
+        result_msgs: list[dict[str, str]] = []
+        budget = token_budget
+
+        # 预留摘要空间
+        summary_tokens = 0
         if self._summary:
-            msgs.append({
+            summary_tokens = estimate_tokens(self._summary) + 50  # 包装文本的开销
+            budget -= summary_tokens
+
+        # 从后往前收集消息，直到预算用完
+        selected: list[dict] = []
+        for msg in reversed(self.messages):
+            msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
+            if budget - msg_tokens < 0 and selected:
+                # 预算不够且已有消息，停止
+                break
+            selected.append(msg)
+            budget -= msg_tokens
+
+        selected.reverse()
+
+        # 注入摘要
+        if self._summary:
+            result_msgs.append({
                 "role": "user",
                 "content": (
-                    f"[之前的对话摘要] {self._summary}\n\n"
-                    "注意：以上是较早的对话摘要，请更关注下面最近的消息。"
+                    f"[之前的对话摘要]\n{self._summary}\n\n"
+                    "以上是较早对话的摘要。请更关注下面最近的消息，"
+                    "但可以参考摘要中的事实和决定。"
                 ),
             })
-            msgs.append({
+            result_msgs.append({
                 "role": "assistant",
-                "content": "好的，我已了解之前的对话内容。请继续。",
+                "content": "好的，我已了解之前的对话背景。",
             })
-        for m in self.messages:
-            ts = m.get("timestamp")
-            name = m.get("sender_name", "")
-            # 用 XML 属性注入元数据，LLM 能理解但不会模仿到回复里
-            parts = []
-            if ts:
-                t = datetime.fromtimestamp(ts, tz=CST).strftime("%H:%M")
-                parts.append(f"time={t}")
-            if name:
-                parts.append(f"from={name}")
-            if parts:
-                meta = " ".join(parts)
-                content = f"<msg {meta}>{m['content']}</msg>"
-            else:
-                content = m["content"]
-            msgs.append({"role": m["role"], "content": content})
-        return msgs
+
+        # 格式化消息
+        for m in selected:
+            # 跳过工具记录（它们只用于摘要提取，不直接发给 API）
+            if m.get("is_tool_use") or m.get("is_tool_result"):
+                continue
+
+            content = self._format_message(m)
+            result_msgs.append({"role": m["role"], "content": content})
+
+        return result_msgs
+
+    def _format_message(self, m: dict) -> str:
+        """格式化单条消息，注入时间和发送者元数据"""
+        ts = m.get("timestamp")
+        name = m.get("sender_name", "")
+        content = m.get("content", "")
+
+        parts = []
+        if ts:
+            t = datetime.fromtimestamp(ts, tz=CST).strftime("%H:%M")
+            parts.append(f"time={t}")
+        if name:
+            parts.append(f"from={name}")
+
+        if parts:
+            meta = " ".join(parts)
+            return f"<msg {meta}>{content}</msg>"
+        return content
+
+    # ── 压缩策略 ──
 
     def should_compact(self) -> bool:
-        return len(self.messages) >= MAX_MESSAGES
+        """判断是否需要压缩。使用 token 计数和消息条数双重触发。"""
+        if self._total_tokens >= COMPACT_THRESHOLD_TOKENS:
+            return True
+        if len(self.messages) >= MAX_MESSAGES:
+            return True
+        return False
 
     def compact(self, summary: str) -> None:
-        """压缩旧消息为摘要，保留最近 N 条"""
-        keep = 10
+        """压缩旧消息为摘要，保留近期消息直到目标 token 数。
+
+        与旧版固定保留 10 条不同，这里按 token 预算动态保留，
+        确保近期上下文最大化。
+        """
+        # 从后往前保留消息，直到达到目标 token 数
+        kept: list[dict] = []
+        budget = COMPACT_TARGET_TOKENS
+        for msg in reversed(self.messages):
+            msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
+            if budget - msg_tokens < 0 and kept:
+                break
+            kept.append(msg)
+            budget -= msg_tokens
+        kept.reverse()
+
+        old_count = len(self.messages)
         self._summary = summary
-        self.messages = self.messages[-keep:]
+        self.messages = kept
+        self._recalc_tokens()
         self._dirty = True
-        logger.info("会话 %s 已压缩，保留 %d 条", self.chat_id, keep)
+        logger.info(
+            "会话 %s 已压缩: %d → %d 条, ~%d tokens",
+            self.chat_id, old_count, len(kept), self._total_tokens,
+        )
+
+    def get_compaction_context(self) -> list[dict]:
+        """返回将被压缩的旧消息（用于生成摘要）"""
+        # 计算要保留的消息数
+        budget = COMPACT_TARGET_TOKENS
+        keep_from = len(self.messages)
+        for i in range(len(self.messages) - 1, -1, -1):
+            msg = self.messages[i]
+            msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
+            if budget - msg_tokens < 0:
+                break
+            keep_from = i
+            budget -= msg_tokens
+        # 返回将被压缩掉的消息
+        return self.messages[:keep_from]
+
+    def _recalc_tokens(self) -> None:
+        """重新计算总 token 数"""
+        self._total_tokens = sum(
+            m.get("_tokens", estimate_tokens(m.get("content", "")))
+            for m in self.messages
+        )
+
+    # ── 序列化 ──
 
     def to_dict(self) -> dict:
         return {
             "chat_id": self.chat_id,
             "messages": self.messages,
             "summary": self._summary,
+            "total_tokens": self._total_tokens,
         }
 
     @classmethod
@@ -91,6 +254,8 @@ class Session:
         s = cls(data["chat_id"])
         s.messages = data.get("messages", [])
         s._summary = data.get("summary", "")
+        # 重新计算 token（兼容旧数据没有 _tokens 字段的情况）
+        s._recalc_tokens()
         return s
 
 
@@ -156,6 +321,17 @@ class SessionManager:
         if active_path.exists():
             active_path.unlink()
         del self._sessions[chat_id]
+
+    def get_stats(self) -> dict:
+        """返回所有会话的统计信息"""
+        stats = {}
+        for cid, session in self._sessions.items():
+            stats[cid] = {
+                "messages": len(session.messages),
+                "tokens": session._total_tokens,
+                "has_summary": bool(session._summary),
+            }
+        return stats
 
     def _load(self) -> None:
         """加载所有活跃会话：优先读 per-chat 文件，兼容旧版 current.json"""
