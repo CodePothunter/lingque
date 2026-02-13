@@ -14,7 +14,38 @@ from lq.memory import MemoryManager
 
 logger = logging.getLogger(__name__)
 
-# LLM 可调用的工具定义（Phase 4）
+# ── 共享约束块 ──
+
+_CONSTRAINTS_PRIVATE = (
+    "\n\n<constraints>"
+    "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
+    "\n- 回复务必简短精炼，不要长篇大论"
+    "\n- 禁止使用 emoji"
+    "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
+    "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
+    "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
+    "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
+    "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
+    "\n- 当用户需要你完成编程、代码、文件操作或系统管理任务时，使用 run_claude_code 或 run_bash 工具。"
+    "对于复杂的多步骤任务优先使用 run_claude_code，简单命令使用 run_bash。"
+    "\n</constraints>"
+)
+
+_CONSTRAINTS_GROUP = (
+    "\n\n<constraints>"
+    "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
+    "\n- 回复务必简短精炼，不要长篇大论"
+    "\n- 禁止使用 emoji"
+    "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
+    "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
+    "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
+    "\n- 如果之前给了错误信息被指出，大方承认并纠正，不要嘴硬"
+    "\n- 不要编造实时数据（天气、汇率等），需要时先用 create_custom_tool 获取"
+    "\n- 如果群里有另一个 bot 已经回复了相同话题，不要重复相同内容；可以补充或接话"
+    "\n</constraints>"
+)
+
+# LLM 可调用的工具定义
 TOOLS = [
     {
         "name": "write_memory",
@@ -243,6 +274,62 @@ TOOLS = [
             "required": ["chat_id", "text", "send_at"],
         },
     },
+    {
+        "name": "run_claude_code",
+        "description": (
+            "调用 Claude Code CLI 执行复杂任务。适用于：代码编写/修改、项目分析、git 操作、"
+            "文件处理、多步骤推理任务等。Claude Code 会在工作区目录下执行，拥有完整的编程能力。"
+            "prompt 参数是你要 Claude Code 完成的具体任务描述。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "要执行的任务描述，尽量详细具体。Claude Code 会自主完成这个任务。",
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": "工作目录路径（可选，默认为工作区目录）",
+                    "default": "",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "超时时间（秒），默认 300",
+                    "default": 300,
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "run_bash",
+        "description": (
+            "执行 shell/bash 命令。适用于：查看文件内容（cat/ls）、运行脚本、管理进程（ps/kill）、"
+            "安装软件包（pip/npm/apt）、git 操作、查看系统状态等简单命令行操作。"
+            "复杂的多步骤任务请使用 run_claude_code。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "要执行的 shell 命令",
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": "工作目录路径（可选，默认为工作区目录）",
+                    "default": "",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "超时时间（秒），默认 60",
+                    "default": 60,
+                },
+            },
+            "required": ["command"],
+        },
+    },
 ]
 
 
@@ -272,11 +359,12 @@ class MessageRouter:
         self._bot_seen_ids: dict[str, set[str]] = {}  # chat_id → 已处理的 message_id
         # 回复去重：chat_id → 上次发送的文本，防止 bot 轮询循环导致重复回复
         self._last_reply_per_chat: dict[str, str] = {}
-        # Phase 3+: 注入依赖
+        # 注入依赖
         self.session_mgr: Any = None
         self.calendar: Any = None
         self.stats: Any = None
         self.cc_executor: Any = None
+        self.bash_executor: Any = None
         self.tool_registry: Any = None
         self.post_processor: Any = None
 
@@ -376,22 +464,14 @@ class MessageRouter:
             f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
             "如果涉及日程，使用 calendar 工具。"
             "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
+            "如果用户需要你执行编程任务或系统操作，使用 run_claude_code 或 run_bash 工具。"
             "\n\n<memory_guidance>"
             "\n你有两种记忆工具，请根据信息的性质选用："
             "\n- write_memory：写入全局记忆（MEMORY.md），用于跨聊天通用的信息（如用户生日、公司信息、通用偏好）"
             "\n- write_chat_memory：写入当前聊天的专属记忆，用于仅与当前对话相关的信息（如与这个人的约定、聊天中的要点、对方的个人偏好）"
             "\n当用户说「记住」什么时，判断这个信息是通用的还是专属于当前对话的，选择对应工具。"
             "\n</memory_guidance>"
-            "\n\n<constraints>"
-            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-            "\n- 回复务必简短精炼，不要长篇大论"
-            "\n- 禁止使用 emoji"
-            "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
-            "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
-            "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
-            "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
-            "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
-            "\n</constraints>"
+            f"{_CONSTRAINTS_PRIVATE}"
         )
 
         # 使用会话管理器维护上下文
@@ -456,16 +536,17 @@ class MessageRouter:
     ) -> str:
         """执行带工具调用的完整对话循环。
 
-        当 LLM 返回纯文本但暗示要做更多事时，追加一轮 prompt 催促它行动，
-        避免只说不做。支持创建工具 → 调用工具的多轮链路。
+        支持更长的工具调用链（最多 20 轮），适应 Claude Code 和 Bash
+        等需要多步骤执行的复杂任务。工具调用记录会写入会话历史。
         """
         all_tools = self._build_all_tools()
         resp = await self.executor.reply_with_tools(system, messages, all_tools)
 
-        max_iterations = 10
+        # 复杂任务（如 Claude Code 执行）可能需要更多轮次
+        max_iterations = 20
         iteration = 0
-        nudge_count = 0  # 催促次数，防止无限催促
-        tools_called: list[str] = []  # 跟踪已调用的工具名
+        nudge_count = 0
+        tools_called: list[str] = []
 
         while iteration < max_iterations:
             iteration += 1
@@ -475,13 +556,26 @@ class MessageRouter:
                 tool_results = []
                 for tc in resp.tool_calls:
                     tools_called.append(tc["name"])
+                    # 记录工具调用到会话历史
+                    if self.session_mgr:
+                        session = self.session_mgr.get_or_create(chat_id)
+                        session.add_tool_use(tc["name"], tc["input"], tc["id"])
                     result = await self._execute_tool(tc["name"], tc["input"], chat_id)
+                    result_str = json.dumps(result, ensure_ascii=False)
                     tool_results.append({
                         "tool_use_id": tc["id"],
-                        "content": json.dumps(result, ensure_ascii=False),
+                        "content": result_str,
                     })
+                    # 记录工具结果到会话历史
+                    if self.session_mgr:
+                        session = self.session_mgr.get_or_create(chat_id)
+                        session.add_tool_result(tc["id"], result_str)
+
                 # 工具执行后刷新工具列表（可能有新工具被创建）
                 all_tools = self._build_all_tools()
+                # 创建自定义工具后失效自我认知缓存
+                if "create_custom_tool" in tools_called or "delete_custom_tool" in tools_called:
+                    self.memory.invalidate_awareness_cache()
                 resp = await self.executor.continue_after_tools(
                     system, resp.messages, all_tools, tool_results, resp.raw_response
                 )
@@ -491,13 +585,11 @@ class MessageRouter:
                 and nudge_count < 1
                 and self._is_action_preamble(resp.text)
             ):
-                # LLM 输出了极短的行动前奏（"好的，我来..."）但没调工具 → 催促一次
                 nudge_count += 1
                 logger.info(
                     "检测到行动前奏，催促执行 (%d/1) 原文: %s",
                     nudge_count, resp.text[:100],
                 )
-                # 不发送前奏文本给用户（"好的，我来..."不是有效回复）
                 continued_messages = resp.messages + [
                     {"role": "user", "content": "继续，直接调用工具即可。"}
                 ]
@@ -505,7 +597,6 @@ class MessageRouter:
                     system, continued_messages, all_tools
                 )
             else:
-                # 正常结束
                 break
 
         # 发送最终文本回复
@@ -513,7 +604,7 @@ class MessageRouter:
             final = text_transform(resp.text) if text_transform else resp.text
             logger.info("回复: %s", final[:80])
             await self._send_reply(final, chat_id, reply_to_message_id)
-            resp.text = final  # 确保返回值也是处理后的文本
+            resp.text = final
 
         # 后处理：检测未执行的意图并补救
         if self.post_processor and resp.text:
@@ -706,6 +797,26 @@ class MessageRouter:
                 asyncio.ensure_future(_delayed_send())
                 return {"success": True, "message": f"已计划在 {send_at_str} 发送消息"}
 
+            elif name == "run_claude_code":
+                if not self.cc_executor:
+                    return {"success": False, "error": "Claude Code 执行器未加载"}
+                result = await self.cc_executor.execute_with_context(
+                    prompt=input_data["prompt"],
+                    working_dir=input_data.get("working_dir", ""),
+                    timeout=input_data.get("timeout", 300),
+                )
+                return result
+
+            elif name == "run_bash":
+                if not self.bash_executor:
+                    return {"success": False, "error": "Bash 执行器未加载"}
+                result = await self.bash_executor.execute(
+                    command=input_data["command"],
+                    working_dir=input_data.get("working_dir", ""),
+                    timeout=input_data.get("timeout", 60),
+                )
+                return result
+
             else:
                 # 尝试自定义工具注册表
                 if self.tool_registry and self.tool_registry.has_tool(name):
@@ -846,14 +957,7 @@ class MessageRouter:
             "\n- write_memory：写入全局记忆，用于跨聊天通用的信息"
             "\n- write_chat_memory：写入当前群聊的专属记忆，用于仅与本群相关的信息（如群聊话题、群友特点）"
             "\n</memory_guidance>"
-            "\n\n<constraints>"
-            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-            "\n- 回复务必简短精炼，不要长篇大论"
-            "\n- 禁止使用 emoji"
-            "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
-            "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
-            "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
-            "\n</constraints>"
+            f"{_CONSTRAINTS_GROUP}"
         )
 
         # 构建 name_to_id 映射，用于 @名字 → <at> 标签转换
@@ -1023,17 +1127,7 @@ class MessageRouter:
             f"\n\n你决定主动参与群聊对话。原因：{judgment.get('reason', '')}\n"
             f"最近的群聊消息：\n{conversation}\n\n"
             "如果要提及某人，使用 @名字 格式。回复保持简洁自然。"
-            "\n\n<constraints>"
-            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-            "\n- 回复务必简短精炼，不要长篇大论"
-            "\n- 禁止使用 emoji"
-            "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
-            "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
-            "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
-            "\n- 如果之前给了错误信息被指出，大方承认并纠正，不要嘴硬"
-            "\n- 不要编造实时数据（天气、汇率等），需要时先用 create_custom_tool 获取"
-            "\n- 如果群里有另一个 bot 已经回复了相同话题，不要重复相同内容；可以补充或接话"
-            "\n</constraints>"
+            f"{_CONSTRAINTS_GROUP}"
         )
 
         # 校验 reply_to_message_id
@@ -1182,21 +1276,36 @@ class MessageRouter:
                     timer.cancel()
 
     async def _compact_session(self, session: Any) -> None:
-        """压缩会话：提取长期记忆到 chat_memory，生成摘要后裁剪消息"""
-        flush_prompt = self.memory.flush_before_compaction(session.messages)
-        extracted = await self.executor.reply("", flush_prompt)
-        if extracted.strip() and extracted.strip() != "无":
-            self.memory.append_daily(f"### 会话记忆提取\n{extracted}\n", chat_id=session.chat_id)
-            # 同时写入 per-chat 长期记忆，避免 daily log 过期后丢失
-            from datetime import date as _date
-            self.memory.append_chat_memory(
-                session.chat_id,
-                f"\n## 记忆提取 ({_date.today().isoformat()})\n{extracted}\n",
-            )
+        """压缩会话：提取长期记忆到 chat_memory，生成结构化摘要后裁剪消息"""
+        # 仅对将被压缩的旧消息做记忆提取
+        old_messages = session.get_compaction_context()
+        if old_messages:
+            flush_prompt = self.memory.flush_before_compaction(old_messages)
+            extracted = await self.executor.reply("", flush_prompt)
+            if extracted.strip() and extracted.strip() != "无":
+                self.memory.append_daily(
+                    f"### 会话记忆提取\n{extracted}\n",
+                    chat_id=session.chat_id,
+                )
+                # 同时写入 per-chat 长期记忆，避免 daily log 过期后丢失
+                from datetime import date as _date
+                self.memory.append_chat_memory(
+                    session.chat_id,
+                    f"\n## 记忆提取 ({_date.today().isoformat()})\n{extracted}\n",
+                )
 
+        # 生成结构化摘要
         summary_prompt = (
-            "请用 2-3 句话总结以下对话的关键内容：\n"
-            + "\n".join(f"[{m['role']}] {m['content']}" for m in session.messages)
+            "请总结以下对话的关键内容，包括：\n"
+            "1. 讨论的主要话题\n"
+            "2. 做出的决定或达成的共识\n"
+            "3. 使用了哪些工具完成了什么任务\n"
+            "4. 用户表达的偏好或需求\n"
+            "用 3-5 句话概括，保留具体细节（如日期、名字、数字）。\n\n"
+            + "\n".join(
+                f"[{m.get('role', '?')}] {m.get('content', '')[:200]}"
+                for m in old_messages
+            )
         )
         summary = await self.executor.reply("", summary_prompt)
         session.compact(summary)

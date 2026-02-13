@@ -12,7 +12,7 @@ from pathlib import Path
 
 from lq.config import LQConfig
 from lq.executor.api import DirectAPIExecutor
-from lq.executor.claude_code import ClaudeCodeExecutor
+from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.feishu.listener import FeishuListener
 from lq.feishu.sender import FeishuSender
 from lq.heartbeat import HeartbeatRunner
@@ -108,14 +108,18 @@ class AssistantGateway:
         except Exception:
             logger.warning("日历模块加载失败", exc_info=True)
 
+        # 初始化 Bash 执行器
+        bash_executor = BashExecutor(self.home)
+
         # 创建路由器并注入依赖
         router = MessageRouter(executor, memory, sender, bot_open_id, bot_name)
         router.session_mgr = session_mgr
         router.calendar = calendar
         router.stats = stats
         router.cc_executor = cc_executor
+        router.bash_executor = bash_executor
         router.tool_registry = tool_registry
-        logger.info("会话管理器已加载")
+        logger.info("会话管理器已加载（含 Claude Code + Bash 执行器）")
 
         # 初始化后处理管线
         from lq.intent import IntentDetector
