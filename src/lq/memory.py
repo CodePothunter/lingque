@@ -28,8 +28,12 @@ class MemoryManager:
             return mem_path.read_text(encoding="utf-8")
         return ""
 
-    def build_context(self) -> str:
-        """拼接 SOUL.md + MEMORY.md + 今天/昨天日志 + 自我认知"""
+    def build_context(self, chat_id: str = "") -> str:
+        """拼接 SOUL.md + MEMORY.md + 当前聊天窗口的日志 + 自我认知
+
+        Args:
+            chat_id: 当前聊天窗口 ID。传入后仅注入该窗口的日志条目。
+        """
         parts = []
 
         # 注入当前准确时间（东八区）
@@ -45,11 +49,13 @@ class MemoryManager:
         if memory:
             parts.append(f"<memory>\n{memory}\n</memory>")
 
-        today = date.today()
-        for d in [today - timedelta(days=1), today]:
-            log = self._read_daily(d)
-            if log:
-                parts.append(f"<daily_log date=\"{d.isoformat()}\">\n{log}\n</daily_log>")
+        # 按 chat_id 过滤日志，避免跨聊天窗口泄露
+        if chat_id:
+            today = date.today()
+            for d in [today - timedelta(days=1), today]:
+                log = self._read_daily_for_chat(d, chat_id)
+                if log:
+                    parts.append(f"<daily_log date=\"{d.isoformat()}\">\n{log}\n</daily_log>")
 
         parts.append(self._build_self_awareness())
 
@@ -161,11 +167,12 @@ class MemoryManager:
             f"已安装的自定义工具:\n{tool_list}\n"
         )
 
-    def append_daily(self, content: str) -> None:
-        """追加内容到今日日志"""
+    def append_daily(self, content: str, chat_id: str = "") -> None:
+        """追加内容到今日日志，带 chat_id 标签便于过滤"""
         today_path = self.memory_dir / f"{date.today().isoformat()}.md"
+        tag = f"[{chat_id}] " if chat_id else ""
         with open(today_path, "a", encoding="utf-8") as f:
-            f.write(content.rstrip() + "\n\n")
+            f.write(f"{tag}{content.rstrip()}\n\n")
 
     def update_memory(self, section: str, content: str) -> None:
         """更新 MEMORY.md 中特定段落"""
@@ -225,3 +232,19 @@ class MemoryManager:
         if path.exists():
             return path.read_text(encoding="utf-8")
         return ""
+
+    def _read_daily_for_chat(self, d: date, chat_id: str) -> str:
+        """读取日志中属于指定 chat_id 的条目"""
+        raw = self._read_daily(d)
+        if not raw:
+            return ""
+        tag = f"[{chat_id}] "
+        lines = []
+        for line in raw.split("\n"):
+            if line.startswith(tag):
+                # 去掉标签前缀，保留内容
+                lines.append(line[len(tag):])
+            elif not line.startswith("[") and line.strip():
+                # 无标签的旧条目（兼容历史数据）— 跳过，因为无法确定归属
+                pass
+        return "\n".join(lines) if lines else ""

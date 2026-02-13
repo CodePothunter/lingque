@@ -297,8 +297,8 @@ class MessageRouter:
             return
 
         chat_id = message.chat_id
-        sender_name = event.sender.sender_id.open_id
-        logger.info("收到私聊 [%s]: %s", sender_name[:12], text[:80])
+        sender_name = await self.sender.get_user_name(event.sender.sender_id.open_id)
+        logger.info("收到私聊 [%s]: %s", sender_name, text[:80])
 
         # 防抖：收集连续消息，延迟后统一处理
         pending = self._private_pending.get(chat_id)
@@ -340,7 +340,7 @@ class MessageRouter:
         message_id = pending["message_id"]
         sender_name = pending["sender_name"]
 
-        system = self.memory.build_context()
+        system = self.memory.build_context(chat_id=chat_id)
         system += (
             "\n\n你正在和用户私聊。请直接、简洁地回复。"
             "如果用户要求记住什么，使用 write_memory 工具。"
@@ -382,7 +382,7 @@ class MessageRouter:
                 await self._compact_session(session)
 
         # 记录日志
-        self.memory.append_daily(f"- 私聊 [{sender_name[:8]}]: {combined_text[:50]}... → {'已回复' if reply_text else '回复失败'}\n")
+        self.memory.append_daily(f"- 私聊 [{sender_name}]: {combined_text[:50]}... → {'已回复' if reply_text else '回复失败'}\n", chat_id=chat_id)
 
     def _build_all_tools(self) -> list[dict]:
         """合并内置工具和自定义工具的定义列表。"""
@@ -650,8 +650,16 @@ class MessageRouter:
 
         # 第一层规则：极短无实质消息直接忽略
         text = self._extract_text(message)
-        if not text or rule_check(text) == "IGNORE":
+        if not text:
+            logger.debug("群聊旁听: 非文本消息，跳过")
             return
+        if rule_check(text) == "IGNORE":
+            logger.debug("群聊旁听: 无实质消息，跳过: %s", text[:20])
+            return
+
+        sender_id = event.sender.sender_id.open_id
+        sender_name = await self.sender.get_user_name(sender_id)
+        logger.info("群聊旁听 [%s] %s: %s", chat_id[-8:], sender_name, text[:50])
 
         # 第二层：缓冲区
         if chat_id not in self.group_buffers:
@@ -660,15 +668,18 @@ class MessageRouter:
         buf = self.group_buffers[chat_id]
         buf.add({
             "text": text,
-            "sender_id": event.sender.sender_id.open_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
             "message_id": message.message_id,
             "chat_id": chat_id,
         })
 
         if buf.should_evaluate():
+            logger.info("群聊缓冲区已满 (%d条)，触发评估", buf._new_count)
             await self._evaluate_buffer(chat_id)
         else:
             # 消息数未达阈值，设置超时定时器确保安静群聊也能触发评估
+            logger.info("群聊缓冲 %d/%d，%ds 后超时评估", buf._new_count, buf.eval_threshold, int(buf.max_age_seconds))
             loop = asyncio.get_running_loop()
             buf.schedule_timeout(loop, lambda cid=chat_id: asyncio.ensure_future(self._evaluate_buffer(cid)))
 
@@ -684,20 +695,47 @@ class MessageRouter:
                 )
             return
 
-        text = self._strip_at_mentions(text)
-        sender_name = event.sender.sender_id.open_id
+        sender_id = event.sender.sender_id.open_id
+        text = self._strip_at_mentions(text).strip()
+        if not text:
+            # 空 @：从缓冲区取该用户最近的消息作为上下文
+            buf = self.group_buffers.get(message.chat_id)
+            if buf:
+                recent = buf.get_recent(5)
+                sender_msgs = [m["text"] for m in recent if m["sender_id"] == sender_id]
+                if sender_msgs:
+                    text = sender_msgs[-1]
+                    logger.info("群聊 @at 空消息，取缓冲区上文: %s", text[:50])
+            if not text:
+                text = "（@了我但没说具体内容）"
+
+        sender_name = await self.sender.get_user_name(sender_id)
         logger.info("群聊 @at [%s]: %s", sender_name, text[:50])
 
-        system = self.memory.build_context()
+        # 构建群聊上下文
+        group_context = ""
+        buf = self.group_buffers.get(message.chat_id)
+        if buf:
+            recent = buf.get_recent(10)
+            if recent:
+                lines = []
+                for m in recent:
+                    name = m.get("sender_name", "未知")
+                    lines.append(f"{name}：{m['text']}")
+                group_context = "\n群聊近期消息：\n" + "\n".join(lines)
+
+        system = self.memory.build_context(chat_id=message.chat_id)
         system += (
-            "\n\n你在群聊中被 @at 了，请针对对方的问题简洁回复。"
-            "如果用户要求记住什么，使用 write_memory 工具。"
+            f"\n\n你在群聊中被 {sender_name} @at 了，请针对对方的问题简洁回复。"
+            f"{group_context}"
+            "\n如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
             "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
             "\n\n<constraints>"
             "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
             "\n- 回复务必简短精炼，不要长篇大论"
             "\n- 禁止使用 emoji"
+            "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
             "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
             "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
             "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
@@ -731,12 +769,12 @@ class MessageRouter:
 
         soul = self.memory.read_soul()
         conversation = "\n".join(
-            f"[{m['sender_id'][:8]}] {m['text']}" for m in recent
+            f"[{m['message_id']}] {m.get('sender_name', '未知')}：{m['text']}" for m in recent
         )
 
         prompt = (
             f"你是一个 AI 助理。以下是你的人格定义：\n{soul}\n\n"
-            f"以下是群聊中的最近消息：\n{conversation}\n\n"
+            f"以下是群聊中的最近消息（方括号内是消息ID）：\n{conversation}\n\n"
             "请判断你是否应该主动参与这个对话。考虑：\n"
             "1. 对话是否涉及你能帮助的话题？\n"
             "2. 你的介入是否会增加价值？\n"
@@ -761,26 +799,49 @@ class MessageRouter:
 
     async def _intervene(self, chat_id: str, recent: list[dict], judgment: dict) -> None:
         """执行群聊介入"""
-        system = self.memory.build_context()
-        conversation = "\n".join(
-            f"[{m['sender_id'][:8]}] {m['text']}" for m in recent
+        system = self.memory.build_context(chat_id=chat_id)
+        # 用真实名字构建对话上下文
+        name_to_id: dict[str, str] = {}
+        lines: list[str] = []
+        for m in recent:
+            name = m.get("sender_name", "未知")
+            name_to_id[name] = m["sender_id"]
+            lines.append(f"{name}：{m['text']}")
+        conversation = "\n".join(lines)
+
+        system += (
+            f"\n\n你决定主动参与群聊对话。原因：{judgment.get('reason', '')}\n"
+            f"最近的群聊消息：\n{conversation}\n\n"
+            "如果要提及某人，使用 @名字 格式。回复保持简洁自然。"
         )
-        system += f"\n\n你决定主动参与群聊对话。原因：{judgment.get('reason', '')}\n最近的群聊消息：\n{conversation}"
 
-        reply = await self.executor.reply(system, "请根据上下文生成一条自然的群聊回复。保持简洁。")
+        reply = await self.executor.reply(system, "请根据上下文生成一条自然的群聊回复。")
 
+        # 将 @名字 替换为飞书 <at> 标记
+        reply = self._replace_at_mentions(reply, name_to_id)
+
+        # 校验 reply_to_message_id 是否为合法的飞书消息 ID（om_ 开头）
         reply_to = judgment.get("reply_to_message_id")
-        if reply_to and reply_to != "null":
+        valid_msg_ids = {m["message_id"] for m in recent}
+        if reply_to and isinstance(reply_to, str) and reply_to.startswith("om_") and reply_to in valid_msg_ids:
             await self.sender.reply_text(reply_to, reply)
         else:
             await self.sender.send_text(chat_id, reply)
+
+    @staticmethod
+    def _replace_at_mentions(text: str, name_to_id: dict[str, str]) -> str:
+        """将 @名字 替换为飞书 <at> 标记，按名字长度降序匹配避免子串冲突"""
+        for name in sorted(name_to_id, key=len, reverse=True):
+            tag = f'<at user_id="{name_to_id[name]}">{name}</at>'
+            text = text.replace(f"@{name}", tag)
+        return text
 
     async def _compact_session(self, session: Any) -> None:
         """压缩会话"""
         flush_prompt = self.memory.flush_before_compaction(session.messages)
         extracted = await self.executor.reply("", flush_prompt)
         if extracted.strip() and extracted.strip() != "无":
-            self.memory.append_daily(f"### 会话记忆提取\n{extracted}\n")
+            self.memory.append_daily(f"### 会话记忆提取\n{extracted}\n", chat_id=session.chat_id)
 
         summary_prompt = (
             "请用 2-3 句话总结以下对话的关键内容：\n"

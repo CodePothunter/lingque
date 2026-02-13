@@ -32,7 +32,7 @@ def _extract_memory_params(user_msg: str, _llm_resp: str) -> dict:
     """尝试从用户消息中提取 write_memory 参数"""
     # "记住X" / "别忘了X" → content = X
     for pat in (
-        r"(?:记住|记一下|别忘了|帮我记)\s*[，,：:]*\s*(.+)",
+        r"(?:记住|记一下|别忘了|帮我记|请记)\s*[，,：:]*\s*(.+)",
         r"(.+?)\s*(?:记住|记一下|别忘了)",
     ):
         m = re.search(pat, user_msg, re.DOTALL)

@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+CST = timezone(timedelta(hours=8))
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +31,28 @@ class Session:
         })
 
     def get_messages(self) -> list[dict[str, str]]:
-        """返回用于 API 调用的消息列表（包含摘要前缀）"""
+        """返回用于 API 调用的消息列表（包含摘要前缀和时间戳）"""
         msgs = []
         if self._summary:
             msgs.append({
                 "role": "user",
-                "content": f"[之前的对话摘要] {self._summary}",
+                "content": (
+                    f"[之前的对话摘要] {self._summary}\n\n"
+                    "注意：以上是较早的对话摘要，请更关注下面最近的消息。"
+                ),
             })
             msgs.append({
                 "role": "assistant",
                 "content": "好的，我已了解之前的对话内容。请继续。",
             })
         for m in self.messages:
-            msgs.append({"role": m["role"], "content": m["content"]})
+            ts = m.get("timestamp")
+            if ts:
+                t = datetime.fromtimestamp(ts, tz=CST).strftime("%H:%M")
+                content = f"[{t}] {m['content']}"
+            else:
+                content = m["content"]
+            msgs.append({"role": m["role"], "content": content})
         return msgs
 
     def should_compact(self) -> bool:

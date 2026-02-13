@@ -71,6 +71,7 @@ class FeishuSender:
         self._app_secret = app_secret
         self._tenant_access_token: str | None = None
         self._token_expires_at: float = 0.0  # Unix timestamp
+        self._user_name_cache: dict[str, str] = {}  # open_id → 名字
 
     async def send_text(self, chat_id: str, text: str) -> str | None:
         """发送文本消息到指定会话，返回 message_id。
@@ -183,6 +184,34 @@ class FeishuSender:
             bot.get("open_id"),
         )
         return bot
+
+    async def get_user_name(self, open_id: str) -> str:
+        """获取用户名，带内存缓存。"""
+        cached = self._user_name_cache.get(open_id)
+        if cached is not None:
+            return cached
+
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    f"https://open.feishu.cn/open-apis/contact/v3/users/{open_id}",
+                    params={"user_id_type": "open_id"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            name = data.get("data", {}).get("user", {}).get("name", "")
+            if name:
+                self._user_name_cache[open_id] = name
+                return name
+        except Exception:
+            logger.warning("获取用户名失败: %s", open_id)
+
+        # 回退：用 open_id 尾部
+        fallback = open_id[-6:]
+        self._user_name_cache[open_id] = fallback
+        return fallback
 
     async def _get_tenant_token(self) -> str:
         """获取 tenant_access_token，过期前自动刷新"""

@@ -25,7 +25,7 @@ class MessageBuffer:
     def __init__(
         self,
         max_messages: int = 20,
-        max_age_seconds: float = 60,
+        max_age_seconds: float = 10,
         eval_threshold: int = 5,
     ) -> None:
         self.max_messages = max_messages
