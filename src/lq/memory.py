@@ -7,6 +7,10 @@ import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from lq.feishu.sender import FeishuSender
 
 from lq.prompts import (
     TAG_SOUL, TAG_MEMORY, TAG_CHAT_MEMORY, TAG_DAILY_LOG, TAG_SELF_AWARENESS,
@@ -60,7 +64,25 @@ class MemoryManager:
             return mem_path.read_text(encoding="utf-8")
         return ""
 
-    def build_context(self, chat_id: str = "", include_tools_awareness: bool = True) -> str:
+    def build_neighbor_context(self, sender: FeishuSender, chat_id: str) -> str:
+        """构建群里其他 bot 的上下文信息"""
+        if not sender or not chat_id:
+            return ""
+        try:
+            bot_ids = sender.get_bot_members(chat_id)
+        except Exception:
+            logger.warning("构建邻居上下文失败 chat=%s", chat_id[-8:], exc_info=True)
+            return ""
+        if not bot_ids:
+            return ""
+        lines = ["<neighbors>", "群里还有以下 AI 助理："]
+        for bid in bot_ids:
+            name = sender.get_member_name(bid)
+            lines.append(f"- {name}")
+        lines.append("</neighbors>")
+        return "\n".join(lines)
+
+    def build_context(self, chat_id: str = "", include_tools_awareness: bool = True, sender: FeishuSender | None = None) -> str:
         """拼接系统 prompt，带 token 预算控制。
 
         各部分按优先级分配预算：
@@ -124,6 +146,12 @@ class MemoryManager:
         if include_tools_awareness:
             awareness = self._get_cached_awareness()
             parts.append(awareness)
+
+        # 6. 邻居感知 — 群里的其他 bot
+        if sender and chat_id:
+            neighbor_ctx = self.build_neighbor_context(sender, chat_id)
+            if neighbor_ctx:
+                parts.append(neighbor_ctx)
 
         return "\n\n".join(parts)
 

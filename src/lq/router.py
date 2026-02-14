@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
+import time
 from typing import Any
 
 from lq.buffer import MessageBuffer, rule_check
@@ -363,6 +365,16 @@ class MessageRouter:
         self._bot_seen_ids: dict[str, set[str]] = {}  # chat_id → 已处理的 message_id
         # 回复去重：chat_id → 上次发送的文本，防止 bot 轮询循环导致重复回复
         self._last_reply_per_chat: dict[str, str] = {}
+        # 活跃群聊跟踪：chat_id → 最近一次消息的 time.time()
+        self._active_groups: dict[str, float] = {}
+        # 主动轮询已知消息 ID（去重用）
+        self._polled_msg_ids: dict[str, set[str]] = {}
+        # Reaction 意图信号：chat_id → {bot_open_id: timestamp}
+        self._thinking_signals: dict[str, dict[str, float]] = {}
+        # 本实例添加的 reaction_id 用于清理：message_id → reaction_id
+        self._my_reaction_ids: dict[str, str] = {}
+        # 意图信号使用的 emoji 类型
+        self._thinking_emoji: str = "OnIt"
         # 注入依赖
         self.session_mgr: Any = None
         self.calendar: Any = None
@@ -384,8 +396,114 @@ class MessageRouter:
             chat_id = data.get("chat_id")
             if chat_id:
                 await self._evaluate_buffer(chat_id)
+        elif event_type == "reaction.created":
+            self._handle_reaction_event(data)
         else:
             logger.debug("忽略事件类型: %s", event_type)
+
+    # ── 活跃群聊跟踪（供 gateway 主动轮询使用）──
+
+    def register_active_group(self, chat_id: str) -> None:
+        """标记群聊为活跃（收到消息时调用）"""
+        self._active_groups[chat_id] = time.time()
+
+    def get_active_groups(self, ttl: float = 600.0) -> list[str]:
+        """返回近 10 分钟内有消息的群聊 ID 列表"""
+        now = time.time()
+        expired = [cid for cid, ts in self._active_groups.items() if now - ts > ttl]
+        for cid in expired:
+            self._active_groups.pop(cid, None)
+            self._polled_msg_ids.pop(cid, None)
+            self._thinking_signals.pop(cid, None)
+        # 清理过期的 reaction ID 缓存（超过 5 分钟的条目）
+        stale_rids = [mid for mid, _ in self._my_reaction_ids.items()
+                      if not any(mid in {m.get("message_id", "") for m in buf.get_recent(20)}
+                                 for buf in self.group_buffers.values())]
+        for mid in stale_rids:
+            self._my_reaction_ids.pop(mid, None)
+        return list(self._active_groups)
+
+    async def inject_polled_message(self, chat_id: str, msg: dict) -> None:
+        """将主动轮询发现的 bot 消息注入群聊缓冲区（去重）"""
+        msg_id = msg.get("message_id", "")
+        if not msg_id:
+            return
+
+        known = self._polled_msg_ids.setdefault(chat_id, set())
+        if msg_id in known:
+            return
+
+        # 也检查 buffer 中是否已有此消息
+        buf = self.group_buffers.get(chat_id)
+        if buf:
+            buf_ids = {m.get("message_id", "") for m in buf.get_recent(20)}
+            if msg_id in buf_ids:
+                known.add(msg_id)
+                return
+
+        known.add(msg_id)
+
+        # 注入 buffer
+        if chat_id not in self.group_buffers:
+            self.group_buffers[chat_id] = MessageBuffer()
+        buf = self.group_buffers[chat_id]
+        buf.add(msg)
+
+        sender_name = msg.get("sender_name", msg.get("sender_id", "")[-6:])
+        logger.info(
+            "主动轮询注入 bot 消息 [%s] %s: %s",
+            chat_id[-8:], sender_name, msg.get("text", "")[:50],
+        )
+
+    # ── Reaction 意图信号处理 ──
+
+    def _handle_reaction_event(self, data: dict) -> None:
+        """处理 reaction WS 事件，更新 thinking_signals"""
+        emoji = data.get("emoji_type", "")
+        if emoji != self._thinking_emoji:
+            return  # 不是约定的意图信号 emoji
+        operator_id = data.get("operator_id", "")
+        if not operator_id or operator_id == self.bot_open_id:
+            return  # 忽略自己的 reaction
+        message_id = data.get("message_id", "")
+
+        # 找到此消息所属的群聊
+        chat_id = ""
+        for cid, buf in self.group_buffers.items():
+            for m in buf.get_recent(20):
+                if m.get("message_id") == message_id:
+                    chat_id = cid
+                    break
+            if chat_id:
+                break
+
+        if not chat_id:
+            # 消息不在已知 buffer 中，丢弃（无法关联到群聊则无意义）
+            logger.debug("收到 reaction 但无法关联群聊，丢弃: msg=%s", message_id[-8:])
+            return
+
+        signals = self._thinking_signals.setdefault(chat_id, {})
+        signals[operator_id] = time.time()
+        bot_name = self.sender._user_name_cache.get(operator_id, operator_id[-6:])
+        logger.info("收到意图信号: %s 正在思考 [%s]", bot_name, chat_id[-8:])
+
+    def _get_thinking_bots(self, chat_id: str) -> list[str]:
+        """返回正在思考的其他 bot 名字列表（15 秒内有 thinking 信号的）"""
+        signals = self._thinking_signals.get(chat_id, {})
+        if not signals:
+            return []
+        now = time.time()
+        active: list[str] = []
+        expired: list[str] = []
+        for bot_id, ts in signals.items():
+            if now - ts > 15:
+                expired.append(bot_id)
+            elif bot_id != self.bot_open_id:
+                name = self.sender._user_name_cache.get(bot_id, bot_id[-6:])
+                active.append(name)
+        for bot_id in expired:
+            signals.pop(bot_id, None)
+        return active
 
     async def _dispatch_message(self, event: Any) -> None:
         """根据消息类型分发"""
@@ -827,6 +945,7 @@ class MessageRouter:
         """处理群聊消息"""
         message = event.message
         chat_id = message.chat_id
+        self.register_active_group(chat_id)
 
         # 第一层：检查是否被 @at
         mentions = getattr(message, "mentions", None)
@@ -890,6 +1009,7 @@ class MessageRouter:
     async def _handle_group_at(self, event: Any) -> None:
         """处理群聊 @at 消息 — 必须回复"""
         message = event.message
+        self.register_active_group(message.chat_id)
         text = self._extract_text(message)
         if not text:
             if self._is_non_text_message(message):
@@ -935,7 +1055,7 @@ class MessageRouter:
                         lines.append(GROUP_MSG_OTHER.format(name=name, text=m['text']))
                 group_context = GROUP_CONTEXT_HEADER.format(messages="\n".join(lines))
 
-        system = self.memory.build_context(chat_id=message.chat_id)
+        system = self.memory.build_context(chat_id=message.chat_id, sender=self.sender)
         system += GROUP_AT_SYSTEM_SUFFIX.format(
             sender_name=sender_name, chat_id=message.chat_id, group_context=group_context
         )
@@ -1027,6 +1147,44 @@ class MessageRouter:
 
         buf.mark_evaluated()
 
+        # ── 协作信号预处理（独立 try-except，不阻塞主判断流程）──
+        last_msg_id = ""
+        reaction_id = ""
+        collab_context = ""
+        try:
+            # 意图信号检查：如果其他 bot 正在思考，延迟让步
+            thinking_bots = self._get_thinking_bots(chat_id)
+            if thinking_bots:
+                names = "、".join(thinking_bots)
+                logger.info("%s 正在思考 %s，延迟评估", names, chat_id[-8:])
+                self._record_collab_event(chat_id, "deferred", self.bot_name, f"让步给{names}")
+                await asyncio.sleep(random.uniform(3, 5))
+                recent = buf.get_recent(10)
+
+            # 添加自己的 "thinking" reaction 到最新消息
+            last_msg_id = recent[-1].get("message_id", "") if recent else ""
+            if last_msg_id:
+                reaction_id = await self.sender.add_reaction(last_msg_id, self._thinking_emoji) or ""
+                if reaction_id:
+                    self._my_reaction_ids[last_msg_id] = reaction_id
+
+            # 随机 jitter 降低碰撞概率
+            await asyncio.sleep(random.uniform(0, 1.5))
+
+            # 注入协作记忆（具名 bot 协作历史）
+            if self.memory:
+                chat_mem = self.memory.read_chat_memory(chat_id)
+                if chat_mem and "## 协作模式" in chat_mem:
+                    section = chat_mem.split("## 协作模式", 1)[1]
+                    next_section = section.find("\n## ")
+                    if next_section != -1:
+                        section = section[:next_section]
+                    section = section.strip()
+                    if section:
+                        collab_context = f"\n\n近期协作记录：\n{section}\n根据历史模式和各助理的表现决定是否介入。"
+        except Exception:
+            logger.warning("协作信号预处理失败 chat=%s", chat_id[-8:], exc_info=True)
+
         # 从 API 拉取近期消息，补充事件机制收不到的机器人消息
         recent = await self._enrich_with_api_messages(chat_id, recent)
 
@@ -1061,7 +1219,8 @@ class MessageRouter:
                 return
 
         prompt = GROUP_EVAL_PROMPT.format(
-            bot_name=my_name or SENDER_UNKNOWN, soul=soul, conversation=conversation
+            bot_name=my_name or SENDER_UNKNOWN, soul=soul,
+            conversation=conversation, collab_context=collab_context
         )
 
         try:
@@ -1073,15 +1232,26 @@ class MessageRouter:
 
             if judgment.get("should_intervene"):
                 logger.info("决定介入群聊 %s: %s", chat_id, judgment.get("reason"))
-                await self._intervene(chat_id, recent, judgment)
+                await self._intervene(chat_id, recent, judgment, last_msg_id)
             else:
                 logger.debug("不介入群聊 %s: %s", chat_id, judgment.get("reason"))
-        except (json.JSONDecodeError, Exception):
+                # 不介入 → 清除 thinking reaction
+                if last_msg_id and reaction_id:
+                    await self.sender.remove_reaction(last_msg_id, reaction_id)
+                    self._my_reaction_ids.pop(last_msg_id, None)
+        except Exception:
             logger.exception("介入判断失败")
+            # 异常时也清除 reaction
+            if last_msg_id and reaction_id:
+                await self.sender.remove_reaction(last_msg_id, reaction_id)
+                self._my_reaction_ids.pop(last_msg_id, None)
 
-    async def _intervene(self, chat_id: str, recent: list[dict], judgment: dict) -> None:
+    async def _intervene(
+        self, chat_id: str, recent: list[dict], judgment: dict,
+        thinking_msg_id: str = "",
+    ) -> None:
         """执行群聊介入"""
-        system = self.memory.build_context(chat_id=chat_id)
+        system = self.memory.build_context(chat_id=chat_id, sender=self.sender)
         # 用真实名字构建对话上下文，标注 bot 消息
         name_to_id: dict[str, str] = {}
         lines: list[str] = []
@@ -1127,6 +1297,98 @@ class MessageRouter:
 
         if reply_text:
             self._schedule_bot_poll(chat_id)
+            self._record_collab_event(
+                chat_id, "responded", self.bot_name,
+                judgment.get("reason", "")[:50],
+            )
+
+            # ── 碰撞检测：仅在群内有其他 bot 时执行 ──
+            if self.sender.get_bot_members(chat_id):
+                await asyncio.sleep(2)
+                try:
+                    api_msgs = await self.sender.fetch_chat_messages(chat_id, 5)
+                    known_ids = {m["message_id"] for m in recent}
+                    other_bot_replies = [
+                        m for m in api_msgs
+                        if m.get("sender_type") == "app"
+                        and m.get("sender_id") != self.bot_open_id
+                        and m["message_id"] not in known_ids
+                    ]
+                    if other_bot_replies:
+                        other_id = other_bot_replies[0]["sender_id"]
+                        other_name = self.sender._user_name_cache.get(other_id, other_id[-6:])
+                        logger.warning("回复碰撞！%s 也在 %s 中回复了", other_name, chat_id[-8:])
+                        self._record_collab_event(chat_id, "collision", self.bot_name, f"与{other_name}碰撞")
+                        await self._social_repair(chat_id, other_name)
+                except Exception:
+                    logger.warning("碰撞检测失败", exc_info=True)
+
+        # 清除 thinking reaction（无论是否成功回复）
+        if thinking_msg_id:
+            rid = self._my_reaction_ids.pop(thinking_msg_id, "")
+            if rid:
+                await self.sender.remove_reaction(thinking_msg_id, rid)
+
+    def _record_collab_event(
+        self, chat_id: str, event_type: str, actor_name: str, detail: str = "",
+    ) -> None:
+        """记录协作事件到 chat_memory 的 ## 协作模式 section"""
+        if not self.memory:
+            return
+        try:
+            from datetime import datetime, timedelta, timezone
+            cst = timezone(timedelta(hours=8))
+            now = datetime.now(cst).strftime("%m-%d %H:%M")
+            entry = f"- {now} {actor_name} {event_type}"
+            if detail:
+                entry += f": {detail}"
+
+            path = self.memory.chat_memories_dir / f"{chat_id}.md"
+            content = path.read_text(encoding="utf-8") if path.exists() else ""
+
+            section_header = "## 协作模式"
+            if section_header in content:
+                # 提取现有 section 内容
+                parts = content.split(section_header, 1)
+                before = parts[0]
+                after = parts[1]
+                # 找到下一个 ## 或文件结尾
+                next_section = after.find("\n## ")
+                if next_section != -1:
+                    section_body = after[:next_section]
+                    rest = after[next_section:]
+                else:
+                    section_body = after
+                    rest = ""
+                # 解析已有条目，保留最近 19 条 + 新条目 = 20 条
+                lines = [l for l in section_body.strip().split("\n") if l.startswith("- ")]
+                lines = lines[-19:]  # 保留最近 19 条
+                lines.append(entry)
+                content = before + section_header + "\n" + "\n".join(lines) + "\n" + rest
+            else:
+                content = content.rstrip() + f"\n\n{section_header}\n{entry}\n"
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            logger.debug("协作事件: %s", entry)
+        except Exception:
+            logger.warning("记录协作事件失败", exc_info=True)
+
+    async def _social_repair(self, chat_id: str, other_name: str) -> None:
+        """碰撞修复：生成简短自然的化解语"""
+        repair_prompt = (
+            f"你和{other_name}不小心同时回复了群聊里的同一个话题（撞车了）。"
+            "请用一句简短（<15字）、自然、轻松的话化解这个小尴尬。"
+            "不需要道歉，可以调侃。只输出这句话本身，不要加引号。"
+        )
+        try:
+            text = await self.executor.quick_judge(repair_prompt)
+            text = text.strip().strip('"').strip("'")
+            # 基础内容验证：拒绝 JSON/XML 残片和多行输出
+            if text and len(text) < 50 and "\n" not in text and "{" not in text and "<" not in text:
+                await self.sender.send_text(chat_id, text)
+        except Exception:
+            logger.exception("social repair failed")
 
     @staticmethod
     def _replace_at_mentions(text: str, name_to_id: dict[str, str]) -> str:

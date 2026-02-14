@@ -47,6 +47,32 @@ class FeishuListener:
         except Exception:
             logger.exception("处理飞书事件失败")
 
+    def _on_reaction(self, data: Any) -> None:
+        """Reaction 事件回调 — 用于 bot 间意图信号感知"""
+        try:
+            event = data.event
+            # 提取 reaction 信息
+            message_id = getattr(event, "message_id", "") or ""
+            operator_type = getattr(event, "operator_type", "") or ""
+            reaction_type = getattr(event, "reaction_type", None)
+            emoji_type = getattr(reaction_type, "emoji_type", "") if reaction_type else ""
+            operator_id = ""
+            if hasattr(event, "user_id"):
+                uid = event.user_id
+                operator_id = getattr(uid, "open_id", "") or ""
+
+            payload = {
+                "event_type": "reaction.created",
+                "message_id": message_id,
+                "operator_id": operator_id,
+                "operator_type": operator_type,
+                "emoji_type": emoji_type,
+            }
+            self.main_loop.call_soon_threadsafe(self.queue.put_nowait, payload)
+            logger.debug("Reaction 事件入队: %s on %s by %s", emoji_type, message_id[-8:], operator_id[-6:])
+        except Exception:
+            logger.exception("处理 reaction 事件失败")
+
     def _on_card_action(self, data: Any) -> Any:
         """卡片交互回调"""
         try:
@@ -71,7 +97,7 @@ class FeishuListener:
         # IM
         builder.register_p2_im_message_message_read_v1(_noop)
         builder.register_p2_im_message_recalled_v1(_noop)
-        builder.register_p2_im_message_reaction_created_v1(_noop)
+        builder.register_p2_im_message_reaction_created_v1(self._on_reaction)
         builder.register_p2_im_message_reaction_deleted_v1(_noop)
         builder.register_p2_im_chat_disbanded_v1(_noop)
         builder.register_p2_im_chat_updated_v1(_noop)
