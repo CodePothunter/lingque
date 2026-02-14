@@ -251,6 +251,9 @@ class MessageRouter:
         # per-chat 锁：确保同一会话的 LLM 调用串行执行，
         # 防止并发导致 session 消息顺序错乱
         self._chat_locks: dict[str, asyncio.Lock] = {}
+        # 群聊 @at 防抖：chat_id → {texts, sender_id, sender_name, message_id, timer}
+        self._group_at_pending: dict[str, dict] = {}
+        self._group_at_debounce_seconds: float = 2.0
         # 群聊 bot 消息轮询计数（防止 bot 间无限对话，用户消息重置）
         self._bot_poll_count: dict[str, int] = {}
         self._bot_poll_timers: dict[str, asyncio.TimerHandle] = {}
@@ -717,8 +720,28 @@ class MessageRouter:
         """处理群聊消息"""
         message = event.message
         chat_id = message.chat_id
+        sender_id = event.sender.sender_id.open_id
 
-        # 第一层：检查是否被 @at
+        # ── 第零层：@at 防抖追加 ──
+        # 如果同一发送者有正在进行的 @at 防抖，后续消息（无论是否 @at）均追加
+        at_pending = self._group_at_pending.get(chat_id)
+        if at_pending and at_pending["sender_id"] == sender_id:
+            text = self._extract_text(message)
+            text = self._resolve_at_mentions(text, getattr(message, "mentions", None)).strip()
+            if text:
+                at_pending["texts"].append(text)
+                at_pending["message_id"] = message.message_id
+                if at_pending.get("timer"):
+                    at_pending["timer"].cancel()
+                loop = asyncio.get_running_loop()
+                at_pending["timer"] = loop.call_later(
+                    self._group_at_debounce_seconds,
+                    lambda cid=chat_id: asyncio.ensure_future(self._flush_group_at(cid)),
+                )
+                logger.info("群聊 @at 防抖追加 [%s]，共 %d 条", at_pending["sender_name"], len(at_pending["texts"]))
+            return
+
+        # ── 第一层：检查是否被 @at ──
         mentions = getattr(message, "mentions", None)
         is_at_me = False
         if mentions:
@@ -734,10 +757,58 @@ class MessageRouter:
                 is_at_me = True
 
         if is_at_me:
-            await self._handle_group_at(event)
+            # 非文本 @at 立即回复，不走防抖
+            text = self._extract_text(message)
+            if not text:
+                if self._is_non_text_message(message):
+                    await self.sender.reply_text(
+                        message.message_id,
+                        "目前只能处理文字消息，图片什么的还看不懂。有事打字说就好。",
+                    )
+                return
+
+            text = self._resolve_at_mentions(text, mentions).strip()
+            sender_name = await self.sender.get_user_name(sender_id, chat_id=chat_id)
+            if self.sender.is_chat_left(chat_id):
+                logger.info("Bot 已退出群 %s，忽略 @at 消息", chat_id[-8:])
+                return
+
+            if not text:
+                # 空 @：从缓冲区取该用户最近的消息作为上下文
+                buf = self.group_buffers.get(chat_id)
+                if buf:
+                    recent = buf.get_recent(5)
+                    sender_msgs = [m["text"] for m in recent if m["sender_id"] == sender_id]
+                    if sender_msgs:
+                        text = sender_msgs[-1]
+                        logger.info("群聊 @at 空消息，取缓冲区上文: %s", text[:50])
+                if not text:
+                    text = "（@了我但没说具体内容）"
+
+            logger.info("群聊 @at [%s]: %s（开始防抖 %.1fs）", sender_name, text[:50], self._group_at_debounce_seconds)
+
+            # 如果有其他人的 pending @at，先立即 flush
+            if at_pending:
+                if at_pending.get("timer"):
+                    at_pending["timer"].cancel()
+                old = self._group_at_pending.pop(chat_id)
+                asyncio.ensure_future(self._flush_group_at_data(chat_id, old))
+
+            self._group_at_pending[chat_id] = {
+                "texts": [text],
+                "sender_id": sender_id,
+                "sender_name": sender_name,
+                "message_id": message.message_id,
+                "timer": None,
+            }
+            loop = asyncio.get_running_loop()
+            self._group_at_pending[chat_id]["timer"] = loop.call_later(
+                self._group_at_debounce_seconds,
+                lambda cid=chat_id: asyncio.ensure_future(self._flush_group_at(cid)),
+            )
             return
 
-        # 第一层规则：极短无实质消息直接忽略
+        # ── 第一层规则：极短无实质消息直接忽略 ──
         text = self._extract_text(message)
         # 解析 @占位符为真名
         text = self._resolve_at_mentions(text, mentions)
@@ -748,7 +819,6 @@ class MessageRouter:
             logger.debug("群聊旁听: 无实质消息，跳过: %s", text[:20])
             return
 
-        sender_id = event.sender.sender_id.open_id
         sender_name = await self.sender.get_user_name(sender_id, chat_id=chat_id)
         if self.sender.is_chat_left(chat_id):
             logger.info("Bot 已退出群 %s，忽略旁听消息", chat_id[-8:])
@@ -777,106 +847,102 @@ class MessageRouter:
             loop = asyncio.get_running_loop()
             buf.schedule_timeout(loop, lambda cid=chat_id: asyncio.ensure_future(self._evaluate_buffer(cid)))
 
-    async def _handle_group_at(self, event: Any) -> None:
-        """处理群聊 @at 消息 — 必须回复"""
-        message = event.message
-        text = self._extract_text(message)
-        if not text:
-            if self._is_non_text_message(message):
-                await self.sender.reply_text(
-                    message.message_id,
-                    "目前只能处理文字消息，图片什么的还看不懂。有事打字说就好。",
-                )
+    async def _flush_group_at(self, chat_id: str) -> None:
+        """@at 防抖到期，弹出 pending 数据并处理。"""
+        pending = self._group_at_pending.pop(chat_id, None)
+        if not pending:
             return
+        await self._flush_group_at_data(chat_id, pending)
 
-        sender_id = event.sender.sender_id.open_id
-        text = self._resolve_at_mentions(text, getattr(message, "mentions", None)).strip()
-        if not text:
-            # 空 @：从缓冲区取该用户最近的消息作为上下文
-            buf = self.group_buffers.get(message.chat_id)
-            if buf:
-                recent = buf.get_recent(5)
-                sender_msgs = [m["text"] for m in recent if m["sender_id"] == sender_id]
-                if sender_msgs:
-                    text = sender_msgs[-1]
-                    logger.info("群聊 @at 空消息，取缓冲区上文: %s", text[:50])
-            if not text:
-                text = "（@了我但没说具体内容）"
+    async def _flush_group_at_data(self, chat_id: str, pending: dict) -> None:
+        """合并 @at 防抖消息并执行 LLM 回复。
 
-        sender_name = await self.sender.get_user_name(sender_id, chat_id=message.chat_id)
-        if self.sender.is_chat_left(message.chat_id):
-            logger.info("Bot 已退出群 %s，忽略 @at 消息", message.chat_id[-8:])
-            return
-        logger.info("群聊 @at [%s]: %s", sender_name, text[:50])
-
-        # 构建群聊上下文（含 API 补充的机器人消息）
-        group_context = ""
-        buf = self.group_buffers.get(message.chat_id)
-        if buf:
-            recent = buf.get_recent(10)
-            if recent:
-                recent = await self._enrich_with_api_messages(message.chat_id, recent)
-                lines = []
-                for m in recent:
-                    name = m.get("sender_name", "未知")
-                    if m.get("sender_id") == self.bot_open_id:
-                        lines.append(f"{name}（你自己）：{m['text']}")
-                    else:
-                        lines.append(f"{name}：{m['text']}")
-                group_context = "\n群聊近期消息：\n" + "\n".join(lines)
-
-        system = self.memory.build_context(chat_id=message.chat_id)
-        system += (
-            f"\n\n你在群聊中被 {sender_name} @at 了。当前会话 chat_id={message.chat_id}。请针对对方的问题简洁回复。"
-            f"{group_context}"
-            "\n如果用户要求记住什么，使用 write_memory 工具。"
-            "如果涉及日程，使用 calendar 工具。"
-            "如果用户明确要求你执行某个任务且现有工具不够，可以用 create_custom_tool 创建工具来完成。"
-            "\n\n<constraints>"
-            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-            "\n- 回复务必简短精炼，不要长篇大论"
-            "\n- 禁止使用 emoji"
-            "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
-            "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
-            "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
-            "\n</constraints>"
-        )
-
-        # 构建 name_to_id 映射，用于 @名字 → <at> 标签转换
-        name_to_id: dict[str, str] = {}
-        name_to_id[sender_name] = sender_id
-        buf = self.group_buffers.get(message.chat_id)
-        if buf:
-            for m in buf.get_recent(15):
-                n = m.get("sender_name", "")
-                if n:
-                    name_to_id[n] = m["sender_id"]
-        # 补充群成员缓存中的 bot 名字
-        for oid, n in self.sender._user_name_cache.items():
-            if oid.startswith("ou_") and n:
-                name_to_id[n] = oid
-        transform = lambda t: self._replace_at_mentions(t, name_to_id)
-
-        lock = self._chat_locks.setdefault(message.chat_id, asyncio.Lock())
+        使用 per-chat 锁确保同一会话的消息按序处理。
+        锁等待期间积攒的新消息会在获得锁后一并合并。
+        """
+        lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
         async with lock:
+            # 锁等待期间可能又积攒了新消息
+            extra = self._group_at_pending.pop(chat_id, None)
+            if extra:
+                pending["texts"].extend(extra["texts"])
+                pending["message_id"] = extra["message_id"]
+                if extra.get("timer"):
+                    extra["timer"].cancel()
+
+            combined_text = "\n".join(pending["texts"])
+            sender_id = pending["sender_id"]
+            sender_name = pending["sender_name"]
+            message_id = pending["message_id"]
+
+            logger.info("群聊 @at flush [%s]: %s", sender_name, combined_text[:80])
+
+            # 构建群聊上下文（含 API 补充的机器人消息）
+            group_context = ""
+            buf = self.group_buffers.get(chat_id)
+            if buf:
+                recent = buf.get_recent(10)
+                if recent:
+                    recent = await self._enrich_with_api_messages(chat_id, recent)
+                    lines = []
+                    for m in recent:
+                        name = m.get("sender_name", "未知")
+                        if m.get("sender_id") == self.bot_open_id:
+                            lines.append(f"{name}（你自己）：{m['text']}")
+                        else:
+                            lines.append(f"{name}：{m['text']}")
+                    group_context = "\n群聊近期消息：\n" + "\n".join(lines)
+
+            system = self.memory.build_context(chat_id=chat_id)
+            system += (
+                f"\n\n你在群聊中被 {sender_name} @at 了。当前会话 chat_id={chat_id}。请针对对方的问题简洁回复。"
+                f"{group_context}"
+                "\n如果用户要求记住什么，使用 write_memory 工具。"
+                "如果涉及日程，使用 calendar 工具。"
+                "如果用户明确要求你执行某个任务且现有工具不够，可以用 create_custom_tool 创建工具来完成。"
+                "\n\n<constraints>"
+                "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
+                "\n- 回复务必简短精炼，不要长篇大论"
+                "\n- 禁止使用 emoji"
+                "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
+                "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
+                "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
+                "\n</constraints>"
+            )
+
+            # 构建 name_to_id 映射，用于 @名字 → <at> 标签转换
+            name_to_id: dict[str, str] = {}
+            name_to_id[sender_name] = sender_id
+            buf = self.group_buffers.get(chat_id)
+            if buf:
+                for m in buf.get_recent(15):
+                    n = m.get("sender_name", "")
+                    if n:
+                        name_to_id[n] = m["sender_id"]
+            # 补充群成员缓存中的 bot 名字
+            for oid, n in self.sender._user_name_cache.items():
+                if oid.startswith("ou_") and n:
+                    name_to_id[n] = oid
+            transform = lambda t: self._replace_at_mentions(t, name_to_id)
+
             if self.session_mgr:
-                session = self.session_mgr.get_or_create(message.chat_id)
-                session.add_message("user", text, sender_name=sender_name)
+                session = self.session_mgr.get_or_create(chat_id)
+                session.add_message("user", combined_text, sender_name=sender_name)
                 messages = session.get_messages()
             else:
-                messages = [{"role": "user", "content": text}]
+                messages = [{"role": "user", "content": combined_text}]
 
             reply_text = await self._reply_with_tool_loop(
-                system, messages, message.chat_id, message.message_id,
+                system, messages, chat_id, message_id,
                 text_transform=transform,
             )
 
             if reply_text and self.session_mgr:
-                session = self.session_mgr.get_or_create(message.chat_id)
+                session = self.session_mgr.get_or_create(chat_id)
                 session.add_message("assistant", reply_text, sender_name="你")
 
         if reply_text:
-            self._schedule_bot_poll(message.chat_id)
+            self._schedule_bot_poll(chat_id)
 
     async def _enrich_with_api_messages(self, chat_id: str, buffer_msgs: list[dict]) -> list[dict]:
         """用 API 拉取的消息补充缓冲区，填入事件机制收不到的机器人消息。"""
