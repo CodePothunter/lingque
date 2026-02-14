@@ -7,6 +7,7 @@ import json
 import logging
 import random
 import time
+from collections import OrderedDict
 from typing import Any
 
 from lq.buffer import MessageBuffer, rule_check
@@ -36,6 +37,8 @@ from lq.prompts import (
     FLUSH_NO_RESULT,
     SENDER_SELF, SENDER_UNKNOWN, SENDER_GROUP,
     BOT_POLL_AT_REASON,
+    BOT_SELF_INTRO_SYSTEM, BOT_SELF_INTRO_USER,
+    USER_WELCOME_SYSTEM, USER_WELCOME_USER,
     TOOL_DESC_WRITE_MEMORY, TOOL_DESC_WRITE_CHAT_MEMORY,
     TOOL_DESC_CALENDAR_CREATE, TOOL_DESC_CALENDAR_LIST,
     TOOL_DESC_SEND_CARD, TOOL_DESC_READ_SELF_FILE, TOOL_DESC_WRITE_SELF_FILE,
@@ -365,6 +368,8 @@ class MessageRouter:
         self._bot_seen_ids: dict[str, set[str]] = {}  # chat_id → 已处理的 message_id
         # 回复去重：chat_id → 上次发送的文本，防止 bot 轮询循环导致重复回复
         self._last_reply_per_chat: dict[str, str] = {}
+        # WS 消息去重：飞书偶尔用不同 event_id 重复推送同一 message_id
+        self._seen_ws_msg_ids: OrderedDict[str, None] = OrderedDict()
         # 活跃群聊跟踪：chat_id → 最近一次消息的 time.time()
         self._active_groups: dict[str, float] = {}
         # 主动轮询已知消息 ID（去重用）
@@ -375,6 +380,8 @@ class MessageRouter:
         self._my_reaction_ids: dict[str, str] = {}
         # 意图信号使用的 emoji 类型
         self._thinking_emoji: str = "OnIt"
+        # 已知群聊 ID（持久化到 groups.json，用于早安问候等）
+        self._known_group_ids: set[str] = set()
         # 注入依赖
         self.session_mgr: Any = None
         self.calendar: Any = None
@@ -398,6 +405,10 @@ class MessageRouter:
                 await self._evaluate_buffer(chat_id)
         elif event_type == "reaction.created":
             self._handle_reaction_event(data)
+        elif event_type == "bot.added":
+            await self._handle_bot_added(data)
+        elif event_type == "user.added":
+            await self._handle_user_added(data)
         else:
             logger.debug("忽略事件类型: %s", event_type)
 
@@ -406,6 +417,15 @@ class MessageRouter:
     def register_active_group(self, chat_id: str) -> None:
         """标记群聊为活跃（收到消息时调用）"""
         self._active_groups[chat_id] = time.time()
+        self._known_group_ids.add(chat_id)
+
+    def get_known_group_ids(self) -> set[str]:
+        """返回所有已知群聊 ID 的副本"""
+        return set(self._known_group_ids)
+
+    def set_known_group_ids(self, ids: set[str]) -> None:
+        """从持久化数据恢复已知群聊 ID"""
+        self._known_group_ids = set(ids)
 
     def get_active_groups(self, ttl: float = 600.0) -> list[str]:
         """返回近 10 分钟内有消息的群聊 ID 列表"""
@@ -514,6 +534,15 @@ class MessageRouter:
         # 忽略自己发的消息
         if sender_id == self.bot_open_id:
             return
+
+        # WS 去重：飞书偶尔用不同 event_id 重复推送同一条消息
+        msg_id = message.message_id
+        if msg_id in self._seen_ws_msg_ids:
+            logger.debug("跳过重复 WS 消息 %s", msg_id)
+            return
+        self._seen_ws_msg_ids[msg_id] = None
+        while len(self._seen_ws_msg_ids) > 200:
+            self._seen_ws_msg_ids.popitem(last=False)
 
         if chat_type == "p2p":
             await self._handle_private(event)
@@ -1118,7 +1147,8 @@ class MessageRouter:
             if not sid:
                 sender_name = SENDER_UNKNOWN
             elif am.get("sender_type") == "app":
-                sender_name = self.sender._user_name_cache.get(sid, sid[-6:])
+                self.sender.register_bot_member(chat_id, sid)
+                sender_name = await self.sender.resolve_name(sid)
             else:
                 sender_name = await self.sender.get_user_name(sid, chat_id=chat_id)
             merged.append({
@@ -1450,13 +1480,12 @@ class MessageRouter:
                 continue
             if am.get("sender_type") != "app":
                 continue
+            self.sender.register_bot_member(chat_id, am["sender_id"])
             # 跳过自己发的消息（只关心其他 bot 的消息）
             if am.get("sender_id") == self.bot_open_id:
                 seen.add(mid)  # 标记已见，避免下次重复检查
                 continue
-            sender_name = self.sender._user_name_cache.get(
-                am["sender_id"], am["sender_id"][-6:]
-            )
+            sender_name = await self.sender.resolve_name(am["sender_id"])
             buf.add({
                 "text": am["text"],
                 "sender_id": am["sender_id"],
@@ -1503,6 +1532,74 @@ class MessageRouter:
                 timer = self._bot_poll_timers.pop(chat_id, None)
                 if timer:
                     timer.cancel()
+
+    async def _handle_bot_added(self, data: dict) -> None:
+        """处理 bot 被加入群聊事件 — 发送自我介绍"""
+        chat_id = data.get("chat_id", "")
+        if not chat_id:
+            return
+        self.register_active_group(chat_id)
+        # 刷新群成员缓存
+        try:
+            await self.sender._cache_chat_members(chat_id)
+        except Exception:
+            logger.warning("刷新群成员缓存失败: %s", chat_id[-8:])
+        # LLM 生成自我介绍（用 build_context 含记忆，让介绍更个性化）
+        try:
+            context = self.memory.build_context(chat_id=chat_id)
+            system = BOT_SELF_INTRO_SYSTEM.format(soul=context)
+            intro = await self.executor.reply(system, BOT_SELF_INTRO_USER)
+            intro = intro.strip()
+            if intro:
+                await self.sender.send_text(chat_id, intro)
+                logger.info("Bot 入群自我介绍已发送: %s -> %s", chat_id[-8:], intro[:50])
+        except Exception:
+            logger.exception("Bot 入群自我介绍失败: %s", chat_id[-8:])
+
+    async def _handle_user_added(self, data: dict) -> None:
+        """处理新用户加入群聊事件 — 发送欢迎消息"""
+        chat_id = data.get("chat_id", "")
+        users = data.get("users", [])
+        if not chat_id or not users:
+            return
+        # 缓存新用户名字
+        name_to_id: dict[str, str] = {}
+        names: list[str] = []
+        for u in users:
+            open_id = u.get("open_id", "")
+            name = u.get("name", "")
+            if open_id and name:
+                self.sender._user_name_cache[open_id] = name
+                name_to_id[name] = open_id
+                names.append(name)
+            elif open_id:
+                name_to_id[open_id[-6:]] = open_id
+                names.append(open_id[-6:])
+        if not names:
+            return
+        # LLM 生成欢迎语（用 build_context 含记忆，让欢迎更个性化）
+        try:
+            user_names = "、".join(names)
+            context = self.memory.build_context(chat_id=chat_id)
+            system = USER_WELCOME_SYSTEM.format(soul=context, user_names=user_names)
+            welcome = await self.executor.reply(system, USER_WELCOME_USER)
+            welcome = welcome.strip()
+            if welcome:
+                # 补充 buffer 中其他成员的名字映射
+                buf = self.group_buffers.get(chat_id)
+                if buf:
+                    for m in buf.get_recent(15):
+                        n = m.get("sender_name", "")
+                        if n:
+                            name_to_id[n] = m["sender_id"]
+                for oid, n in self.sender._user_name_cache.items():
+                    if oid.startswith("ou_") and n:
+                        name_to_id[n] = oid
+                welcome = self._replace_at_mentions(welcome, name_to_id)
+                await self.sender.send_text(chat_id, welcome)
+                logger.info("用户入群欢迎已发送: %s -> %s", chat_id[-8:], welcome[:50])
+        except Exception:
+            logger.exception("用户入群欢迎失败: %s", chat_id[-8:])
 
     async def _compact_session(self, session: Any) -> None:
         """压缩会话：提取长期记忆到 chat_memory，生成结构化摘要后裁剪消息"""
@@ -1603,6 +1700,10 @@ class MessageRouter:
             if hasattr(m, "id") and hasattr(m.id, "open_id"):
                 open_id = m.id.open_id
             name = getattr(m, "name", "") or ""
+
+            # 顺便缓存 mention 中的 open_id → name 映射（含其他 bot）
+            if open_id and name:
+                self.sender._user_name_cache[open_id] = name
 
             if open_id == self.bot_open_id:
                 # 移除 bot 自己的 @

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -86,6 +87,9 @@ class FeishuSender:
         self._left_chats: set[str] = set()    # bot 已退出的 chat_id
         self._bot_members: dict[str, set[str]] = {}  # chat_id → bot open_id 集合
         self.bot_open_id: str = ""  # 本实例的 bot open_id，由 gateway 设置
+        # bot 身份推断：cli_xxx → name，持久化到实例工作目录
+        self._bot_id_map: dict[str, str] = {}
+        self._bot_id_path: Path | None = None  # 由 gateway 设置
 
     async def send_text(self, chat_id: str, text: str) -> str | None:
         """发送文本消息到指定会话，返回 message_id。
@@ -263,6 +267,141 @@ class FeishuSender:
         """检查 bot 是否已退出某群聊（基于成员 API 400 检测）"""
         return chat_id in self._left_chats
 
+    def register_bot_member(self, chat_id: str, bot_open_id: str) -> None:
+        """通过消息信号注册群聊中的 bot（补充成员 API 的不足）
+
+        bot_open_id 可能是 app_id (cli_xxx) 或 open_id (ou_xxx)，
+        因为飞书消息列表 API 对 bot 返回 app_id 而非 open_id。
+        """
+        self._bot_members.setdefault(chat_id, set()).add(bot_open_id)
+
+
+    async def resolve_name(self, open_id: str) -> str:
+        """查找用户/bot 的名字，优先缓存，回退到联系人 API。
+
+        注意：不缓存 fallback 值（截断 ID），因为名字可能
+        稍后通过其他途径被发现。
+        """
+        cached = self._user_name_cache.get(open_id)
+        if cached is not None:
+            return cached
+        # app_id (cli_xxx)：先查推断记忆，无则返回截断 ID
+        if open_id.startswith("cli_"):
+            inferred = self._bot_id_map.get(open_id)
+            if inferred:
+                self._user_name_cache[open_id] = inferred
+                return inferred
+            return open_id[-6:]
+        # open_id (ou_xxx) → 联系人 API
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    f"https://open.feishu.cn/open-apis/contact/v3/users/{open_id}",
+                    params={"user_id_type": "open_id"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                data = resp.json()
+            if data.get("code") == 0:
+                name = data.get("data", {}).get("user", {}).get("name", "")
+                if name:
+                    self._user_name_cache[open_id] = name
+                    return name
+        except Exception:
+            pass
+        return open_id[-6:]
+
+    # ── Bot 身份推断与持久化 ──
+
+    def load_bot_identities(self, home: Path) -> None:
+        """从实例工作目录加载已记忆的 bot 身份映射。"""
+        self._bot_id_path = home / "bot_identities.json"
+        if self._bot_id_path.exists():
+            try:
+                self._bot_id_map = json.loads(self._bot_id_path.read_text())
+                # 加载到 name cache 以便立即可用
+                self._user_name_cache.update(self._bot_id_map)
+                logger.info("加载 bot 身份记忆: %s", self._bot_id_map)
+            except Exception:
+                logger.warning("加载 bot_identities.json 失败", exc_info=True)
+
+    def _save_bot_identities(self) -> None:
+        """持久化 bot 身份映射到文件。"""
+        if self._bot_id_path and self._bot_id_map:
+            try:
+                self._bot_id_path.write_text(
+                    json.dumps(self._bot_id_map, ensure_ascii=False, indent=2)
+                )
+            except Exception:
+                logger.warning("保存 bot_identities.json 失败", exc_info=True)
+
+    def infer_bot_identities(self, messages: list[dict]) -> None:
+        """从消息序列中推断未知 bot 的 cli_xxx → name 映射。
+
+        策略：
+        1. 收集消息中 @提及的所有名字（来自 mentions）
+        2. 收集所有未识别的 bot sender_id (cli_xxx)
+        3. 排除已知映射后，若一一对应则建立关联
+        4. 备用：用时序线索（@提及后紧跟 bot 回复）推断
+        """
+        # 收集未知 bot sender_id 和 mentions 中的名字
+        unknown_bots: list[str] = []
+        mentioned_names: set[str] = set()
+        known_cli_names = set(self._user_name_cache.get(k, "")
+                              for k in self._user_name_cache
+                              if k.startswith("cli_"))
+
+        for msg in messages:
+            sid = msg.get("sender_id", "")
+            if (msg.get("sender_type") == "app"
+                    and sid.startswith("cli_")
+                    and sid not in self._user_name_cache):
+                if sid not in unknown_bots:
+                    unknown_bots.append(sid)
+            for name in msg.get("_mentioned_names", []):
+                mentioned_names.add(name)
+
+        if not unknown_bots:
+            return
+
+        # 排除已知名字（包括自己），剩余即候选
+        unmatched_names = mentioned_names - known_cli_names
+        new_found = False
+
+        # 策略 A：全局排除法 — 1 个未知 bot 对 1 个未匹配名字
+        if len(unknown_bots) == 1 and len(unmatched_names) == 1:
+            bot_id = unknown_bots[0]
+            name = next(iter(unmatched_names))
+            self._bot_id_map[bot_id] = name
+            self._user_name_cache[bot_id] = name
+            logger.info("推断 bot 身份（排除法）: %s → %s", bot_id, name)
+            new_found = True
+        elif unknown_bots and unmatched_names:
+            # 策略 B：时序法 — @提及后紧跟的 bot 回复
+            for i, msg in enumerate(messages):
+                sid = msg.get("sender_id", "")
+                if (msg.get("sender_type") != "app"
+                        or not sid.startswith("cli_")
+                        or sid in self._user_name_cache):
+                    continue
+                # 向前扫描最近 3 条消息，找最近的 @提及
+                for j in range(i - 1, max(-1, i - 4), -1):
+                    prev_names = messages[j].get("_mentioned_names", [])
+                    for name in prev_names:
+                        if name not in known_cli_names and name in unmatched_names:
+                            self._bot_id_map[sid] = name
+                            self._user_name_cache[sid] = name
+                            known_cli_names.add(name)
+                            unmatched_names.discard(name)
+                            logger.info("推断 bot 身份（时序法）: %s → %s", sid, name)
+                            new_found = True
+                            break
+                    if sid in self._user_name_cache:
+                        break
+
+        if new_found:
+            self._save_bot_identities()
+
     def get_bot_members(self, chat_id: str) -> set[str]:
         """返回群聊中的 bot open_id 集合（不含自己）"""
         bots = self._bot_members.get(chat_id, set())
@@ -334,6 +473,7 @@ class FeishuSender:
                         "container_id": chat_id,
                         "sort_type": "ByCreateTimeDesc",
                         "page_size": count,
+                        "user_id_type": "open_id",
                     },
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -352,13 +492,33 @@ class FeishuSender:
                     text = ""
                 if not text:
                     continue
+                # 解析 mentions，将 @_user_N 占位符替换为真名
+                mentioned_names: list[str] = []
+                mentions = item.get("mentions")
+                if mentions:
+                    for m in mentions:
+                        key = m.get("key", "")
+                        name = m.get("name", "")
+                        mid = m.get("id", "")
+                        if key and name:
+                            text = text.replace(key, f"@{name}")
+                            mentioned_names.append(name)
+                            if mid:
+                                self._user_name_cache[mid] = name
+                        elif key:
+                            text = text.replace(key, "")
                 sender = item.get("sender", {})
+                sender_id = sender.get("id", "")
                 results.append({
                     "message_id": item.get("message_id", ""),
-                    "sender_id": sender.get("id", ""),
+                    "sender_id": sender_id,
                     "sender_type": sender.get("sender_type", "user"),
                     "text": text,
+                    "create_time": item.get("create_time", ""),
+                    "_mentioned_names": mentioned_names,
                 })
+            # 尝试从消息上下文推断未知 bot 的身份
+            self.infer_bot_identities(results)
             return results
         except Exception as e:
             logger.warning("拉取群消息异常: %s %s", chat_id, e)

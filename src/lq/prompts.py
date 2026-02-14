@@ -577,6 +577,50 @@ SUBAGENT_CONTEXT_USER = "用户消息：{message}"
 SUBAGENT_CONTEXT_ASSISTANT = "助手回复：{reply}"
 
 
+# =====================================================================
+# Bot Self-Introduction Prompts  (bot added to group)
+# =====================================================================
+
+# {soul}
+BOT_SELF_INTRO_SYSTEM = (
+    "{soul}\n\n"
+    "你刚被加入一个新的群聊。请用你自己的性格风格做一个简短的自我介绍。"
+    "不要罗列功能清单，像真人入群打招呼一样自然。1-2 句话即可。"
+)
+
+BOT_SELF_INTRO_USER = "请做一个简短的自我介绍。"
+
+
+# =====================================================================
+# User Welcome Prompts  (new user added to group)
+# =====================================================================
+
+# {soul}, {user_names}
+USER_WELCOME_SYSTEM = (
+    "{soul}\n\n"
+    "群聊里有新成员加入：{user_names}。"
+    "请用你的性格风格欢迎他们，简短自然即可。1-2 句话。"
+    "回复中用 @名字 格式提及新成员。"
+)
+
+USER_WELCOME_USER = "请欢迎新成员。"
+
+
+# =====================================================================
+# Morning Greeting Prompts  (daily group greeting)
+# =====================================================================
+
+# {soul}
+MORNING_GREETING_SYSTEM = (
+    "{soul}\n\n"
+    "现在是早上，请给群聊发一条简短的早安问候。"
+    "保持你自己的性格风格，不要太正式，像朋友之间随意打招呼一样。"
+    "1 句话即可，不要太长。不要使用 emoji。"
+)
+
+MORNING_GREETING_USER = "请发一条早安问候。"
+
+
 EXTRACTION_PROMPTS = {
     "memory_write": (
         "从用户消息中提取要记住的内容。\n"
