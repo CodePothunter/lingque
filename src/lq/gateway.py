@@ -143,7 +143,7 @@ class AssistantGateway:
         detector = IntentDetector(executor)
         subagent = SubAgent(executor)
         post_processor = PostProcessor(
-            detector, subagent, router._execute_tool, router._send_reply,
+            detector, subagent, router._execute_tool, router._send_tool_notification,
         )
         router.post_processor = post_processor
         logger.info("后处理管线已加载")
@@ -394,11 +394,12 @@ class AssistantGateway:
                         continue
                     if not api_msgs:
                         continue
+                    bot_self_ids = {router.bot_open_id, self.config.feishu.app_id}
                     for msg in api_msgs:
                         if msg.get("sender_type") != "app":
                             continue
                         sender.register_bot_member(chat_id, msg["sender_id"])
-                        if msg.get("sender_id") == router.bot_open_id:
+                        if msg.get("sender_id") in bot_self_ids:
                             continue
                         sender_name = await sender.resolve_name(msg["sender_id"])
                         await router.inject_polled_message(chat_id, {
@@ -408,6 +409,7 @@ class AssistantGateway:
                             "sender_type": "app",
                             "message_id": msg["message_id"],
                             "chat_id": chat_id,
+                            "create_time": msg.get("create_time", ""),
                         })
                     # 多个群之间稍做间隔，避免 API 频率限制
                     if len(active) > 1:

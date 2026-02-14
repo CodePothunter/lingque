@@ -343,6 +343,8 @@ TOOLS = [
 
 
 class MessageRouter:
+    REPLY_COOLDOWN: float = 8.0  # 回复后的冷却秒数
+
     def __init__(
         self,
         executor: DirectAPIExecutor,
@@ -356,6 +358,8 @@ class MessageRouter:
         self.sender = sender
         self.bot_open_id = bot_open_id
         self.bot_name = bot_name
+        # 启动时间戳（毫秒），用于区分历史消息和新消息
+        self._startup_ts: int = int(time.time() * 1000)
 
         # 群聊缓冲区
         self.group_buffers: dict[str, MessageBuffer] = {}
@@ -380,6 +384,9 @@ class MessageRouter:
         self._my_reaction_ids: dict[str, str] = {}
         # 意图信号使用的 emoji 类型
         self._thinking_emoji: str = "OnIt"
+        # ReplyGate: per-chat 回复锁 + 冷却期，防止多路径并发回复同一群
+        self._reply_locks: dict[str, asyncio.Lock] = {}
+        self._reply_cooldown_ts: dict[str, float] = {}  # chat_id → 上次回复完成的时间戳
         # 已知群聊 ID（持久化到 groups.json，用于早安问候等）
         self._known_group_ids: set[str] = set()
         # 注入依赖
@@ -427,6 +434,19 @@ class MessageRouter:
         """从持久化数据恢复已知群聊 ID"""
         self._known_group_ids = set(ids)
 
+    def _reply_is_busy(self, chat_id: str) -> bool:
+        """判断该群是否正在回复或在冷却期内"""
+        lock = self._reply_locks.get(chat_id)
+        if lock and lock.locked():
+            return True
+        return time.time() - self._reply_cooldown_ts.get(chat_id, 0) < self.REPLY_COOLDOWN
+
+    def _get_reply_lock(self, chat_id: str) -> asyncio.Lock:
+        """获取 per-chat 回复锁（懒创建）"""
+        if chat_id not in self._reply_locks:
+            self._reply_locks[chat_id] = asyncio.Lock()
+        return self._reply_locks[chat_id]
+
     def get_active_groups(self, ttl: float = 600.0) -> list[str]:
         """返回近 10 分钟内有消息的群聊 ID 列表"""
         now = time.time()
@@ -444,7 +464,10 @@ class MessageRouter:
         return list(self._active_groups)
 
     async def inject_polled_message(self, chat_id: str, msg: dict) -> None:
-        """将主动轮询发现的 bot 消息注入群聊缓冲区（去重）"""
+        """将主动轮询发现的 bot 消息注入群聊缓冲区（去重）。
+
+        如果注入的消息包含 @本bot 的文本提及，自动触发介入。
+        """
         msg_id = msg.get("message_id", "")
         if not msg_id:
             return
@@ -470,10 +493,60 @@ class MessageRouter:
         buf.add(msg)
 
         sender_name = msg.get("sender_name", msg.get("sender_id", "")[-6:])
+        text = msg.get("text", "")
         logger.info(
             "主动轮询注入 bot 消息 [%s] %s: %s",
-            chat_id[-8:], sender_name, msg.get("text", "")[:50],
+            chat_id[-8:], sender_name, text[:50],
         )
+
+        # 如果 bot 消息文本中 @ 了自己，且消息是启动后产生的，触发直接介入
+        create_time = msg.get("create_time", "")
+        is_new = bool(create_time and int(create_time) > self._startup_ts)
+        if is_new and self.bot_name and f"@{self.bot_name}" in text:
+            # 标记到 _bot_seen_ids 防止 _poll_bot_messages 重复触发
+            seen = self._bot_seen_ids.setdefault(chat_id, set())
+            seen.add(msg_id)
+            # ReplyGate: 消息已入 buffer，锁忙时跳过触发
+            if self._reply_is_busy(chat_id):
+                logger.info("跳过轮询触发: 群 %s 正在回复或冷却中", chat_id[-8:])
+                return
+            logger.info(
+                "轮询注入检测到 @%s，触发介入: %s",
+                self.bot_name, chat_id[-8:],
+            )
+            # 先取消已有 bot_poll 定时器，防止在 _intervene 的 async 等待中触发
+            timer = self._bot_poll_timers.pop(chat_id, None)
+            if timer:
+                timer.cancel()
+            recent = buf.get_recent(20)
+            judgment = {
+                "intervene": True,
+                "reason": BOT_POLL_AT_REASON.format(bot_name=self.bot_name),
+                "reply_to_message_id": msg_id,
+            }
+            await self._intervene(chat_id, recent, judgment)
+            # 取消 _intervene 内部可能新建的 bot_poll 定时器
+            timer = self._bot_poll_timers.pop(chat_id, None)
+            if timer:
+                timer.cancel()
+        elif is_new:
+            # 新 bot 消息但无 @at — 触发评估让 LLM 决定是否回应
+            # ReplyGate: 消息已入 buffer，锁忙时跳过触发
+            if self._reply_is_busy(chat_id):
+                logger.info("跳过轮询触发: 群 %s 正在回复或冷却中", chat_id[-8:])
+                return
+            count = self._bot_poll_count.get(chat_id, 0)
+            if count < 5:
+                self._bot_poll_count[chat_id] = count + 1
+                logger.info(
+                    "轮询注入新 bot 消息，触发评估: %s (%d/5)",
+                    chat_id[-8:], count + 1,
+                )
+                await self._evaluate_buffer(chat_id)
+                # 取消评估中可能新建的 bot_poll 定时器，防止循环
+                timer = self._bot_poll_timers.pop(chat_id, None)
+                if timer:
+                    timer.cancel()
 
     # ── Reaction 意图信号处理 ──
 
@@ -736,7 +809,9 @@ class MessageRouter:
 
         # 发送最终文本回复
         if resp.text:
-            final = text_transform(resp.text) if text_transform else resp.text
+            # 先清理 LLM 模仿的元数据标签，再做 transform
+            cleaned = self._CLEAN_RE.sub("", resp.text).strip()
+            final = text_transform(cleaned) if text_transform else cleaned
             logger.info("回复: %s", final[:80])
             await self._send_reply(final, chat_id, reply_to_message_id)
             resp.text = final
@@ -765,6 +840,24 @@ class MessageRouter:
         r"|<msg\s[^>]*>"                          # <msg time=17:32 from=你>
         r"|</msg>",                                # </msg>
     )
+
+    async def _send_tool_notification(
+        self, text: str, chat_id: str, reply_to_message_id: str | None,
+    ) -> None:
+        """发送工具执行通知（卡片消息）。
+
+        使用卡片而非文本，使工具通知在结构上与普通对话消息不同。
+        fetch_chat_messages 只解析 body.content.text，卡片消息自然不会
+        被其他 bot 的消息轮询拾取，从根源上避免通知污染缓冲区。
+        """
+        card = {"elements": [{"tag": "markdown", "content": text}]}
+        try:
+            if reply_to_message_id and not reply_to_message_id.startswith("inbox_"):
+                await self.sender.reply_card(reply_to_message_id, card)
+            elif chat_id and chat_id != "local_cli":
+                await self.sender.send_card(chat_id, card)
+        except Exception:
+            logger.exception("工具通知发送失败")
 
     async def _send_reply(self, text: str, chat_id: str, reply_to_message_id: str | None) -> None:
         """发送回复：优先 reply_text，fallback 到 send_text"""
@@ -1069,20 +1162,20 @@ class MessageRouter:
         logger.info("群聊 @at [%s]: %s", sender_name, text[:50])
 
         # 构建群聊上下文（含 API 补充的机器人消息）
+        # 即使缓冲区为空（如刚重启），也通过 API 拉取最近消息
         group_context = ""
         buf = self.group_buffers.get(message.chat_id)
-        if buf:
-            recent = buf.get_recent(10)
-            if recent:
-                recent = await self._enrich_with_api_messages(message.chat_id, recent)
-                lines = []
-                for m in recent:
-                    name = m.get("sender_name", SENDER_UNKNOWN)
-                    if m.get("sender_id") == self.bot_open_id:
-                        lines.append(GROUP_MSG_SELF.format(name=name, text=m['text']))
-                    else:
-                        lines.append(GROUP_MSG_OTHER.format(name=name, text=m['text']))
-                group_context = GROUP_CONTEXT_HEADER.format(messages="\n".join(lines))
+        recent = buf.get_recent(10) if buf else []
+        recent = await self._enrich_with_api_messages(message.chat_id, recent)
+        if recent:
+            lines = []
+            for m in recent:
+                name = m.get("sender_name", SENDER_UNKNOWN)
+                if m.get("sender_id") == self.bot_open_id:
+                    lines.append(GROUP_MSG_SELF.format(name=name, text=m['text']))
+                else:
+                    lines.append(GROUP_MSG_OTHER.format(name=name, text=m['text']))
+            group_context = GROUP_CONTEXT_HEADER.format(messages="\n".join(lines))
 
         system = self.memory.build_context(chat_id=message.chat_id, sender=self.sender)
         system += GROUP_AT_SYSTEM_SUFFIX.format(
@@ -1113,16 +1206,19 @@ class MessageRouter:
         else:
             messages = [{"role": "user", "content": text}]
 
-        reply_text = await self._reply_with_tool_loop(
-            system, messages, message.chat_id, message.message_id,
-            text_transform=transform,
-        )
+        async with self._get_reply_lock(message.chat_id):
+            reply_text = await self._reply_with_tool_loop(
+                system, messages, message.chat_id, message.message_id,
+                text_transform=transform,
+            )
 
-        if reply_text and self.session_mgr:
-            session = self.session_mgr.get_or_create(message.chat_id)
-            session.add_message("assistant", reply_text, sender_name=SENDER_SELF)
-            if session.should_compact():
-                await self._compact_session(session)
+            if reply_text and self.session_mgr:
+                session = self.session_mgr.get_or_create(message.chat_id)
+                session.add_message("assistant", reply_text, sender_name=SENDER_SELF)
+                if session.should_compact():
+                    await self._compact_session(session)
+
+        self._reply_cooldown_ts[message.chat_id] = time.time()
 
         if reply_text:
             self._schedule_bot_poll(message.chat_id)
@@ -1167,6 +1263,10 @@ class MessageRouter:
 
     async def _evaluate_buffer(self, chat_id: str) -> None:
         """第三层：LLM 判断是否介入群聊"""
+        if self._reply_is_busy(chat_id):
+            logger.info("跳过评估: 群 %s 正在回复或冷却中", chat_id[-8:])
+            return
+
         buf = self.group_buffers.get(chat_id)
         if not buf:
             return
@@ -1281,20 +1381,32 @@ class MessageRouter:
         thinking_msg_id: str = "",
     ) -> None:
         """执行群聊介入"""
+        if self._reply_is_busy(chat_id):
+            logger.info("跳过介入: 群 %s 正在回复或冷却中", chat_id[-8:])
+            return
+
         system = self.memory.build_context(chat_id=chat_id, sender=self.sender)
         # 用真实名字构建对话上下文，标注 bot 消息
         name_to_id: dict[str, str] = {}
         lines: list[str] = []
         for m in recent:
             name = m.get("sender_name", SENDER_UNKNOWN)
-            name_to_id[name] = m["sender_id"]
+            sid = m["sender_id"]
+            # bot 消息的 sender_id 是 cli_xxx，但 <at> 标签需要 ou_xxx
+            # 尝试通过名字缓存反查 open_id
+            if sid.startswith("cli_"):
+                for oid, cached_name in self.sender._user_name_cache.items():
+                    if cached_name == name and oid.startswith("ou_"):
+                        sid = oid
+                        break
+            name_to_id[name] = sid
             if m.get("sender_id") == self.bot_open_id:
                 lines.append(GROUP_MSG_SELF.format(name=name, text=m['text']))
             else:
                 lines.append(GROUP_MSG_OTHER.format(name=name, text=m['text']))
         conversation = "\n".join(lines)
 
-        system += GROUP_INTERVENE_SYSTEM_SUFFIX.format(reason=judgment.get('reason', ''), conversation=conversation)
+        system += GROUP_INTERVENE_SYSTEM_SUFFIX.format(conversation=conversation)
         system += "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_GROUP)
 
         # 校验 reply_to_message_id
@@ -1307,23 +1419,33 @@ class MessageRouter:
         # text_transform 在发送前将 @名字 替换为飞书 <at> 标记
         transform = lambda t: self._replace_at_mentions(t, name_to_id)
 
-        if self.session_mgr:
-            session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("user", wrap_tag(TAG_GROUP_CONTEXT, conversation), sender_name=SENDER_GROUP)
-            messages = session.get_messages()
-        else:
-            messages = [{"role": "user", "content": wrap_tag(TAG_GROUP_CONTEXT, conversation)}]
+        reply_text = ""
+        async with self._get_reply_lock(chat_id):
+            # 等锁期间可能已有其他回复完成，上下文已过时
+            elapsed = time.time() - self._reply_cooldown_ts.get(chat_id, 0)
+            if elapsed < self.REPLY_COOLDOWN:
+                logger.info("跳过介入: 群 %s 等锁期间已有其他回复 (%.1fs ago)", chat_id[-8:], elapsed)
+            else:
+                # session 操作在锁内：保证能看到前一个回复的 assistant 消息
+                if self.session_mgr:
+                    session = self.session_mgr.get_or_create(chat_id)
+                    session.add_message("user", wrap_tag(TAG_GROUP_CONTEXT, conversation), sender_name=SENDER_GROUP)
+                    messages = session.get_messages()
+                else:
+                    messages = [{"role": "user", "content": wrap_tag(TAG_GROUP_CONTEXT, conversation)}]
 
-        reply_text = await self._reply_with_tool_loop(
-            system, messages, chat_id, reply_to,
-            text_transform=transform, allow_nudge=False,
-        )
+                reply_text = await self._reply_with_tool_loop(
+                    system, messages, chat_id, reply_to,
+                    text_transform=transform, allow_nudge=False,
+                )
 
-        if reply_text and self.session_mgr:
-            session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("assistant", reply_text, sender_name=SENDER_SELF)
-            if session.should_compact():
-                await self._compact_session(session)
+                if reply_text and self.session_mgr:
+                    session = self.session_mgr.get_or_create(chat_id)
+                    session.add_message("assistant", reply_text, sender_name=SENDER_SELF)
+                    if session.should_compact():
+                        await self._compact_session(session)
+
+        self._reply_cooldown_ts[chat_id] = time.time()
 
         if reply_text:
             self._schedule_bot_poll(chat_id)
@@ -1349,7 +1471,6 @@ class MessageRouter:
                         other_name = self.sender._user_name_cache.get(other_id, other_id[-6:])
                         logger.warning("回复碰撞！%s 也在 %s 中回复了", other_name, chat_id[-8:])
                         self._record_collab_event(chat_id, "collision", self.bot_name, f"与{other_name}碰撞")
-                        await self._social_repair(chat_id, other_name)
                 except Exception:
                     logger.warning("碰撞检测失败", exc_info=True)
 
@@ -1404,28 +1525,19 @@ class MessageRouter:
         except Exception:
             logger.warning("记录协作事件失败", exc_info=True)
 
-    async def _social_repair(self, chat_id: str, other_name: str) -> None:
-        """碰撞修复：生成简短自然的化解语"""
-        repair_prompt = (
-            f"你和{other_name}不小心同时回复了群聊里的同一个话题（撞车了）。"
-            "请用一句简短（<15字）、自然、轻松的话化解这个小尴尬。"
-            "不需要道歉，可以调侃。只输出这句话本身，不要加引号。"
-        )
-        try:
-            text = await self.executor.quick_judge(repair_prompt)
-            text = text.strip().strip('"').strip("'")
-            # 基础内容验证：拒绝 JSON/XML 残片和多行输出
-            if text and len(text) < 50 and "\n" not in text and "{" not in text and "<" not in text:
-                await self.sender.send_text(chat_id, text)
-        except Exception:
-            logger.exception("social repair failed")
-
     @staticmethod
     def _replace_at_mentions(text: str, name_to_id: dict[str, str]) -> str:
-        """将 @名字 替换为飞书 <at> 标记，按名字长度降序匹配避免子串冲突"""
+        """将 @名字 替换为飞书 <at> 标记，按名字长度降序匹配避免子串冲突。
+
+        只对 ou_ 格式的 open_id 生成 <at> 标签（飞书仅识别 open_id）。
+        cli_ 格式的 app_id 无法用于 <at> 标签，保留 @名字 原文。
+        """
         for name in sorted(name_to_id, key=len, reverse=True):
-            tag = f'<at user_id="{name_to_id[name]}">{name}</at>'
-            text = text.replace(f"@{name}", tag)
+            uid = name_to_id[name]
+            if uid.startswith("ou_"):
+                tag = f'<at user_id="{uid}">{name}</at>'
+                text = text.replace(f"@{name}", tag)
+            # cli_ IDs: 保留 @名字 原文，确保对方 bot 能检测到 @
         return text
 
     def _schedule_bot_poll(self, chat_id: str, delay: float = 5.0) -> None:
@@ -1502,6 +1614,7 @@ class MessageRouter:
             self._bot_poll_count[chat_id] = count + 1
             # 仅检查本轮新增消息是否以文本方式 @了自己
             at_me = False
+            at_msg_id = ""
             if self.bot_name:
                 at_tag = f"@{self.bot_name}"
                 for am in api_msgs:
@@ -1509,6 +1622,7 @@ class MessageRouter:
                         continue
                     if am.get("text") and at_tag in am["text"]:
                         at_me = True
+                        at_msg_id = am["message_id"]
                         break
             if at_me:
                 logger.info(
@@ -1516,7 +1630,11 @@ class MessageRouter:
                     new_count, chat_id[-8:], self.bot_name,
                 )
                 recent = buf.get_recent(20)
-                judgment = {"intervene": True, "reason": BOT_POLL_AT_REASON.format(bot_name=self.bot_name)}
+                judgment = {
+                    "intervene": True,
+                    "reason": BOT_POLL_AT_REASON.format(bot_name=self.bot_name),
+                    "reply_to_message_id": at_msg_id,
+                }
                 await self._intervene(chat_id, recent, judgment)
                 # 取消 _intervene 内部触发的 bot_poll，避免 bot 互@循环
                 timer = self._bot_poll_timers.pop(chat_id, None)

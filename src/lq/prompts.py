@@ -139,9 +139,9 @@ GROUP_AT_SYSTEM_SUFFIX = (
     "如果用户明确要求你执行某个任务且现有工具不够，可以用 create_custom_tool 创建工具来完成。"
 )
 
-# {reason}, {conversation}
+# {conversation}
 GROUP_INTERVENE_SYSTEM_SUFFIX = (
-    "\n\n你决定主动参与群聊对话。原因：{reason}\n"
+    "\n\n你决定主动参与这段群聊对话。\n"
     "最近的群聊消息：\n{conversation}\n\n"
     "如果要提及某人，使用 @名字 格式。回复保持简洁自然。"
 )

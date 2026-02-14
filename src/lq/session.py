@@ -46,6 +46,8 @@ COMPACT_TARGET_TOKENS = 15_000
 COMPACT_THRESHOLD_TOKENS = 30_000
 # 兼容旧逻辑：最大消息条数（作为备用触发器）
 MAX_MESSAGES = 80
+# 压缩后最多保留的消息条数（防止短消息场景 token 限额失效）
+COMPACT_MAX_KEEP = 30
 
 
 class Session:
@@ -198,13 +200,15 @@ class Session:
     def compact(self, summary: str) -> None:
         """压缩旧消息为摘要，保留近期消息直到目标 token 数。
 
-        与旧版固定保留 10 条不同，这里按 token 预算动态保留，
-        确保近期上下文最大化。
+        双重限制：token 预算 + 最大条数，取较严格的那个。
+        防止短消息（群聊常见）场景下 token 限额无法有效缩减条数。
         """
-        # 从后往前保留消息，直到达到目标 token 数
+        # 从后往前保留消息，直到达到目标 token 数或条数上限
         kept: list[dict] = []
         budget = COMPACT_TARGET_TOKENS
         for msg in reversed(self.messages):
+            if len(kept) >= COMPACT_MAX_KEEP:
+                break
             msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
             if budget - msg_tokens < 0 and kept:
                 break
@@ -224,15 +228,19 @@ class Session:
 
     def get_compaction_context(self) -> list[dict]:
         """返回将被压缩的旧消息（用于生成摘要）"""
-        # 计算要保留的消息数
+        # 计算要保留的消息数（与 compact() 逻辑一致：token + 条数双重限制）
         budget = COMPACT_TARGET_TOKENS
+        keep_count = 0
         keep_from = len(self.messages)
         for i in range(len(self.messages) - 1, -1, -1):
+            if keep_count >= COMPACT_MAX_KEEP:
+                break
             msg = self.messages[i]
             msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
             if budget - msg_tokens < 0:
                 break
             keep_from = i
+            keep_count += 1
             budget -= msg_tokens
         # 返回将被压缩掉的消息
         return self.messages[:keep_from]
