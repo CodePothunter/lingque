@@ -13,8 +13,10 @@ A personal AI assistant framework deeply integrated with [Feishu (Lark)](https:/
 - **Card messages** — Structured information display (schedule cards, task cards, info cards)
 - **Self-awareness** — The assistant understands its own architecture, can read/write its config files
 - **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
+- **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
+- **Social interactions** — Self-introduction on joining a group, welcome messages for new members, daily morning greetings with deterministic jitter to prevent duplicates
 - **API usage tracking** — Daily/monthly token usage and cost statistics
-- **Multi-instance** — Run multiple independent assistants simultaneously, fully isolated
+- **Multi-instance** — Run multiple independent assistants simultaneously, fully isolated with no shared state
 - **Pinyin paths** — Chinese names auto-convert to pinyin slugs for filesystem compatibility
 
 ## Quick Start
@@ -55,16 +57,18 @@ Chinese names are auto-converted to pinyin slugs for directory names:
 
 ```
 ~/.lq-naiyou/
-├── config.json      # Runtime config
-├── SOUL.md          # Persona definition ← edit this
-├── MEMORY.md        # Long-term memory
-├── HEARTBEAT.md     # Heartbeat task definitions
-├── memory/          # Daily journals
-├── sessions/        # Session persistence
-├── groups/          # Group chat context
-├── tools/           # Custom tool plugins
-├── logs/            # Runtime logs
-└── stats.jsonl      # API usage records
+├── config.json          # Runtime config
+├── SOUL.md              # Persona definition ← edit this
+├── MEMORY.md            # Long-term memory
+├── HEARTBEAT.md         # Heartbeat task definitions
+├── bot_identities.json  # Auto-inferred identities of other bots
+├── groups.json          # Known group chat IDs (for morning greetings, etc.)
+├── memory/              # Daily journals
+├── sessions/            # Session persistence
+├── groups/              # Group chat context
+├── tools/               # Custom tool plugins
+├── logs/                # Runtime logs
+└── stats.jsonl          # API usage records
 ```
 
 ### Edit Persona
@@ -95,7 +99,9 @@ uv run lq stop @奶油            # stop
 ```
 Main thread: asyncio.run(gateway.run())
 ├── message_consumer  — asyncio.Queue → router.handle()
-└── heartbeat         — periodic tasks (daily briefing, cost alerts)
+├── heartbeat         — periodic tasks (daily briefing, cost alerts, morning greetings)
+├── group_poller      — polls group chat API to discover other bot messages
+└── auto_save         — periodic session & known groups persistence
 
 Feishu thread (daemon): ws_client.start()
 └── on_message() → loop.call_soon_threadsafe(queue.put_nowait, data)
@@ -104,9 +110,13 @@ Feishu thread (daemon): ws_client.start()
 Message flow:
 
 ```
-Feishu message → listener (WS thread) → Queue → router
-  ├── DM → session mgmt → LLM (tool use loop) → send reply
-  └── Group → rule filter → buffer → LLM eval → maybe reply
+Feishu message → listener (WS thread) → Queue → router (message_id dedup)
+  ├── DM → debounce → session mgmt → LLM (tool use loop) → send reply
+  ├── Group → rule filter → buffer → LLM eval → maybe reply
+  ├── bot.added → self-introduction
+  └── user.added → welcome message
+
+Group polling → fetch_chat_messages API → bot identity inference → inject into buffer
 ```
 
 ## Built-in Tools
@@ -229,8 +239,8 @@ Edit `~/.lq-{slug}/config.json`:
 src/lq/
 ├── cli.py              # CLI entry point
 ├── config.py           # Config loader (with pinyin slug)
-├── gateway.py          # Main orchestrator (dual-thread architecture)
-├── router.py           # Message routing + three-layer intervention + tool calls
+├── gateway.py          # Main orchestrator (dual-thread + group polling + morning greetings)
+├── router.py           # Message routing + three-layer intervention + tool calls + multi-bot coordination
 ├── tools.py            # Custom tool plugin system
 ├── buffer.py           # Group chat message buffer
 ├── session.py          # Session management + compaction
@@ -242,8 +252,8 @@ src/lq/
 │   ├── api.py          # Anthropic API (with retry + tool use)
 │   └── claude_code.py  # Claude Code subprocess
 └── feishu/
-    ├── listener.py     # WebSocket event receiver
-    ├── sender.py       # Message sender (text + cards)
+    ├── listener.py     # WebSocket event receiver + join/leave events
+    ├── sender.py       # Message sender + bot identity inference + member management
     ├── calendar.py     # Calendar API
     └── cards.py        # Card builder
 ```

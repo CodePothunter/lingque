@@ -11,8 +11,10 @@
 - **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡）
 - **自我认知** — 助理了解自己的架构，可读写自身配置文件
 - **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
+- **多实例群聊协作** — 多个独立 bot 共存同一群聊，自动感知邻居、避免抢答，通过消息信号自主推断彼此身份并持久记忆
+- **社交互动** — 入群自我介绍、新成员欢迎消息、每日早安问候（deterministic jitter 防重发）
 - **API 消耗追踪** — 按日/月统计 Token 用量与费用
-- **多实例** — 同时运行多个独立助理，各自隔离
+- **多实例** — 同时运行多个独立助理，各自隔离，无共享状态
 - **拼音路径** — 中文名自动转拼音 slug，避免文件系统问题
 
 ## 快速开始
@@ -53,16 +55,18 @@ uv run lq init --name 奶油 --from-env .env
 
 ```
 ~/.lq-naiyou/
-├── config.json      # 运行配置
-├── SOUL.md          # 人格定义 ← 编辑这个
-├── MEMORY.md        # 长期记忆
-├── HEARTBEAT.md     # 心跳任务定义
-├── memory/          # 每日日志
-├── sessions/        # 会话持久化
-├── groups/          # 群聊上下文
-├── tools/           # 自定义工具插件
-├── logs/            # 运行日志
-└── stats.jsonl      # API 消耗记录
+├── config.json          # 运行配置
+├── SOUL.md              # 人格定义 ← 编辑这个
+├── MEMORY.md            # 长期记忆
+├── HEARTBEAT.md         # 心跳任务定义
+├── bot_identities.json  # 自主推断的其他 bot 身份映射
+├── groups.json          # 已知群聊 ID（用于早安问候等）
+├── memory/              # 每日日志
+├── sessions/            # 会话持久化
+├── groups/              # 群聊上下文
+├── tools/               # 自定义工具插件
+├── logs/                # 运行日志
+└── stats.jsonl          # API 消耗记录
 ```
 
 ### 编辑人格
@@ -93,7 +97,9 @@ uv run lq stop @奶油            # 停止
 ```
 主线程: asyncio.run(gateway.run())
 ├── message_consumer  — asyncio.Queue → router.handle()
-└── heartbeat         — 定时心跳（晨报、费用告警）
+├── heartbeat         — 定时心跳（晨报、费用告警、早安问候）
+├── group_poller      — 主动轮询群聊 API，发现其他 bot 消息
+└── auto_save         — 定期保存会话和已知群聊
 
 飞书线程 (daemon): ws_client.start()
 └── on_message() → loop.call_soon_threadsafe(queue.put_nowait, data)
@@ -102,9 +108,13 @@ uv run lq stop @奶油            # 停止
 消息处理流程：
 
 ```
-飞书消息 → listener (WS线程) → Queue → router
-  ├── 私聊 → 会话管理 → LLM (tool use loop) → 发送回复
-  └── 群聊 → 规则过滤 → 缓冲区 → LLM判断介入 → 可能回复
+飞书消息 → listener (WS线程) → Queue → router (message_id 去重)
+  ├── 私聊 → 防抖合并 → 会话管理 → LLM (tool use loop) → 发送回复
+  ├── 群聊 → 规则过滤 → 缓冲区 → LLM判断介入 → 可能回复
+  ├── bot.added → 自我介绍
+  └── user.added → 欢迎消息
+
+群聊主动轮询 → fetch_chat_messages API → bot 身份推断 → 注入缓冲区
 ```
 
 ## 内置工具
@@ -227,8 +237,8 @@ async def execute(input_data: dict, context: dict) -> dict:
 src/lq/
 ├── cli.py              # CLI 入口
 ├── config.py           # 配置加载（含拼音 slug）
-├── gateway.py          # 主编排器（双线程架构）
-├── router.py           # 消息路由 + 三层介入 + 工具调用
+├── gateway.py          # 主编排器（双线程架构 + 群聊轮询 + 早安问候）
+├── router.py           # 消息路由 + 三层介入 + 工具调用 + 多 bot 协作
 ├── tools.py            # 自定义工具插件系统
 ├── buffer.py           # 群聊消息缓冲区
 ├── session.py          # 会话管理 + compaction
@@ -240,8 +250,8 @@ src/lq/
 │   ├── api.py          # Anthropic API（含重试 + tool use）
 │   └── claude_code.py  # Claude Code 子进程
 └── feishu/
-    ├── listener.py     # WebSocket 事件接收
-    ├── sender.py       # 消息发送（文本 + 卡片）
+    ├── listener.py     # WebSocket 事件接收 + 入群/退群事件
+    ├── sender.py       # 消息发送 + bot 身份推断 + 成员管理
     ├── calendar.py     # 日历 API
     └── cards.py        # 卡片构建
 ```
