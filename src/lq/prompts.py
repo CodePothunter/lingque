@@ -74,11 +74,15 @@ CONSTRAINTS_PRIVATE = (
     "\n- 回复务必简短精炼，不要长篇大论"
     "\n- 禁止使用 emoji"
     "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
-    "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
+    "\n- 需要联网信息时（搜索、查天气、查汇率、查新闻等），直接使用 web_search / web_fetch 工具。"
+    "不要说「我无法联网」——你有内置的联网能力。"
+    "\n- 需要计算或数据处理时，直接使用 run_python 执行 Python 代码。"
+    "\n- 需要读写文件时，直接使用 read_file / write_file 工具。"
+    "\n- 当以上内置工具仍无法满足需求时，"
     "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
     "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
     "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
-    "\n- 当用户需要你完成编程、代码、文件操作或系统管理任务时，使用 run_claude_code 或 run_bash 工具。"
+    "\n- 当用户需要你完成编程、代码或系统管理任务时，使用 run_claude_code 或 run_bash 工具。"
     "对于复杂的多步骤任务优先使用 run_claude_code，简单命令使用 run_bash。"
 )
 
@@ -90,7 +94,7 @@ CONSTRAINTS_GROUP = (
     "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
     "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
     "\n- 如果之前给了错误信息被指出，大方承认并纠正，不要嘴硬"
-    "\n- 不要编造实时数据（天气、汇率等），需要时先用 create_custom_tool 获取"
+    "\n- 不要编造实时数据（天气、汇率等），需要时使用 web_search 或 web_fetch 获取真实数据"
     "\n- 如果群里有另一个 bot 已经回复了相同话题，不要重复相同内容；可以补充或接话"
     "\n- 如果 <neighbors> 中的某个 AI 更适合回答当前话题，主动让步"
     "\n- 如果你和另一个 AI 同时回复了（碰撞），用轻松自然的方式化解"
@@ -123,6 +127,9 @@ PRIVATE_SYSTEM_SUFFIX = (
     "\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
     "如果涉及日程，使用 calendar 工具。"
     "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
+    "需要联网查询时（搜索、天气、新闻等），使用 web_search / web_fetch 工具。"
+    "需要计算或处理数据时，使用 run_python 工具。"
+    "需要读写文件时，使用 read_file / write_file 工具。"
     "如果用户需要你执行编程任务或系统操作，使用 run_claude_code 或 run_bash 工具。"
 )
 
@@ -230,6 +237,10 @@ SELF_AWARENESS_TEMPLATE = (
     "- **MEMORY.md**: 长期记忆存储，按分区组织。你已有 write_memory 工具来更新它。\n"
     "- **HEARTBEAT.md**: 定义你的定时任务和主动行为模板。\n\n"
     "### 你的能力（均有对应工具可调用）\n"
+    "- 使用 web_search 工具搜索互联网获取实时信息（新闻、天气、百科、技术文档等）\n"
+    "- 使用 web_fetch 工具抓取任意网页的文本内容\n"
+    "- 使用 run_python 工具执行 Python 代码片段（计算、数据处理、文本操作等）\n"
+    "- 使用 read_file / write_file 工具读写文件系统中的任意文件\n"
     "- 使用 send_message 工具主动给任何用户或群聊发消息\n"
     "- 使用 schedule_message 工具定时发送消息（如「5分钟后提醒我」）\n"
     "- 使用 calendar_create_event / calendar_list_events 工具创建和查询日历事件\n"
@@ -254,9 +265,26 @@ SELF_AWARENESS_TEMPLATE = (
     "- 管理进程和系统状态\n"
     "- 安装软件包\n"
     "简单的命令行操作使用 run_bash，复杂任务使用 run_claude_code。\n\n"
+    "### 联网能力\n"
+    "你拥有内置的联网工具，可以直接搜索和获取互联网信息：\n"
+    "- 使用 web_search 工具搜索互联网（新闻、百科、技术文档、天气、汇率等）\n"
+    "- 使用 web_fetch 工具抓取任意网页的文本内容\n"
+    "当用户询问需要实时信息的问题时（如天气、新闻、股价），直接使用这些工具获取答案。\n\n"
+    "### Python 代码执行\n"
+    "你拥有 run_python 工具，可以直接执行 Python 代码片段：\n"
+    "- 数据计算、数学运算\n"
+    "- 文本处理、JSON 解析\n"
+    "- 日期时间计算\n"
+    "- 任何可以用 Python 标准库完成的轻量任务\n"
+    "简单计算使用 run_python，复杂的多步骤编程任务使用 run_claude_code。\n\n"
+    "### 文件系统操作\n"
+    "你拥有通用的文件读写工具：\n"
+    "- 使用 read_file 读取任意文件（代码、配置、日志、数据等）\n"
+    "- 使用 write_file 写入任意文件（生成报告、保存数据、创建配置等）\n"
+    "这些工具可以操作文件系统中的任意文件，不限于工作区。\n\n"
     "### 自主能力扩展\n"
-    "当用户提出需求而你现有工具无法满足时，你应该**主动创建新工具**来获得这个能力。\n"
-    "例如：用户要查天气 → 创建天气查询工具；用户要搜索网页 → 创建网络搜索工具。\n"
+    "当上述内置工具仍然无法满足需求时，你可以**主动创建新的自定义工具**来获得额外能力。\n"
+    "例如：需要调用特定 API → 创建 API 调用工具；需要定期抓取数据 → 创建数据采集工具。\n"
     "不要说「我没有这个功能」——你可以给自己创造功能。\n"
     "工具代码中可以使用 context['http']（httpx.AsyncClient）发起网络请求。\n\n"
     "### 自我修改\n"
@@ -376,6 +404,32 @@ TOOL_DESC_RUN_BASH = (
     "复杂的多步骤任务请使用 run_claude_code。"
 )
 
+TOOL_DESC_WEB_SEARCH = (
+    "搜索互联网获取实时信息。用于查询新闻、天气、汇率、百科知识、技术文档等任何需要联网查询的内容。"
+    "返回搜索结果列表，包含标题、链接和摘要。如需详细内容，可配合 web_fetch 获取完整网页。"
+)
+
+TOOL_DESC_WEB_FETCH = (
+    "抓取指定 URL 的网页内容并提取纯文本。用于读取文章、文档、API 响应等网页内容。"
+    "自动处理 HTML 转文本，返回清洁的可读内容。支持任意公开可访问的 URL。"
+)
+
+TOOL_DESC_RUN_PYTHON = (
+    "执行 Python 代码片段。适用于：数据计算、文本处理、JSON 解析、数学运算、"
+    "日期计算、字符串操作等轻量级编程任务。代码在独立子进程中执行，可使用标准库。"
+    "复杂的多步骤编程任务请使用 run_claude_code。"
+)
+
+TOOL_DESC_READ_FILE = (
+    "读取文件系统中的任意文件内容。支持文本文件、配置文件、代码文件、日志等。"
+    "可指定最大行数限制，避免读取超大文件时占用过多内存。"
+)
+
+TOOL_DESC_WRITE_FILE = (
+    "将内容写入文件系统中的任意路径。可用于创建新文件或覆盖已有文件。"
+    "自动创建不存在的父目录。适用于保存数据、生成配置、输出报告等场景。"
+)
+
 # Tool input field descriptions
 TOOL_FIELD_SECTION = "记忆分区名（如：重要信息、用户偏好、备忘、待办事项）"
 TOOL_FIELD_CONTENT_MEMORY = "要记住的内容，支持 Markdown 格式，建议用列表组织多条信息"
@@ -413,6 +467,16 @@ TOOL_FIELD_WORKING_DIR = "工作目录路径（可选，默认为工作区目录
 TOOL_FIELD_CC_TIMEOUT = "超时时间（秒），默认 300"
 TOOL_FIELD_BASH_COMMAND = "要执行的 shell 命令"
 TOOL_FIELD_BASH_TIMEOUT = "超时时间（秒），默认 60"
+TOOL_FIELD_SEARCH_QUERY = "搜索关键词，支持中英文"
+TOOL_FIELD_SEARCH_MAX_RESULTS = "返回结果数量上限，默认 5"
+TOOL_FIELD_FETCH_URL = "要抓取的完整 URL（含 http:// 或 https://）"
+TOOL_FIELD_FETCH_MAX_LENGTH = "返回文本的最大字符数，默认 8000"
+TOOL_FIELD_PYTHON_CODE = "要执行的 Python 代码（支持多行）"
+TOOL_FIELD_PYTHON_TIMEOUT = "超时时间（秒），默认 30"
+TOOL_FIELD_FILE_PATH = "文件的绝对路径或相对于工作区的路径"
+TOOL_FIELD_FILE_MAX_LINES = "最大读取行数，默认 500"
+TOOL_FIELD_WRITE_PATH = "目标文件的绝对路径或相对于工作区的路径"
+TOOL_FIELD_WRITE_CONTENT = "要写入的文件内容"
 
 
 # =====================================================================
@@ -448,6 +512,10 @@ ERR_TIME_PAST = "计划时间已过去"
 ERR_FILE_NOT_ALLOWED_READ = "不允许读取 {filename}，可读文件: {allowed}"
 ERR_FILE_NOT_ALLOWED_WRITE = "不允许写入 {filename}，可写文件: {allowed}"
 ERR_CODE_VALIDATION_OK = "代码校验通过"
+ERR_FILE_NOT_FOUND = "文件不存在: {path}"
+ERR_FILE_READ_FAILED = "文件读取失败: {error}"
+ERR_FILE_WRITE_FAILED = "文件写入失败: {error}"
+RESULT_FILE_WRITTEN = "已写入文件: {path} ({size} 字节)"
 
 
 # =====================================================================
