@@ -7,7 +7,10 @@ import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from lq.feishu.sender import FeishuSender
 
 from lq.session import estimate_tokens
 
@@ -50,24 +53,25 @@ class MemoryManager:
             return mem_path.read_text(encoding="utf-8")
         return ""
 
-    def build_neighbor_context(self, sender: Any, chat_id: str) -> str:
+    def build_neighbor_context(self, sender: FeishuSender, chat_id: str) -> str:
         """构建群里其他 bot 的上下文信息"""
         if not sender or not chat_id:
             return ""
         try:
             bot_ids = sender.get_bot_members(chat_id)
         except Exception:
+            logger.warning("构建邻居上下文失败 chat=%s", chat_id[-8:], exc_info=True)
             return ""
         if not bot_ids:
             return ""
         lines = ["<neighbors>", "群里还有以下 AI 助理："]
         for bid in bot_ids:
-            name = sender._user_name_cache.get(bid, bid[-6:])
+            name = sender.get_member_name(bid)
             lines.append(f"- {name}")
         lines.append("</neighbors>")
         return "\n".join(lines)
 
-    def build_context(self, chat_id: str = "", include_tools_awareness: bool = True, sender: Any = None) -> str:
+    def build_context(self, chat_id: str = "", include_tools_awareness: bool = True, sender: FeishuSender | None = None) -> str:
         """拼接系统 prompt，带 token 预算控制。
 
         各部分按优先级分配预算：

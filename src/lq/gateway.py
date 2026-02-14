@@ -345,7 +345,7 @@ class AssistantGateway:
                     try:
                         api_msgs = await sender.fetch_chat_messages(chat_id, 10)
                     except Exception:
-                        logger.debug("主动轮询群 %s 失败", chat_id[-8:])
+                        logger.warning("主动轮询群 %s 失败", chat_id[-8:], exc_info=True)
                         continue
                     if not api_msgs:
                         continue

@@ -268,6 +268,10 @@ class FeishuSender:
         bots = self._bot_members.get(chat_id, set())
         return bots - {self.bot_open_id} if self.bot_open_id else bots
 
+    def get_member_name(self, open_id: str) -> str:
+        """同步查找已缓存的成员名字，无缓存时返回 ID 尾部"""
+        return self._user_name_cache.get(open_id, open_id[-6:])
+
     # ── Reaction API（意图信号）──
 
     async def add_reaction(
@@ -287,9 +291,9 @@ class FeishuSender:
                 reaction_id = data.get("data", {}).get("reaction_id", "")
                 logger.debug("添加 reaction %s 到 %s", emoji_type, message_id[-8:])
                 return reaction_id
-            logger.debug("添加 reaction 失败: code=%d", data.get("code", -1))
+            logger.warning("添加 reaction 失败: code=%d", data.get("code", -1))
         except Exception:
-            logger.debug("添加 reaction 异常", exc_info=True)
+            logger.warning("添加 reaction 异常", exc_info=True)
         return None
 
     async def remove_reaction(
@@ -309,9 +313,9 @@ class FeishuSender:
             if data.get("code") == 0:
                 logger.debug("移除 reaction %s", reaction_id[:8])
                 return True
-            logger.debug("移除 reaction 失败: code=%d", data.get("code", -1))
+            logger.warning("移除 reaction 失败: code=%d", data.get("code", -1))
         except Exception:
-            logger.debug("移除 reaction 异常", exc_info=True)
+            logger.warning("移除 reaction 异常", exc_info=True)
         return False
 
     async def fetch_chat_messages(self, chat_id: str, count: int = 10) -> list[dict]:
