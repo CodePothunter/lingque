@@ -248,6 +248,9 @@ class MessageRouter:
         # 私聊防抖：chat_id → {texts, message_id, timer, event}
         self._private_pending: dict[str, dict] = {}
         self._private_debounce_seconds: float = 1.5
+        # per-chat 锁：确保同一会话的 LLM 调用串行执行，
+        # 防止并发导致 session 消息顺序错乱
+        self._chat_locks: dict[str, asyncio.Lock] = {}
         # 群聊 bot 消息轮询计数（防止 bot 间无限对话，用户消息重置）
         self._bot_poll_count: dict[str, int] = {}
         self._bot_poll_timers: dict[str, asyncio.TimerHandle] = {}
@@ -344,58 +347,74 @@ class MessageRouter:
             )
 
     async def _flush_private(self, chat_id: str) -> None:
-        """防抖到期，合并消息并执行 LLM 回复"""
+        """防抖到期，合并消息并执行 LLM 回复。
+
+        使用 per-chat 锁确保同一会话的消息按序处理：
+        锁等待期间积攒的新消息会在获得锁后一并合并，
+        避免并发 LLM 调用导致 session 消息顺序错乱。
+        """
         pending = self._private_pending.pop(chat_id, None)
         if not pending:
             return
 
-        # 合并多条消息为一条
-        combined_text = "\n".join(pending["texts"])
-        message_id = pending["message_id"]
-        sender_name = pending["sender_name"]
+        lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            # 锁等待期间可能又积攒了新消息，一并合并
+            extra = self._private_pending.pop(chat_id, None)
+            if extra:
+                pending["texts"].extend(extra["texts"])
+                pending["message_id"] = extra["message_id"]
+                pending["sender_name"] = extra["sender_name"]
+                if extra.get("timer"):
+                    extra["timer"].cancel()
 
-        system = self.memory.build_context(chat_id=chat_id)
-        system += (
-            f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
-            "如果用户要求记住什么，使用 write_memory 工具。"
-            "如果涉及日程，使用 calendar 工具。"
-            "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
-            "\n\n<constraints>"
-            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-            "\n- 回复务必简短精炼，不要长篇大论"
-            "\n- 禁止使用 emoji"
-            "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
-            "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
-            "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
-            "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
-            "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
-            "\n</constraints>"
-        )
+            # 合并多条消息为一条
+            combined_text = "\n".join(pending["texts"])
+            message_id = pending["message_id"]
+            sender_name = pending["sender_name"]
 
-        # 使用会话管理器维护上下文
-        if self.session_mgr:
-            session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("user", combined_text, sender_name=sender_name)
-            messages = session.get_messages()
-        else:
-            messages = [{"role": "user", "content": combined_text}]
-
-        # 尝试带工具回复
-        try:
-            reply_text = await self._reply_with_tool_loop(
-                system, messages, chat_id, message_id
+            system = self.memory.build_context(chat_id=chat_id)
+            system += (
+                f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
+                "如果用户要求记住什么，使用 write_memory 工具。"
+                "如果涉及日程，使用 calendar 工具。"
+                "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
+                "\n\n<constraints>"
+                "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
+                "\n- 回复务必简短精炼，不要长篇大论"
+                "\n- 禁止使用 emoji"
+                "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
+                "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
+                "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
+                "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
+                "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
+                "\n</constraints>"
             )
-        except Exception:
-            logger.exception("私聊回复失败 (chat=%s)", chat_id)
-            reply_text = ""
 
-        if self.session_mgr and reply_text:
-            session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("assistant", reply_text, sender_name="你")
-            if session.should_compact():
-                await self._compact_session(session)
+            # 使用会话管理器维护上下文
+            if self.session_mgr:
+                session = self.session_mgr.get_or_create(chat_id)
+                session.add_message("user", combined_text, sender_name=sender_name)
+                messages = session.get_messages()
+            else:
+                messages = [{"role": "user", "content": combined_text}]
 
-        # 记录日志
+            # 尝试带工具回复
+            try:
+                reply_text = await self._reply_with_tool_loop(
+                    system, messages, chat_id, message_id
+                )
+            except Exception:
+                logger.exception("私聊回复失败 (chat=%s)", chat_id)
+                reply_text = ""
+
+            if self.session_mgr and reply_text:
+                session = self.session_mgr.get_or_create(chat_id)
+                session.add_message("assistant", reply_text, sender_name="你")
+                if session.should_compact():
+                    await self._compact_session(session)
+
+        # 记录日志（锁外执行，无需保护）
         self.memory.append_daily(f"- 私聊 [{sender_name}]: {combined_text[:50]}... → {'已回复' if reply_text else '回复失败'}\n", chat_id=chat_id)
 
     def _build_all_tools(self) -> list[dict]:
@@ -838,21 +857,23 @@ class MessageRouter:
                 name_to_id[n] = oid
         transform = lambda t: self._replace_at_mentions(t, name_to_id)
 
-        if self.session_mgr:
-            session = self.session_mgr.get_or_create(message.chat_id)
-            session.add_message("user", text, sender_name=sender_name)
-            messages = session.get_messages()
-        else:
-            messages = [{"role": "user", "content": text}]
+        lock = self._chat_locks.setdefault(message.chat_id, asyncio.Lock())
+        async with lock:
+            if self.session_mgr:
+                session = self.session_mgr.get_or_create(message.chat_id)
+                session.add_message("user", text, sender_name=sender_name)
+                messages = session.get_messages()
+            else:
+                messages = [{"role": "user", "content": text}]
 
-        reply_text = await self._reply_with_tool_loop(
-            system, messages, message.chat_id, message.message_id,
-            text_transform=transform,
-        )
+            reply_text = await self._reply_with_tool_loop(
+                system, messages, message.chat_id, message.message_id,
+                text_transform=transform,
+            )
 
-        if reply_text and self.session_mgr:
-            session = self.session_mgr.get_or_create(message.chat_id)
-            session.add_message("assistant", reply_text, sender_name="你")
+            if reply_text and self.session_mgr:
+                session = self.session_mgr.get_or_create(message.chat_id)
+                session.add_message("assistant", reply_text, sender_name="你")
 
         if reply_text:
             self._schedule_bot_poll(message.chat_id)
@@ -1011,21 +1032,23 @@ class MessageRouter:
         # text_transform 在发送前将 @名字 替换为飞书 <at> 标记
         transform = lambda t: self._replace_at_mentions(t, name_to_id)
 
-        if self.session_mgr:
-            session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("user", f"[群聊旁听]\n{conversation}", sender_name="群聊")
-            messages = session.get_messages()
-        else:
-            messages = [{"role": "user", "content": f"[群聊旁听]\n{conversation}"}]
+        lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            if self.session_mgr:
+                session = self.session_mgr.get_or_create(chat_id)
+                session.add_message("user", f"[群聊旁听]\n{conversation}", sender_name="群聊")
+                messages = session.get_messages()
+            else:
+                messages = [{"role": "user", "content": f"[群聊旁听]\n{conversation}"}]
 
-        reply_text = await self._reply_with_tool_loop(
-            system, messages, chat_id, reply_to,
-            text_transform=transform, allow_nudge=False,
-        )
+            reply_text = await self._reply_with_tool_loop(
+                system, messages, chat_id, reply_to,
+                text_transform=transform, allow_nudge=False,
+            )
 
-        if reply_text and self.session_mgr:
-            session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("assistant", reply_text, sender_name="你")
+            if reply_text and self.session_mgr:
+                session = self.session_mgr.get_or_create(chat_id)
+                session.add_message("assistant", reply_text, sender_name="你")
 
         if reply_text:
             self._schedule_bot_poll(chat_id)
