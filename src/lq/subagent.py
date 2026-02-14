@@ -7,39 +7,9 @@ import logging
 from typing import Any
 
 from lq.executor.api import DirectAPIExecutor
+from lq.prompts import EXTRACTION_PROMPTS, SUBAGENT_SYSTEM, SUBAGENT_CONTEXT_USER, SUBAGENT_CONTEXT_ASSISTANT
 
 logger = logging.getLogger(__name__)
-
-# 每种意图的参数提取 prompt 模板
-_EXTRACTION_PROMPTS: dict[str, str] = {
-    "memory_write": (
-        "从用户消息中提取要记住的内容。\n"
-        "输出 JSON：{\"section\": \"分区名\", \"content\": \"要记住的内容\"}\n"
-        "分区名可选：重要信息、用户偏好、备忘、待办事项。根据内容选择合适分区。\n"
-        "只输出 JSON，不要其他文字。"
-    ),
-    "schedule_reminder": (
-        "从用户消息中提取定时提醒的参数。\n"
-        "输出 JSON：{\"text\": \"提醒内容\", \"time_expr\": \"原始时间表达式\"}\n"
-        "time_expr 保留用户的原始表达（如 '5分钟后'、'明天下午3点'）。\n"
-        "text 是要提醒的内容（去掉时间部分）。\n"
-        "只输出 JSON，不要其他文字。"
-    ),
-    "calendar_create": (
-        "从用户消息中提取日历事件参数。\n"
-        "输出 JSON：{\"summary\": \"事件标题\", \"time_expr\": \"原始时间表达式\", "
-        "\"duration_minutes\": 60}\n"
-        "summary 是事件的简短标题。\n"
-        "time_expr 保留用户的原始时间表达。\n"
-        "duration_minutes 是持续时间（分钟），默认60。\n"
-        "只输出 JSON，不要其他文字。"
-    ),
-}
-
-_SYSTEM_PROMPT = (
-    "你是一个参数提取器。根据用户消息和指令，提取结构化参数并以 JSON 格式输出。"
-    "严格只输出 JSON 对象，不要包含任何其他文字、解释或 markdown 格式。"
-)
 
 
 class SubAgent:
@@ -60,7 +30,7 @@ class SubAgent:
         Returns:
             提取到的参数 dict，或 None（解析失败时优雅降级）。
         """
-        prompt_template = _EXTRACTION_PROMPTS.get(intent_type)
+        prompt_template = EXTRACTION_PROMPTS.get(intent_type)
         if not prompt_template:
             logger.warning("SubAgent: 未知意图类型 %s", intent_type)
             return None
@@ -70,15 +40,15 @@ class SubAgent:
                 "role": "user",
                 "content": (
                     f"{prompt_template}\n\n"
-                    f"用户消息：{user_message}\n"
-                    f"助手回复：{llm_response}"
+                    f"{SUBAGENT_CONTEXT_USER.format(message=user_message)}\n"
+                    f"{SUBAGENT_CONTEXT_ASSISTANT.format(reply=llm_response)}"
                 ),
             },
         ]
 
         try:
             raw = await self.executor.reply_with_history(
-                system=_SYSTEM_PROMPT,
+                system=SUBAGENT_SYSTEM,
                 messages=messages,
                 max_tokens=512,
             )

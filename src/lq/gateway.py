@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import signal
 import sys
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from lq.config import LQConfig
 from lq.executor.api import DirectAPIExecutor
-from lq.executor.claude_code import ClaudeCodeExecutor
+from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.feishu.listener import FeishuListener
 from lq.feishu.sender import FeishuSender
 from lq.heartbeat import HeartbeatRunner
@@ -82,9 +85,16 @@ class AssistantGateway:
         if bot_open_id:
             self.config.feishu.bot_open_id = bot_open_id
         bot_name = bot_info.get("app_name") or bot_info.get("bot_name") or self.config.name
+        sender.bot_open_id = bot_open_id
         if bot_open_id and bot_name:
             sender._user_name_cache[bot_open_id] = bot_name
-        logger.info("Bot open_id: %s name: %s", bot_open_id, bot_name)
+        # 消息列表 API 中 bot 的 sender_id 使用 app_id (cli_xxx) 格式，
+        # 缓存 app_id → name 以便识别自己发送的消息
+        if self.config.feishu.app_id and bot_name:
+            sender._user_name_cache[self.config.feishu.app_id] = bot_name
+        # 加载之前推断并记忆的其他 bot 身份
+        sender.load_bot_identities(self.home)
+        logger.info("Bot open_id: %s app_id: %s name: %s", bot_open_id, self.config.feishu.app_id, bot_name)
 
         # 初始化核心组件
         memory = MemoryManager(self.home)
@@ -108,14 +118,22 @@ class AssistantGateway:
         except Exception:
             logger.warning("日历模块加载失败", exc_info=True)
 
+        # 初始化 Bash 执行器
+        bash_executor = BashExecutor(self.home)
+
         # 创建路由器并注入依赖
         router = MessageRouter(executor, memory, sender, bot_open_id, bot_name)
         router.session_mgr = session_mgr
         router.calendar = calendar
         router.stats = stats
         router.cc_executor = cc_executor
+        router.bash_executor = bash_executor
         router.tool_registry = tool_registry
-        logger.info("会话管理器已加载")
+        self._router = router
+        logger.info("会话管理器已加载（含 Claude Code + Bash 执行器）")
+
+        # 加载已知群聊 ID（用于早安问候等）
+        self._load_known_groups(router)
 
         # 初始化后处理管线
         from lq.intent import IntentDetector
@@ -125,7 +143,7 @@ class AssistantGateway:
         detector = IntentDetector(executor)
         subagent = SubAgent(executor)
         post_processor = PostProcessor(
-            detector, subagent, router._execute_tool, router._send_reply,
+            detector, subagent, router._execute_tool, router._send_tool_notification,
         )
         router.post_processor = post_processor
         logger.info("后处理管线已加载")
@@ -155,17 +173,31 @@ class AssistantGateway:
         feishu_thread.start()
         logger.info("飞书 WebSocket 线程已启动")
 
-        # 并发运行消费者、心跳、inbox 轮询和会话自动保存
-        await asyncio.gather(
-            self._consume_messages(router, loop),
-            heartbeat.run_forever(self.shutdown_event),
-            self._poll_inbox(router),
-            self._auto_save_sessions(session_mgr),
-        )
+        # 并发运行消费者、心跳、inbox 轮询、会话自动保存和群聊主动轮询
+        tasks = [
+            asyncio.create_task(self._consume_messages(router, loop), name="consumer"),
+            asyncio.create_task(heartbeat.run_forever(self.shutdown_event), name="heartbeat"),
+            asyncio.create_task(self._poll_inbox(router), name="inbox"),
+            asyncio.create_task(self._auto_save_sessions(session_mgr), name="autosave"),
+            asyncio.create_task(self._poll_active_groups(router, sender), name="group-poll"),
+        ]
 
-        # 关闭时保存会话
+        # 等待 shutdown_event 被信号触发
+        await self.shutdown_event.wait()
+        logger.info("开始关闭，等待任务结束...")
+
+        # 给各任务一个宽限期，然后强制取消
+        _, pending = await asyncio.wait(tasks, timeout=5.0)
+        for t in pending:
+            logger.warning("强制取消任务: %s", t.get_name())
+            t.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=2.0)
+
+        # 关闭时保存会话和已知群聊
         session_mgr.save()
-        logger.info("会话已保存")
+        self._save_known_groups(router)
+        logger.info("会话已保存，关闭完成")
 
     async def _consume_messages(
         self,
@@ -232,6 +264,18 @@ class AssistantGateway:
                 except Exception:
                     logger.exception("晨报生成失败")
 
+            # 每日群聊早安问候
+            if is_daily_first:
+                try:
+                    known = router.get_known_group_ids()
+                    if known:
+                        self._schedule_morning_greetings(
+                            known, executor, memory, sender,
+                            config.name,
+                        )
+                except Exception:
+                    logger.exception("群聊早安问候调度失败")
+
             # 费用告警
             if stats:
                 daily = stats.get_daily_summary()
@@ -285,7 +329,14 @@ class AssistantGateway:
         msg_counter = 0
         while not self.shutdown_event.is_set():
             try:
-                await asyncio.sleep(2.0)
+                # 用 shutdown_event.wait + timeout 代替 sleep
+                try:
+                    await asyncio.wait_for(
+                        self.shutdown_event.wait(), timeout=2.0,
+                    )
+                    break  # shutdown_event 已设置
+                except asyncio.TimeoutError:
+                    pass  # 正常轮询周期
                 if not inbox_path.exists():
                     continue
                 text = inbox_path.read_text(encoding="utf-8").strip()
@@ -317,16 +368,164 @@ class AssistantGateway:
             except Exception:
                 logger.exception("inbox 轮询异常")
 
+    async def _poll_active_groups(
+        self,
+        router: MessageRouter,
+        sender: FeishuSender,
+    ) -> None:
+        """主动轮询活跃群聊的消息，补充 WS 收不到的 bot 消息。
+
+        每 3 秒轮询一个活跃群聊，将新发现的 bot 消息注入 router 的 group_buffers。
+        """
+        logger.info("群聊主动轮询启动")
+        while not self.shutdown_event.is_set():
+            try:
+                await asyncio.sleep(3.0)
+                active = router.get_active_groups()
+                if not active:
+                    continue
+                for chat_id in active:
+                    if self.shutdown_event.is_set():
+                        break
+                    try:
+                        api_msgs = await sender.fetch_chat_messages(chat_id, 10)
+                    except Exception:
+                        logger.warning("主动轮询群 %s 失败", chat_id[-8:], exc_info=True)
+                        continue
+                    if not api_msgs:
+                        continue
+                    bot_self_ids = {router.bot_open_id, self.config.feishu.app_id}
+                    for msg in api_msgs:
+                        if msg.get("sender_type") != "app":
+                            continue
+                        sender.register_bot_member(chat_id, msg["sender_id"])
+                        if msg.get("sender_id") in bot_self_ids:
+                            continue
+                        sender_name = await sender.resolve_name(msg["sender_id"])
+                        await router.inject_polled_message(chat_id, {
+                            "text": msg["text"],
+                            "sender_id": msg["sender_id"],
+                            "sender_name": sender_name,
+                            "sender_type": "app",
+                            "message_id": msg["message_id"],
+                            "chat_id": chat_id,
+                            "create_time": msg.get("create_time", ""),
+                        })
+                    # 多个群之间稍做间隔，避免 API 频率限制
+                    if len(active) > 1:
+                        await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("群聊主动轮询异常")
+        logger.info("群聊主动轮询已停止")
+
     async def _auto_save_sessions(self, session_mgr: SessionManager) -> None:
         """每 60 秒自动保存会话，防止崩溃丢失"""
         while not self.shutdown_event.is_set():
             try:
-                await asyncio.sleep(60)
-                session_mgr.save()
+                # 用 shutdown_event.wait + timeout 代替 sleep，
+                # 确保收到关闭信号时立即退出而非阻塞 60 秒
+                await asyncio.wait_for(
+                    self.shutdown_event.wait(), timeout=60,
+                )
+                break  # shutdown_event 已设置
+            except asyncio.TimeoutError:
+                pass  # 正常超时，执行保存
             except asyncio.CancelledError:
                 break
+            try:
+                session_mgr.save()
+                if hasattr(self, '_router'):
+                    self._save_known_groups(self._router)
             except Exception:
                 logger.exception("自动保存会话失败")
+
+    def _load_known_groups(self, router: MessageRouter) -> None:
+        """从 groups.json 加载已知群聊 ID"""
+        path = self.home / "groups.json"
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            ids = set(data.get("known_group_ids", []))
+            router.set_known_group_ids(ids)
+            logger.info("已加载 %d 个已知群聊", len(ids))
+        except Exception:
+            logger.warning("加载 groups.json 失败", exc_info=True)
+
+    def _save_known_groups(self, router: MessageRouter) -> None:
+        """保存已知群聊 ID 到 groups.json"""
+        path = self.home / "groups.json"
+        ids = router.get_known_group_ids()
+        try:
+            path.write_text(
+                json.dumps({"known_group_ids": sorted(ids)}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.warning("保存 groups.json 失败", exc_info=True)
+
+    def _schedule_morning_greetings(
+        self,
+        known_groups: set[str],
+        executor: Any,
+        memory: Any,
+        sender: Any,
+        bot_name: str,
+    ) -> None:
+        """为每个已知群聊安排延迟早安问候"""
+        from lq.prompts import MORNING_GREETING_SYSTEM, MORNING_GREETING_USER
+
+        today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        for chat_id in known_groups:
+            if sender.is_chat_left(chat_id):
+                continue
+            # deterministic jitter: 0-1800 秒，基于 hash 保证重启不重发
+            h = hashlib.md5(f"{bot_name}:{chat_id}:{today}".encode()).hexdigest()
+            delay = int(h[:8], 16) % 1800
+            asyncio.ensure_future(
+                self._do_morning_greeting(
+                    chat_id, delay, executor, memory, sender,
+                )
+            )
+        logger.info("已安排 %d 个群聊的早安问候", len(known_groups))
+
+    async def _do_morning_greeting(
+        self,
+        chat_id: str,
+        delay: int,
+        executor: Any,
+        memory: Any,
+        sender: Any,
+    ) -> None:
+        """延迟后检查群聊活跃度并发送早安问候"""
+        try:
+            await asyncio.sleep(delay)
+            # 检查今天是否已有消息（包括自己的）
+            msgs = await sender.fetch_chat_messages(chat_id, 20)
+            cst = timezone(timedelta(hours=8))
+            today_start = datetime.now(cst).replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            today_start_ms = int(today_start.timestamp() * 1000)
+            for msg in msgs:
+                ct = msg.get("create_time", "")
+                if ct and int(ct) >= today_start_ms:
+                    logger.debug("群 %s 今天已有消息，跳过早安", chat_id[-8:])
+                    return
+            # 生成问候
+            soul = memory.read_soul()
+            system = MORNING_GREETING_SYSTEM.format(soul=soul)
+            greeting = await executor.reply(system, MORNING_GREETING_USER)
+            greeting = greeting.strip()
+            if greeting:
+                await sender.send_text(chat_id, greeting)
+                logger.info("早安问候已发送: %s -> %s", chat_id[-8:], greeting[:50])
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("早安问候失败: %s", chat_id[-8:])
 
     def _setup_logging(self) -> None:
         log_dir = self.home / "logs"

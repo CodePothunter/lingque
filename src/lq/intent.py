@@ -7,14 +7,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from lq.prompts import RECOVERABLE_TOOL_DESCRIPTIONS, INTENT_DETECT_PROMPT, TOOLS_CALLED_NONE, EVIDENCE_LLM
 
-# PostProcessor 可补救的工具列表及描述
-RECOVERABLE_TOOLS = {
-    "write_memory": "用户要求记住某件事，但助手没有调用 write_memory 工具",
-    "schedule_message": "用户要求定时提醒，但助手没有调用 schedule_message 工具",
-    "calendar_create_event": "用户要求创建日程/会议，但助手没有调用 calendar_create_event 工具",
-}
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,7 +37,7 @@ class IntentDetector:
     ) -> list[DetectedIntent]:
         """检测用户消息中未被 LLM 工具调用覆盖的意图。"""
         # 快速跳过：如果没有可补救的工具空间，直接返回
-        uncalled = {k: v for k, v in RECOVERABLE_TOOLS.items() if k not in tools_called}
+        uncalled = {k: v for k, v in RECOVERABLE_TOOL_DESCRIPTIONS.items() if k not in tools_called}
         if not uncalled:
             return []
 
@@ -53,7 +48,7 @@ class IntentDetector:
             uncalled.pop("schedule_message", None)
         # 如果已调用自定义工具或 create_custom_tool，说明 LLM 已在执行任务，不检测日历
         if "create_custom_tool" in tools_called or any(
-            t not in RECOVERABLE_TOOLS and t not in (
+            t not in RECOVERABLE_TOOL_DESCRIPTIONS and t not in (
                 "write_memory", "send_message", "send_card",
                 "read_self_file", "write_self_file",
                 "list_custom_tools", "test_custom_tool",
@@ -67,19 +62,11 @@ class IntentDetector:
 
         tool_desc = "\n".join(f"- {name}: {desc}" for name, desc in uncalled.items())
 
-        prompt = (
-            "判断以下对话中，用户是否明确要求执行某个操作，但助手的回复中没有实际执行。\n\n"
-            f"用户消息：{user_message}\n"
-            f"助手回复：{llm_response}\n"
-            f"助手已调用的工具：{', '.join(tools_called) if tools_called else '无'}\n\n"
-            f"可能遗漏的操作：\n{tool_desc}\n\n"
-            "注意：\n"
-            "- 只有用户**明确要求**执行的操作才算遗漏（如「记住我的生日」「5分钟后提醒我」）\n"
-            "- 用户在**描述**、**询问**、**闲聊**时提到「记住」「提醒」等词不算遗漏\n"
-            "- 「你记住了吗」「这么快就记住了」等陈述/疑问句不是指令\n"
-            "- 如果助手已经通过工具完成了操作，不算遗漏\n\n"
-            '输出 JSON：{"missed": [{"tool": "工具名"}]} 或 {"missed": []}\n'
-            "只输出 JSON。"
+        prompt = INTENT_DETECT_PROMPT.format(
+            user_message=user_message,
+            llm_response=llm_response,
+            tools_called=', '.join(tools_called) if tools_called else TOOLS_CALLED_NONE,
+            tool_desc=tool_desc,
         )
 
         try:
@@ -104,7 +91,7 @@ class IntentDetector:
                         tool_name=tool_name,
                         confidence=0.8,
                         needs_subagent=True,
-                        evidence="LLM 判断",
+                        evidence=EVIDENCE_LLM,
                     ))
             return intents
 
