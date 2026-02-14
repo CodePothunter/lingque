@@ -84,6 +84,8 @@ class FeishuSender:
         self._user_name_cache: dict[str, str] = {}  # open_id → 名字
         self._cached_chats: set[str] = set()  # 已拉取成员的 chat_id
         self._left_chats: set[str] = set()    # bot 已退出的 chat_id
+        self._bot_members: dict[str, set[str]] = {}  # chat_id → bot open_id 集合
+        self.bot_open_id: str = ""  # 本实例的 bot open_id，由 gateway 设置
 
     async def send_text(self, chat_id: str, text: str) -> str | None:
         """发送文本消息到指定会话，返回 message_id。
@@ -235,13 +237,19 @@ class FeishuSender:
                 logger.warning("拉取群成员失败: code=%d msg=%s", data.get("code"), data.get("msg"))
                 return
             items = data.get("data", {}).get("items", [])
+            bots: set[str] = set()
             for item in items:
                 mid = item.get("member_id", "")
                 name = item.get("name", "")
+                member_type = item.get("member_type", "user")
                 if mid and name:
                     self._user_name_cache[mid] = name
+                if member_type == "bot" and mid:
+                    bots.add(mid)
+            self._bot_members[chat_id] = bots
             self._cached_chats.add(chat_id)
-            logger.info("缓存群 %s 成员 %d 人", chat_id[-8:], len(items))
+            bot_count = len(bots)
+            logger.info("缓存群 %s 成员 %d 人（含 %d 个 bot）", chat_id[-8:], len(items), bot_count)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 400:
                 self._left_chats.add(chat_id)
@@ -254,6 +262,57 @@ class FeishuSender:
     def is_chat_left(self, chat_id: str) -> bool:
         """检查 bot 是否已退出某群聊（基于成员 API 400 检测）"""
         return chat_id in self._left_chats
+
+    def get_bot_members(self, chat_id: str) -> set[str]:
+        """返回群聊中的 bot open_id 集合（不含自己）"""
+        bots = self._bot_members.get(chat_id, set())
+        return bots - {self.bot_open_id} if self.bot_open_id else bots
+
+    # ── Reaction API（意图信号）──
+
+    async def add_reaction(
+        self, message_id: str, emoji_type: str = "OnIt",
+    ) -> str | None:
+        """给消息添加 reaction（用作 bot 间意图信号），返回 reaction_id 或 None"""
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient() as http:
+                resp = await http.post(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
+                    json={"reaction_type": {"emoji_type": emoji_type}},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                data = resp.json()
+            if data.get("code") == 0:
+                reaction_id = data.get("data", {}).get("reaction_id", "")
+                logger.debug("添加 reaction %s 到 %s", emoji_type, message_id[-8:])
+                return reaction_id
+            logger.debug("添加 reaction 失败: code=%d", data.get("code", -1))
+        except Exception:
+            logger.debug("添加 reaction 异常", exc_info=True)
+        return None
+
+    async def remove_reaction(
+        self, message_id: str, reaction_id: str,
+    ) -> bool:
+        """移除消息上的 reaction"""
+        if not reaction_id:
+            return False
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient() as http:
+                resp = await http.delete(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                data = resp.json()
+            if data.get("code") == 0:
+                logger.debug("移除 reaction %s", reaction_id[:8])
+                return True
+            logger.debug("移除 reaction 失败: code=%d", data.get("code", -1))
+        except Exception:
+            logger.debug("移除 reaction 异常", exc_info=True)
+        return False
 
     async def fetch_chat_messages(self, chat_id: str, count: int = 10) -> list[dict]:
         """拉取群聊最近消息（含机器人消息），返回按时间正序排列的消息列表。

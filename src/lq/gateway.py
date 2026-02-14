@@ -82,6 +82,7 @@ class AssistantGateway:
         if bot_open_id:
             self.config.feishu.bot_open_id = bot_open_id
         bot_name = bot_info.get("app_name") or bot_info.get("bot_name") or self.config.name
+        sender.bot_open_id = bot_open_id
         if bot_open_id and bot_name:
             sender._user_name_cache[bot_open_id] = bot_name
         logger.info("Bot open_id: %s name: %s", bot_open_id, bot_name)
@@ -159,12 +160,13 @@ class AssistantGateway:
         feishu_thread.start()
         logger.info("飞书 WebSocket 线程已启动")
 
-        # 并发运行消费者、心跳、inbox 轮询和会话自动保存
+        # 并发运行消费者、心跳、inbox 轮询、会话自动保存和群聊主动轮询
         await asyncio.gather(
             self._consume_messages(router, loop),
             heartbeat.run_forever(self.shutdown_event),
             self._poll_inbox(router),
             self._auto_save_sessions(session_mgr),
+            self._poll_active_groups(router, sender),
         )
 
         # 关闭时保存会话
@@ -320,6 +322,57 @@ class AssistantGateway:
                 break
             except Exception:
                 logger.exception("inbox 轮询异常")
+
+    async def _poll_active_groups(
+        self,
+        router: MessageRouter,
+        sender: FeishuSender,
+    ) -> None:
+        """主动轮询活跃群聊的消息，补充 WS 收不到的 bot 消息。
+
+        每 3 秒轮询一个活跃群聊，将新发现的 bot 消息注入 router 的 group_buffers。
+        """
+        logger.info("群聊主动轮询启动")
+        while not self.shutdown_event.is_set():
+            try:
+                await asyncio.sleep(3.0)
+                active = router.get_active_groups()
+                if not active:
+                    continue
+                for chat_id in active:
+                    if self.shutdown_event.is_set():
+                        break
+                    try:
+                        api_msgs = await sender.fetch_chat_messages(chat_id, 10)
+                    except Exception:
+                        logger.debug("主动轮询群 %s 失败", chat_id[-8:])
+                        continue
+                    if not api_msgs:
+                        continue
+                    for msg in api_msgs:
+                        if msg.get("sender_type") != "app":
+                            continue
+                        if msg.get("sender_id") == router.bot_open_id:
+                            continue
+                        sender_name = sender._user_name_cache.get(
+                            msg["sender_id"], msg["sender_id"][-6:]
+                        )
+                        await router.inject_polled_message(chat_id, {
+                            "text": msg["text"],
+                            "sender_id": msg["sender_id"],
+                            "sender_name": sender_name,
+                            "sender_type": "app",
+                            "message_id": msg["message_id"],
+                            "chat_id": chat_id,
+                        })
+                    # 多个群之间稍做间隔，避免 API 频率限制
+                    if len(active) > 1:
+                        await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("群聊主动轮询异常")
+        logger.info("群聊主动轮询已停止")
 
     async def _auto_save_sessions(self, session_mgr: SessionManager) -> None:
         """每 60 秒自动保存会话，防止崩溃丢失"""
