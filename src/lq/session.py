@@ -351,14 +351,16 @@ class SessionManager:
         loaded = 0
 
         # 1. 读取 per-chat 独立文件（新格式）
-        for f in self.sessions_dir.glob("oc_*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                cid = data["chat_id"]
-                self._sessions[cid] = Session.from_dict(data)
-                loaded += 1
-            except (json.JSONDecodeError, KeyError):
-                logger.warning("会话文件加载失败: %s", f.name)
+        #    oc_* = 飞书会话, local_* = 本地 CLI 会话
+        for pattern in ("oc_*.json", "local_*.json"):
+            for f in self.sessions_dir.glob(pattern):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    cid = data["chat_id"]
+                    self._sessions[cid] = Session.from_dict(data)
+                    loaded += 1
+                except (json.JSONDecodeError, KeyError):
+                    logger.warning("会话文件加载失败: %s", f.name)
 
         # 2. 兼容旧版：如果存在 current.json，迁移其中的 session
         legacy_path = self.sessions_dir / "current.json"
