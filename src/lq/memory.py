@@ -8,6 +8,17 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from lq.prompts import (
+    TAG_SOUL, TAG_MEMORY, TAG_CHAT_MEMORY, TAG_DAILY_LOG, TAG_SELF_AWARENESS,
+    wrap_tag,
+    TIME_DISPLAY, TRUNCATION_BUDGET_EXCEEDED, TRUNCATION_SHORT,
+    EDITABLE_FILE_EXISTS, EDITABLE_FILE_MISSING, NO_DAILY_LOGS,
+    TOOL_STATUS_ENABLED, TOOL_STATUS_DISABLED,
+    GLOBAL_MEMORY_INIT, CHAT_MEMORY_INIT, CHAT_MEMORY_INIT_APPEND,
+    ERR_FILE_NOT_ALLOWED_READ, ERR_FILE_NOT_ALLOWED_WRITE,
+    SELF_AWARENESS_TEMPLATE, CUSTOM_TOOLS_SECTION_WITH_TOOLS, CUSTOM_TOOLS_SECTION_EMPTY,
+    FLUSH_BEFORE_COMPACTION, FLUSH_ROLE_TOOL_CALL, FLUSH_ROLE_TOOL_RESULT, FLUSH_ROLE_DEFAULT,
+)
 from lq.session import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -64,7 +75,7 @@ class MemoryManager:
         # 1. 当前时间（固定，~30 tokens）
         cst = timezone(timedelta(hours=8))
         now = datetime.now(cst)
-        time_str = f"当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')} (CST, UTC+8)"
+        time_str = TIME_DISPLAY.format(formatted_time=now.strftime('%Y-%m-%d %H:%M:%S'))
         parts.append(time_str)
         used_tokens += estimate_tokens(time_str)
 
@@ -76,7 +87,7 @@ class MemoryManager:
                 # 人格定义超预算时截断（不应该发生，但防御性处理）
                 soul = self._truncate_to_budget(soul, SOUL_BUDGET)
                 soul_tokens = SOUL_BUDGET
-            parts.append(f"<soul>\n{soul}\n</soul>")
+            parts.append(wrap_tag(TAG_SOUL, soul))
             used_tokens += soul_tokens
 
         # 3. MEMORY.md — 长期记忆，超预算时智能截断
@@ -86,14 +97,14 @@ class MemoryManager:
             if mem_tokens > MEMORY_BUDGET:
                 memory = self._truncate_memory(memory, MEMORY_BUDGET)
                 mem_tokens = MEMORY_BUDGET
-            parts.append(f"<memory>\n{memory}\n</memory>")
+            parts.append(wrap_tag(TAG_MEMORY, memory))
             used_tokens += mem_tokens
 
         # 3.5 注入 per-chat 长期记忆（区别于全局 MEMORY.md）
         if chat_id:
             chat_mem = self.read_chat_memory(chat_id)
             if chat_mem:
-                parts.append(f"<chat_memory>\n{chat_mem}\n</chat_memory>")
+                parts.append(wrap_tag(TAG_CHAT_MEMORY, chat_mem))
 
         # 4. 日志 — 按 chat_id 过滤，限制预算
         if chat_id:
@@ -106,7 +117,7 @@ class MemoryManager:
                     log_tokens = estimate_tokens(log)
                     if log_tokens > log_budget:
                         log = self._truncate_to_budget(log, log_budget)
-                    parts.append(f'<daily_log date="{d.isoformat()}">\n{log}\n</daily_log>')
+                    parts.append(wrap_tag(TAG_DAILY_LOG, log, date=d.isoformat()))
                     used_tokens += min(log_tokens, log_budget)
 
         # 5. 自我认知 — 使用缓存
@@ -142,7 +153,7 @@ class MemoryManager:
         for line in lines:
             line_tokens = estimate_tokens(line)
             if tokens + line_tokens > budget:
-                result.append("...(部分内容因上下文空间限制被省略)")
+                result.append(TRUNCATION_BUDGET_EXCEEDED)
                 break
             result.append(line)
             tokens += line_tokens
@@ -180,7 +191,7 @@ class MemoryManager:
                 for line in lines[1:]:
                     lt = estimate_tokens(line)
                     if lt > line_budget:
-                        kept.append("...(已截断)")
+                        kept.append(TRUNCATION_SHORT)
                         break
                     kept.append(line)
                     line_budget -= lt
@@ -196,83 +207,33 @@ class MemoryManager:
         for name in ["SOUL.md", "MEMORY.md", "HEARTBEAT.md"]:
             p = ws / name
             if p.exists():
-                editable_files.append(f"  - {name} ({p.stat().st_size} 字节)")
+                editable_files.append(EDITABLE_FILE_EXISTS.format(name=name, size=p.stat().st_size))
             else:
-                editable_files.append(f"  - {name} (不存在，可创建)")
+                editable_files.append(EDITABLE_FILE_MISSING.format(name=name))
 
         daily_logs = sorted(self.memory_dir.glob("*.md"), reverse=True)[:5]
         if daily_logs:
             log_list = "\n".join(f"  - memory/{f.name}" for f in daily_logs)
         else:
-            log_list = "  (暂无日志)"
+            log_list = NO_DAILY_LOGS
 
-        return (
-            "<self_awareness>\n"
-            "## 关于你自己\n"
-            "你是由「灵雀 LingQue」框架驱动的 AI 助理，运行在飞书平台上。\n\n"
-            "### 你的工作区\n"
-            f"路径: {ws}\n"
-            "可编辑的配置文件:\n"
-            f"{chr(10).join(editable_files)}\n"
-            f"最近的日志:\n{log_list}\n\n"
-            "### 文件说明\n"
-            "- **SOUL.md**: 定义你的身份、性格、沟通风格和介入原则。修改它会改变你的行为方式。\n"
-            "- **MEMORY.md**: 长期记忆存储，按分区组织。你已有 write_memory 工具来更新它。\n"
-            "- **HEARTBEAT.md**: 定义你的定时任务和主动行为模板。\n\n"
-            "### 你的能力（均有对应工具可调用）\n"
-            "- 使用 send_message 工具主动给任何用户或群聊发消息\n"
-            "- 使用 schedule_message 工具定时发送消息（如「5分钟后提醒我」）\n"
-            "- 使用 calendar_create_event / calendar_list_events 工具创建和查询日历事件\n"
-            "- 使用 read_self_file / write_self_file 工具读写配置文件（SOUL.md、MEMORY.md、HEARTBEAT.md）\n"
-            "- 使用 write_memory 工具将跨聊天通用的重要信息写入全局长期记忆\n"
-            "- 使用 write_chat_memory 工具将仅与当前对话相关的信息写入聊天专属记忆\n"
-            "- 使用 create_custom_tool 工具创建新的自定义工具来扩展自身能力\n"
-            "- 使用 send_card 工具发送结构化卡片消息\n"
-            "- 使用 run_claude_code 工具执行复杂编程任务（代码编写、文件操作、系统管理等）\n"
-            "- 使用 run_bash 工具执行 shell 命令（查看系统状态、文件操作等）\n\n"
-            "### Claude Code 集成（重要）\n"
-            "你拥有 run_claude_code 工具，可以调用 Claude Code CLI 来完成复杂任务：\n"
-            "- 编写和修改代码文件\n"
-            "- 分析项目结构和代码\n"
-            "- 执行 git 操作\n"
-            "- 处理需要多步骤推理的复杂任务\n"
-            "当用户需要你完成编程相关任务时，优先使用 run_claude_code。\n\n"
-            "### Bash 命令执行\n"
-            "你拥有 run_bash 工具，可以执行 shell 命令：\n"
-            "- 查看文件内容、目录结构\n"
-            "- 运行脚本和程序\n"
-            "- 管理进程和系统状态\n"
-            "- 安装软件包\n"
-            "简单的命令行操作使用 run_bash，复杂任务使用 run_claude_code。\n\n"
-            "### 自主能力扩展\n"
-            "当用户提出需求而你现有工具无法满足时，你应该**主动创建新工具**来获得这个能力。\n"
-            "例如：用户要查天气 → 创建天气查询工具；用户要搜索网页 → 创建网络搜索工具。\n"
-            "不要说「我没有这个功能」——你可以给自己创造功能。\n"
-            "工具代码中可以使用 context['http']（httpx.AsyncClient）发起网络请求。\n\n"
-            "### 自我修改\n"
-            "你可以使用 read_self_file 和 write_self_file 工具来查看和修改上述配置文件。\n"
-            "修改 SOUL.md 会改变你的核心人格，请谨慎操作，建议先读取当前内容再修改。\n\n"
-            f"{self._build_custom_tools_awareness()}"
-            "</self_awareness>"
+        awareness_content = SELF_AWARENESS_TEMPLATE.format(
+            workspace=ws,
+            editable_files="\n".join(editable_files),
+            log_list=log_list,
+            custom_tools_section=self._build_custom_tools_awareness(),
         )
+        return wrap_tag(TAG_SELF_AWARENESS, awareness_content)
 
     def _build_custom_tools_awareness(self) -> str:
         """构建自定义工具的自我认知段落。"""
         tools_dir = self.workspace / "tools"
         if not tools_dir.exists():
-            return (
-                "### 自定义工具\n"
-                "你可以使用 create_custom_tool 创建新的自定义工具来扩展自己的能力。\n"
-                "目前没有已安装的自定义工具。\n"
-            )
+            return CUSTOM_TOOLS_SECTION_EMPTY
 
         tool_files = sorted(f for f in tools_dir.glob("*.py") if not f.name.startswith("_"))
         if not tool_files:
-            return (
-                "### 自定义工具\n"
-                "你可以使用 create_custom_tool 创建新的自定义工具来扩展自己的能力。\n"
-                "目前没有已安装的自定义工具。\n"
-            )
+            return CUSTOM_TOOLS_SECTION_EMPTY
 
         # 读取禁用列表
         import json as _json
@@ -288,7 +249,7 @@ class MemoryManager:
         lines = []
         for f in tool_files:
             name = f.stem
-            status = "禁用" if name in disabled else "启用"
+            status = TOOL_STATUS_DISABLED if name in disabled else TOOL_STATUS_ENABLED
             desc = ""
             try:
                 first_lines = f.read_text(encoding="utf-8").split("\n", 3)
@@ -302,12 +263,7 @@ class MemoryManager:
             lines.append(f"  - {name} ({status}){desc}")
 
         tool_list = "\n".join(lines)
-        return (
-            "### 自定义工具\n"
-            "你可以使用 create_custom_tool 创建新工具，list_custom_tools 查看详情，"
-            "toggle_custom_tool 启用/禁用，delete_custom_tool 删除。\n"
-            f"已安装的自定义工具:\n{tool_list}\n"
-        )
+        return CUSTOM_TOOLS_SECTION_WITH_TOOLS.format(tool_list=tool_list)
 
     def append_daily(self, content: str, chat_id: str = "") -> None:
         """追加内容到今日日志，带 chat_id 标签便于过滤"""
@@ -320,7 +276,7 @@ class MemoryManager:
         """更新 MEMORY.md 中特定段落"""
         mem_path = self.workspace / "MEMORY.md"
         if not mem_path.exists():
-            mem_path.write_text(f"# 记忆\n\n## {section}\n{content}\n", encoding="utf-8")
+            mem_path.write_text(GLOBAL_MEMORY_INIT.format(section=section, content=content), encoding="utf-8")
             return
 
         text = mem_path.read_text(encoding="utf-8")
@@ -346,24 +302,14 @@ class MemoryManager:
             role = m.get("role", "unknown")
             content = m.get("content", "")
             if m.get("is_tool_use"):
-                lines.append(f"[assistant/tool_call] 调用 {m.get('tool_name', '?')}")
+                lines.append(FLUSH_ROLE_TOOL_CALL.format(tool_name=m.get('tool_name', '?')))
             elif m.get("is_tool_result"):
-                lines.append(f"[tool_result] {content[:200]}")
+                lines.append(FLUSH_ROLE_TOOL_RESULT.format(content_preview=content[:200]))
             else:
-                lines.append(f"[{role}] {content}")
+                lines.append(FLUSH_ROLE_DEFAULT.format(role=role, content=content))
 
         conversation = "\n".join(lines)
-        return (
-            "请从以下对话中提取需要长期记住的重要信息。\n"
-            "重点关注：\n"
-            "- 用户明确要求记住的内容\n"
-            "- 用户偏好和习惯\n"
-            "- 重要的事实、决定和约定\n"
-            "- 待办事项和承诺\n"
-            "- 使用工具完成的重要操作\n\n"
-            "仅输出需要记住的条目，每条一行，格式为 `- 内容`。如果没有需要记住的，输出「无」。\n\n"
-            f"对话内容：\n{conversation}"
-        )
+        return FLUSH_BEFORE_COMPACTION.format(conversation=conversation)
 
     # ── 自我修改 API ──
 
@@ -372,7 +318,7 @@ class MemoryManager:
     def read_self_file(self, filename: str) -> str:
         """读取工作区配置文件"""
         if filename not in self.EDITABLE_FILES:
-            raise ValueError(f"不允许读取 {filename}，可读文件: {', '.join(sorted(self.EDITABLE_FILES))}")
+            raise ValueError(ERR_FILE_NOT_ALLOWED_READ.format(filename=filename, allowed=', '.join(sorted(self.EDITABLE_FILES))))
         path = self.workspace / filename
         if not path.exists():
             return ""
@@ -381,7 +327,7 @@ class MemoryManager:
     def write_self_file(self, filename: str, content: str) -> None:
         """写入工作区配置文件"""
         if filename not in self.EDITABLE_FILES:
-            raise ValueError(f"不允许写入 {filename}，可写文件: {', '.join(sorted(self.EDITABLE_FILES))}")
+            raise ValueError(ERR_FILE_NOT_ALLOWED_WRITE.format(filename=filename, allowed=', '.join(sorted(self.EDITABLE_FILES))))
         path = self.workspace / filename
         path.write_text(content, encoding="utf-8")
         logger.info("%s 已更新 (%d 字节)", filename, len(content))
@@ -405,7 +351,7 @@ class MemoryManager:
         path = self._chat_memory_path(chat_id)
         if not path.exists():
             path.write_text(
-                f"# 聊天记忆\n\n## {section}\n{content}\n", encoding="utf-8"
+                CHAT_MEMORY_INIT.format(section=section, content=content), encoding="utf-8"
             )
             logger.info("创建 chat_memory [%s] section=%s", chat_id[-8:], section)
             return
@@ -427,7 +373,7 @@ class MemoryManager:
         """追加内容到指定聊天窗口的记忆末尾"""
         path = self._chat_memory_path(chat_id)
         if not path.exists():
-            path.write_text(f"# 聊天记忆\n\n{content.rstrip()}\n", encoding="utf-8")
+            path.write_text(CHAT_MEMORY_INIT_APPEND.format(content=content.rstrip()), encoding="utf-8")
         else:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(f"{content.rstrip()}\n")

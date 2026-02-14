@@ -160,16 +160,28 @@ class AssistantGateway:
         logger.info("飞书 WebSocket 线程已启动")
 
         # 并发运行消费者、心跳、inbox 轮询和会话自动保存
-        await asyncio.gather(
-            self._consume_messages(router, loop),
-            heartbeat.run_forever(self.shutdown_event),
-            self._poll_inbox(router),
-            self._auto_save_sessions(session_mgr),
-        )
+        tasks = [
+            asyncio.create_task(self._consume_messages(router, loop), name="consumer"),
+            asyncio.create_task(heartbeat.run_forever(self.shutdown_event), name="heartbeat"),
+            asyncio.create_task(self._poll_inbox(router), name="inbox"),
+            asyncio.create_task(self._auto_save_sessions(session_mgr), name="autosave"),
+        ]
+
+        # 等待 shutdown_event 被信号触发
+        await self.shutdown_event.wait()
+        logger.info("开始关闭，等待任务结束...")
+
+        # 给各任务一个宽限期，然后强制取消
+        _, pending = await asyncio.wait(tasks, timeout=5.0)
+        for t in pending:
+            logger.warning("强制取消任务: %s", t.get_name())
+            t.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=2.0)
 
         # 关闭时保存会话
         session_mgr.save()
-        logger.info("会话已保存")
+        logger.info("会话已保存，关闭完成")
 
     async def _consume_messages(
         self,
@@ -289,7 +301,14 @@ class AssistantGateway:
         msg_counter = 0
         while not self.shutdown_event.is_set():
             try:
-                await asyncio.sleep(2.0)
+                # 用 shutdown_event.wait + timeout 代替 sleep
+                try:
+                    await asyncio.wait_for(
+                        self.shutdown_event.wait(), timeout=2.0,
+                    )
+                    break  # shutdown_event 已设置
+                except asyncio.TimeoutError:
+                    pass  # 正常轮询周期
                 if not inbox_path.exists():
                     continue
                 text = inbox_path.read_text(encoding="utf-8").strip()
@@ -325,10 +344,18 @@ class AssistantGateway:
         """每 60 秒自动保存会话，防止崩溃丢失"""
         while not self.shutdown_event.is_set():
             try:
-                await asyncio.sleep(60)
-                session_mgr.save()
+                # 用 shutdown_event.wait + timeout 代替 sleep，
+                # 确保收到关闭信号时立即退出而非阻塞 60 秒
+                await asyncio.wait_for(
+                    self.shutdown_event.wait(), timeout=60,
+                )
+                break  # shutdown_event 已设置
+            except asyncio.TimeoutError:
+                pass  # 正常超时，执行保存
             except asyncio.CancelledError:
                 break
+            try:
+                session_mgr.save()
             except Exception:
                 logger.exception("自动保存会话失败")
 

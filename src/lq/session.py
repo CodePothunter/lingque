@@ -8,6 +8,12 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from lq.prompts import (
+    TAG_MSG, TAG_TOOL_CALL, TAG_TOOL_RESULT, TAG_CONTEXT_SUMMARY,
+    wrap_tag,
+    CONTEXT_SUMMARY_USER, CONTEXT_SUMMARY_ACK,
+)
+
 CST = timezone(timedelta(hours=8))
 
 logger = logging.getLogger(__name__)
@@ -75,7 +81,7 @@ class Session:
         input_str = json.dumps(tool_input, ensure_ascii=False)
         if len(input_str) > 500:
             input_str = input_str[:497] + "..."
-        content = f"[tool_use: {tool_name}({input_str})]"
+        content = wrap_tag(TAG_TOOL_CALL, input_str, name=tool_name)
         tokens = estimate_tokens(content)
         self.messages.append({
             "role": "assistant",
@@ -94,7 +100,7 @@ class Session:
         # 截断过长的结果
         if len(result) > 1000:
             result = result[:997] + "..."
-        content = f"[tool_result: {result}]"
+        content = wrap_tag(TAG_TOOL_RESULT, result)
         tokens = estimate_tokens(content)
         self.messages.append({
             "role": "user",
@@ -141,14 +147,13 @@ class Session:
             result_msgs.append({
                 "role": "user",
                 "content": (
-                    f"[之前的对话摘要]\n{self._summary}\n\n"
-                    "以上是较早对话的摘要。请更关注下面最近的消息，"
-                    "但可以参考摘要中的事实和决定。"
+                    f"{wrap_tag(TAG_CONTEXT_SUMMARY, self._summary)}\n\n"
+                    f"{CONTEXT_SUMMARY_USER}"
                 ),
             })
             result_msgs.append({
                 "role": "assistant",
-                "content": "好的，我已了解之前的对话背景。",
+                "content": CONTEXT_SUMMARY_ACK,
             })
 
         # 格式化消息
@@ -177,7 +182,7 @@ class Session:
 
         if parts:
             meta = " ".join(parts)
-            return f"<msg {meta}>{content}</msg>"
+            return f"<{TAG_MSG} {meta}>{content}</{TAG_MSG}>"
         return content
 
     # ── 压缩策略 ──

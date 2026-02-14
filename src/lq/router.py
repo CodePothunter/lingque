@@ -11,55 +11,67 @@ from lq.buffer import MessageBuffer, rule_check
 from lq.executor.api import DirectAPIExecutor
 from lq.feishu.sender import FeishuSender
 from lq.memory import MemoryManager
+from lq.prompts import (
+    TAG_CONSTRAINTS, TAG_MEMORY_GUIDANCE, TAG_GROUP_CONTEXT,
+    wrap_tag,
+    CONSTRAINTS_PRIVATE, CONSTRAINTS_GROUP,
+    MEMORY_GUIDANCE_PRIVATE, MEMORY_GUIDANCE_GROUP,
+    PRIVATE_SYSTEM_SUFFIX, GROUP_AT_SYSTEM_SUFFIX, GROUP_INTERVENE_SYSTEM_SUFFIX,
+    GROUP_EVAL_PROMPT,
+    PREAMBLE_STARTS, ACTION_NUDGE,
+    NON_TEXT_REPLY_PRIVATE, NON_TEXT_REPLY_GROUP, EMPTY_AT_FALLBACK,
+    RESULT_GLOBAL_MEMORY_WRITTEN, RESULT_CHAT_MEMORY_WRITTEN,
+    RESULT_CARD_SENT, RESULT_FILE_EMPTY, RESULT_FILE_UPDATED,
+    RESULT_SEND_FAILED, RESULT_SCHEDULE_OK,
+    ERR_CALENDAR_NOT_LOADED, ERR_TOOL_REGISTRY_NOT_LOADED,
+    ERR_CC_NOT_LOADED, ERR_BASH_NOT_LOADED, ERR_UNKNOWN_TOOL,
+    ERR_TIME_FORMAT_INVALID, ERR_TIME_PAST, ERR_CODE_VALIDATION_OK,
+    DAILY_LOG_PRIVATE, DAILY_LOG_STATUS_OK, DAILY_LOG_STATUS_FAIL,
+    GROUP_MSG_SELF, GROUP_MSG_OTHER,
+    GROUP_MSG_WITH_ID_SELF, GROUP_MSG_WITH_ID_OTHER,
+    GROUP_CONTEXT_HEADER,
+    COMPACTION_DAILY_HEADER, COMPACTION_MEMORY_HEADER, COMPACTION_SUMMARY_PROMPT,
+    FLUSH_NO_RESULT,
+    SENDER_SELF, SENDER_UNKNOWN, SENDER_GROUP,
+    BOT_POLL_AT_REASON,
+    TOOL_DESC_WRITE_MEMORY, TOOL_DESC_WRITE_CHAT_MEMORY,
+    TOOL_DESC_CALENDAR_CREATE, TOOL_DESC_CALENDAR_LIST,
+    TOOL_DESC_SEND_CARD, TOOL_DESC_READ_SELF_FILE, TOOL_DESC_WRITE_SELF_FILE,
+    TOOL_DESC_CREATE_CUSTOM_TOOL, TOOL_DESC_LIST_CUSTOM_TOOLS,
+    TOOL_DESC_TEST_CUSTOM_TOOL, TOOL_DESC_DELETE_CUSTOM_TOOL,
+    TOOL_DESC_TOGGLE_CUSTOM_TOOL, TOOL_DESC_SEND_MESSAGE,
+    TOOL_DESC_SCHEDULE_MESSAGE, TOOL_DESC_RUN_CLAUDE_CODE, TOOL_DESC_RUN_BASH,
+    TOOL_FIELD_SECTION, TOOL_FIELD_CONTENT_MEMORY,
+    TOOL_FIELD_CHAT_SECTION, TOOL_FIELD_CHAT_CONTENT,
+    TOOL_FIELD_SUMMARY, TOOL_FIELD_START_TIME, TOOL_FIELD_END_TIME,
+    TOOL_FIELD_EVENT_DESC, TOOL_FIELD_QUERY_START, TOOL_FIELD_QUERY_END,
+    TOOL_FIELD_CARD_TITLE, TOOL_FIELD_CARD_CONTENT, TOOL_FIELD_CARD_COLOR,
+    TOOL_FIELD_FILENAME_READ, TOOL_FIELD_FILENAME_WRITE, TOOL_FIELD_FILE_CONTENT,
+    TOOL_FIELD_TOOL_NAME, TOOL_FIELD_TOOL_CODE,
+    TOOL_FIELD_VALIDATE_CODE, TOOL_FIELD_DELETE_NAME,
+    TOOL_FIELD_TOGGLE_NAME, TOOL_FIELD_TOGGLE_ENABLED,
+    TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_SEND_AT,
+    TOOL_FIELD_CC_PROMPT, TOOL_FIELD_WORKING_DIR, TOOL_FIELD_CC_TIMEOUT,
+    TOOL_FIELD_BASH_COMMAND, TOOL_FIELD_BASH_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
-
-# ── 共享约束块 ──
-
-_CONSTRAINTS_PRIVATE = (
-    "\n\n<constraints>"
-    "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-    "\n- 回复务必简短精炼，不要长篇大论"
-    "\n- 禁止使用 emoji"
-    "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
-    "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
-    "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
-    "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
-    "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
-    "\n- 当用户需要你完成编程、代码、文件操作或系统管理任务时，使用 run_claude_code 或 run_bash 工具。"
-    "对于复杂的多步骤任务优先使用 run_claude_code，简单命令使用 run_bash。"
-    "\n</constraints>"
-)
-
-_CONSTRAINTS_GROUP = (
-    "\n\n<constraints>"
-    "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-    "\n- 回复务必简短精炼，不要长篇大论"
-    "\n- 禁止使用 emoji"
-    "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
-    "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
-    "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
-    "\n- 如果之前给了错误信息被指出，大方承认并纠正，不要嘴硬"
-    "\n- 不要编造实时数据（天气、汇率等），需要时先用 create_custom_tool 获取"
-    "\n- 如果群里有另一个 bot 已经回复了相同话题，不要重复相同内容；可以补充或接话"
-    "\n</constraints>"
-)
 
 # LLM 可调用的工具定义
 TOOLS = [
     {
         "name": "write_memory",
-        "description": "将重要信息写入 MEMORY.md 的指定分区实现长期记忆持久化。用于记住用户偏好、重要事实、待办事项等。内容按 section 分区组织，相同 section 会覆盖更新。",
+        "description": TOOL_DESC_WRITE_MEMORY,
         "input_schema": {
             "type": "object",
             "properties": {
                 "section": {
                     "type": "string",
-                    "description": "记忆分区名（如：重要信息、用户偏好、备忘、待办事项）",
+                    "description": TOOL_FIELD_SECTION,
                 },
                 "content": {
                     "type": "string",
-                    "description": "要记住的内容，支持 Markdown 格式，建议用列表组织多条信息",
+                    "description": TOOL_FIELD_CONTENT_MEMORY,
                 },
             },
             "required": ["section", "content"],
@@ -67,17 +79,17 @@ TOOLS = [
     },
     {
         "name": "write_chat_memory",
-        "description": "将信息写入当前聊天窗口的专属记忆（chat_memory）。与 write_memory（全局记忆）不同，chat_memory 只在当前聊天窗口中可见。用于记住与当前对话者相关的信息，如对方的偏好、聊天中的要点和约定等。全局通用的信息请用 write_memory，仅与当前对话相关的信息请用 write_chat_memory。",
+        "description": TOOL_DESC_WRITE_CHAT_MEMORY,
         "input_schema": {
             "type": "object",
             "properties": {
                 "section": {
                     "type": "string",
-                    "description": "记忆分区名（如：关于对方、聊天要点、约定事项）",
+                    "description": TOOL_FIELD_CHAT_SECTION,
                 },
                 "content": {
                     "type": "string",
-                    "description": "要记录的内容，支持 Markdown 格式",
+                    "description": TOOL_FIELD_CHAT_CONTENT,
                 },
             },
             "required": ["section", "content"],
@@ -85,22 +97,22 @@ TOOLS = [
     },
     {
         "name": "calendar_create_event",
-        "description": "在飞书日历中创建一个新事件/日程。时间必须使用 ISO 8601 格式并包含时区偏移，例如 2026-02-13T15:00:00+08:00。请根据当前时间计算用户说的相对时间（如「5分钟后」「明天下午3点」）。",
+        "description": TOOL_DESC_CALENDAR_CREATE,
         "input_schema": {
             "type": "object",
             "properties": {
-                "summary": {"type": "string", "description": "事件标题"},
+                "summary": {"type": "string", "description": TOOL_FIELD_SUMMARY},
                 "start_time": {
                     "type": "string",
-                    "description": "开始时间，必须为 ISO 8601 格式且包含时区，如 2026-02-13T15:00:00+08:00",
+                    "description": TOOL_FIELD_START_TIME,
                 },
                 "end_time": {
                     "type": "string",
-                    "description": "结束时间，必须为 ISO 8601 格式且包含时区，如 2026-02-13T16:00:00+08:00。若用户未指定结束时间，默认为开始时间后1小时",
+                    "description": TOOL_FIELD_END_TIME,
                 },
                 "description": {
                     "type": "string",
-                    "description": "事件描述（可选）",
+                    "description": TOOL_FIELD_EVENT_DESC,
                     "default": "",
                 },
             },
@@ -109,17 +121,17 @@ TOOLS = [
     },
     {
         "name": "calendar_list_events",
-        "description": "查询指定时间范围内的日历事件。用于查看日程安排、检查时间冲突等。",
+        "description": TOOL_DESC_CALENDAR_LIST,
         "input_schema": {
             "type": "object",
             "properties": {
                 "start_time": {
                     "type": "string",
-                    "description": "查询开始时间，ISO 8601 格式且包含时区，如 2026-02-13T00:00:00+08:00",
+                    "description": TOOL_FIELD_QUERY_START,
                 },
                 "end_time": {
                     "type": "string",
-                    "description": "查询结束时间，ISO 8601 格式且包含时区，如 2026-02-13T23:59:59+08:00",
+                    "description": TOOL_FIELD_QUERY_END,
                 },
             },
             "required": ["start_time", "end_time"],
@@ -127,15 +139,15 @@ TOOLS = [
     },
     {
         "name": "send_card",
-        "description": "发送一张信息卡片给用户。用于展示结构化信息如日程、任务列表等。",
+        "description": TOOL_DESC_SEND_CARD,
         "input_schema": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "卡片标题"},
-                "content": {"type": "string", "description": "卡片内容（支持 Markdown）"},
+                "title": {"type": "string", "description": TOOL_FIELD_CARD_TITLE},
+                "content": {"type": "string", "description": TOOL_FIELD_CARD_CONTENT},
                 "color": {
                     "type": "string",
-                    "description": "卡片颜色主题",
+                    "description": TOOL_FIELD_CARD_COLOR,
                     "enum": ["blue", "green", "orange", "red", "purple"],
                     "default": "blue",
                 },
@@ -145,13 +157,13 @@ TOOLS = [
     },
     {
         "name": "read_self_file",
-        "description": "读取自己的配置文件。可读文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、HEARTBEAT.md（心跳任务模板）。",
+        "description": TOOL_DESC_READ_SELF_FILE,
         "input_schema": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "要读取的文件名",
+                    "description": TOOL_FIELD_FILENAME_READ,
                     "enum": ["SOUL.md", "MEMORY.md", "HEARTBEAT.md"],
                 },
             },
@@ -160,18 +172,18 @@ TOOLS = [
     },
     {
         "name": "write_self_file",
-        "description": "修改自己的配置文件。可写文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、HEARTBEAT.md（心跳任务模板）。修改 SOUL.md 会改变核心人格，请谨慎。建议先用 read_self_file 读取当前内容再修改。",
+        "description": TOOL_DESC_WRITE_SELF_FILE,
         "input_schema": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "要写入的文件名",
+                    "description": TOOL_FIELD_FILENAME_WRITE,
                     "enum": ["SOUL.md", "MEMORY.md", "HEARTBEAT.md"],
                 },
                 "content": {
                     "type": "string",
-                    "description": "文件的完整新内容",
+                    "description": TOOL_FIELD_FILE_CONTENT,
                 },
             },
             "required": ["filename", "content"],
@@ -179,14 +191,14 @@ TOOLS = [
     },
     {
         "name": "create_custom_tool",
-        "description": "创建一个新的自定义工具。code 参数必须是完整的 Python 源代码，包含 TOOL_DEFINITION 字典（必须有 name, description, input_schema 三个 key）和 async def execute(input_data, context) 函数。context 是 dict，包含 sender、memory、calendar、http(httpx.AsyncClient) 四个 key。注意：TOOL_DEFINITION 中描述参数的 key 必须是 input_schema（不是 parameters）。",
+        "description": TOOL_DESC_CREATE_CUSTOM_TOOL,
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "工具名称（字母、数字、下划线）"},
+                "name": {"type": "string", "description": TOOL_FIELD_TOOL_NAME},
                 "code": {
                     "type": "string",
-                    "description": "完整 Python 源代码。TOOL_DEFINITION 必须包含 input_schema（非 parameters）描述工具参数。execute(input_data, context) 中 context['http'] 是 httpx.AsyncClient",
+                    "description": TOOL_FIELD_TOOL_CODE,
                 },
             },
             "required": ["name", "code"],
@@ -194,7 +206,7 @@ TOOLS = [
     },
     {
         "name": "list_custom_tools",
-        "description": "列出所有已安装的自定义工具及其状态。",
+        "description": TOOL_DESC_LIST_CUSTOM_TOOLS,
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -202,51 +214,51 @@ TOOLS = [
     },
     {
         "name": "test_custom_tool",
-        "description": "校验工具代码（语法、安全性），不实际创建。用于在创建前检查代码是否合规。",
+        "description": TOOL_DESC_TEST_CUSTOM_TOOL,
         "input_schema": {
             "type": "object",
             "properties": {
-                "code": {"type": "string", "description": "要校验的 Python 源代码"},
+                "code": {"type": "string", "description": TOOL_FIELD_VALIDATE_CODE},
             },
             "required": ["code"],
         },
     },
     {
         "name": "delete_custom_tool",
-        "description": "删除一个自定义工具。",
+        "description": TOOL_DESC_DELETE_CUSTOM_TOOL,
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "要删除的工具名称"},
+                "name": {"type": "string", "description": TOOL_FIELD_DELETE_NAME},
             },
             "required": ["name"],
         },
     },
     {
         "name": "toggle_custom_tool",
-        "description": "启用或禁用一个自定义工具。",
+        "description": TOOL_DESC_TOGGLE_CUSTOM_TOOL,
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "工具名称"},
-                "enabled": {"type": "boolean", "description": "true=启用, false=禁用"},
+                "name": {"type": "string", "description": TOOL_FIELD_TOGGLE_NAME},
+                "enabled": {"type": "boolean", "description": TOOL_FIELD_TOGGLE_ENABLED},
             },
             "required": ["name", "enabled"],
         },
     },
     {
         "name": "send_message",
-        "description": "主动发送一条纯文本消息到指定会话（chat_id）。用于主动联系用户、发送通知等。",
+        "description": TOOL_DESC_SEND_MESSAGE,
         "input_schema": {
             "type": "object",
             "properties": {
                 "chat_id": {
                     "type": "string",
-                    "description": "目标会话 ID（用户私聊或群聊的 chat_id）",
+                    "description": TOOL_FIELD_CHAT_ID,
                 },
                 "text": {
                     "type": "string",
-                    "description": "要发送的文本内容",
+                    "description": TOOL_FIELD_TEXT,
                 },
             },
             "required": ["chat_id", "text"],
@@ -254,21 +266,21 @@ TOOLS = [
     },
     {
         "name": "schedule_message",
-        "description": "定时发送一条消息。在指定的时间（ISO 8601 格式，含时区）到达后，自动发送消息到目标会话。用于实现「5分钟后提醒我」等场景。",
+        "description": TOOL_DESC_SCHEDULE_MESSAGE,
         "input_schema": {
             "type": "object",
             "properties": {
                 "chat_id": {
                     "type": "string",
-                    "description": "目标会话 ID",
+                    "description": TOOL_FIELD_CHAT_ID,
                 },
                 "text": {
                     "type": "string",
-                    "description": "要发送的文本内容",
+                    "description": TOOL_FIELD_TEXT,
                 },
                 "send_at": {
                     "type": "string",
-                    "description": "计划发送时间，ISO 8601 格式且包含时区，如 2026-02-13T15:05:00+08:00",
+                    "description": TOOL_FIELD_SEND_AT,
                 },
             },
             "required": ["chat_id", "text", "send_at"],
@@ -276,26 +288,22 @@ TOOLS = [
     },
     {
         "name": "run_claude_code",
-        "description": (
-            "调用 Claude Code CLI 执行复杂任务。适用于：代码编写/修改、项目分析、git 操作、"
-            "文件处理、多步骤推理任务等。Claude Code 会在工作区目录下执行，拥有完整的编程能力。"
-            "prompt 参数是你要 Claude Code 完成的具体任务描述。"
-        ),
+        "description": TOOL_DESC_RUN_CLAUDE_CODE,
         "input_schema": {
             "type": "object",
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "要执行的任务描述，尽量详细具体。Claude Code 会自主完成这个任务。",
+                    "description": TOOL_FIELD_CC_PROMPT,
                 },
                 "working_dir": {
                     "type": "string",
-                    "description": "工作目录路径（可选，默认为工作区目录）",
+                    "description": TOOL_FIELD_WORKING_DIR,
                     "default": "",
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "超时时间（秒），默认 300",
+                    "description": TOOL_FIELD_CC_TIMEOUT,
                     "default": 300,
                 },
             },
@@ -304,26 +312,22 @@ TOOLS = [
     },
     {
         "name": "run_bash",
-        "description": (
-            "执行 shell/bash 命令。适用于：查看文件内容（cat/ls）、运行脚本、管理进程（ps/kill）、"
-            "安装软件包（pip/npm/apt）、git 操作、查看系统状态等简单命令行操作。"
-            "复杂的多步骤任务请使用 run_claude_code。"
-        ),
+        "description": TOOL_DESC_RUN_BASH,
         "input_schema": {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要执行的 shell 命令",
+                    "description": TOOL_FIELD_BASH_COMMAND,
                 },
                 "working_dir": {
                     "type": "string",
-                    "description": "工作目录路径（可选，默认为工作区目录）",
+                    "description": TOOL_FIELD_WORKING_DIR,
                     "default": "",
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "超时时间（秒），默认 60",
+                    "description": TOOL_FIELD_BASH_TIMEOUT,
                     "default": 60,
                 },
             },
@@ -412,7 +416,7 @@ class MessageRouter:
             if self._is_non_text_message(message):
                 await self.sender.reply_text(
                     message.message_id,
-                    "目前只能处理文字消息，图片、文件什么的还看不懂。有事直接打字跟我说就好。",
+                    NON_TEXT_REPLY_PRIVATE,
                 )
             return
 
@@ -460,19 +464,9 @@ class MessageRouter:
         sender_name = pending["sender_name"]
 
         system = self.memory.build_context(chat_id=chat_id)
-        system += (
-            f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
-            "如果涉及日程，使用 calendar 工具。"
-            "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
-            "如果用户需要你执行编程任务或系统操作，使用 run_claude_code 或 run_bash 工具。"
-            "\n\n<memory_guidance>"
-            "\n你有两种记忆工具，请根据信息的性质选用："
-            "\n- write_memory：写入全局记忆（MEMORY.md），用于跨聊天通用的信息（如用户生日、公司信息、通用偏好）"
-            "\n- write_chat_memory：写入当前聊天的专属记忆，用于仅与当前对话相关的信息（如与这个人的约定、聊天中的要点、对方的个人偏好）"
-            "\n当用户说「记住」什么时，判断这个信息是通用的还是专属于当前对话的，选择对应工具。"
-            "\n</memory_guidance>"
-            f"{_CONSTRAINTS_PRIVATE}"
-        )
+        system += PRIVATE_SYSTEM_SUFFIX.format(chat_id=chat_id)
+        system += "\n\n" + wrap_tag(TAG_MEMORY_GUIDANCE, MEMORY_GUIDANCE_PRIVATE)
+        system += "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE)
 
         # 使用会话管理器维护上下文
         if self.session_mgr:
@@ -493,12 +487,12 @@ class MessageRouter:
 
         if self.session_mgr and reply_text:
             session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("assistant", reply_text, sender_name="你")
+            session.add_message("assistant", reply_text, sender_name=SENDER_SELF)
             if session.should_compact():
                 await self._compact_session(session)
 
         # 记录日志
-        self.memory.append_daily(f"- 私聊 [{sender_name}]: {combined_text[:50]}... → {'已回复' if reply_text else '回复失败'}\n", chat_id=chat_id)
+        self.memory.append_daily(DAILY_LOG_PRIVATE.format(sender_name=sender_name, text_preview=combined_text[:50], status=DAILY_LOG_STATUS_OK if reply_text else DAILY_LOG_STATUS_FAIL), chat_id=chat_id)
 
     def _build_all_tools(self) -> list[dict]:
         """合并内置工具和自定义工具的定义列表。"""
@@ -506,12 +500,6 @@ class MessageRouter:
         if self.tool_registry:
             all_tools.extend(self.tool_registry.get_definitions())
         return all_tools
-
-    # 行动前奏短语：只有极短回复以这些开头时才认为 LLM 想做事但没调工具
-    _PREAMBLE_STARTS = (
-        "好的，我", "好，我", "我来", "稍等", "马上",
-        "让我", "我去", "好的，让我", "好，让我",
-    )
 
     @staticmethod
     def _is_action_preamble(text: str) -> bool:
@@ -523,7 +511,7 @@ class MessageRouter:
         text = text.strip()
         if len(text) > 50:
             return False
-        return any(text.startswith(p) for p in MessageRouter._PREAMBLE_STARTS)
+        return any(text.startswith(p) for p in PREAMBLE_STARTS)
 
     async def _reply_with_tool_loop(
         self,
@@ -591,7 +579,7 @@ class MessageRouter:
                     nudge_count, resp.text[:100],
                 )
                 continued_messages = resp.messages + [
-                    {"role": "user", "content": "继续，直接调用工具即可。"}
+                    {"role": "user", "content": ACTION_NUDGE}
                 ]
                 resp = await self.executor.reply_with_tools(
                     system, continued_messages, all_tools
@@ -659,7 +647,7 @@ class MessageRouter:
                     input_data["section"],
                     input_data["content"],
                 )
-                return {"success": True, "message": "已写入全局记忆"}
+                return {"success": True, "message": RESULT_GLOBAL_MEMORY_WRITTEN}
 
             elif name == "write_chat_memory":
                 self.memory.update_chat_memory(
@@ -667,11 +655,11 @@ class MessageRouter:
                     input_data["section"],
                     input_data["content"],
                 )
-                return {"success": True, "message": "已写入当前聊天记忆"}
+                return {"success": True, "message": RESULT_CHAT_MEMORY_WRITTEN}
 
             elif name == "calendar_create_event":
                 if not self.calendar:
-                    return {"success": False, "error": "日历模块未加载"}
+                    return {"success": False, "error": ERR_CALENDAR_NOT_LOADED}
                 result = await self.calendar.create_event(
                     summary=input_data["summary"],
                     start_time=input_data["start_time"],
@@ -682,7 +670,7 @@ class MessageRouter:
 
             elif name == "calendar_list_events":
                 if not self.calendar:
-                    return {"success": False, "error": "日历模块未加载"}
+                    return {"success": False, "error": ERR_CALENDAR_NOT_LOADED}
                 events = await self.calendar.list_events(
                     input_data["start_time"],
                     input_data["end_time"],
@@ -697,12 +685,12 @@ class MessageRouter:
                     color=input_data.get("color", "blue"),
                 )
                 await self.sender.send_card(chat_id, card)
-                return {"success": True, "message": "卡片已发送"}
+                return {"success": True, "message": RESULT_CARD_SENT}
 
             elif name == "read_self_file":
                 content = self.memory.read_self_file(input_data["filename"])
                 if not content:
-                    return {"success": True, "content": "(文件为空或不存在)"}
+                    return {"success": True, "content": RESULT_FILE_EMPTY}
                 return {"success": True, "content": content}
 
             elif name == "write_self_file":
@@ -710,11 +698,11 @@ class MessageRouter:
                     input_data["filename"],
                     input_data["content"],
                 )
-                return {"success": True, "message": f"{input_data['filename']} 已更新"}
+                return {"success": True, "message": RESULT_FILE_UPDATED.format(filename=input_data['filename'])}
 
             elif name == "create_custom_tool":
                 if not self.tool_registry:
-                    return {"success": False, "error": "工具注册表未加载"}
+                    return {"success": False, "error": ERR_TOOL_REGISTRY_NOT_LOADED}
                 return self.tool_registry.create_tool(
                     input_data["name"],
                     input_data["code"],
@@ -727,20 +715,20 @@ class MessageRouter:
 
             elif name == "test_custom_tool":
                 if not self.tool_registry:
-                    return {"success": False, "error": "工具注册表未加载"}
+                    return {"success": False, "error": ERR_TOOL_REGISTRY_NOT_LOADED}
                 errors = self.tool_registry.validate_code(input_data["code"])
                 if errors:
                     return {"success": False, "errors": errors}
-                return {"success": True, "message": "代码校验通过"}
+                return {"success": True, "message": ERR_CODE_VALIDATION_OK}
 
             elif name == "delete_custom_tool":
                 if not self.tool_registry:
-                    return {"success": False, "error": "工具注册表未加载"}
+                    return {"success": False, "error": ERR_TOOL_REGISTRY_NOT_LOADED}
                 return self.tool_registry.delete_tool(input_data["name"])
 
             elif name == "toggle_custom_tool":
                 if not self.tool_registry:
-                    return {"success": False, "error": "工具注册表未加载"}
+                    return {"success": False, "error": ERR_TOOL_REGISTRY_NOT_LOADED}
                 return self.tool_registry.toggle_tool(
                     input_data["name"],
                     input_data["enabled"],
@@ -761,7 +749,7 @@ class MessageRouter:
                 )
                 if msg_id:
                     return {"success": True, "message_id": msg_id}
-                return {"success": False, "error": "消息发送失败"}
+                return {"success": False, "error": RESULT_SEND_FAILED}
 
             elif name == "schedule_message":
                 from datetime import datetime as _dt, timezone as _tz, timedelta as _td
@@ -770,7 +758,7 @@ class MessageRouter:
                 try:
                     send_at = _dt.fromisoformat(send_at_str)
                 except ValueError:
-                    return {"success": False, "error": f"时间格式无效: {send_at_str}，请使用 ISO 8601 格式"}
+                    return {"success": False, "error": ERR_TIME_FORMAT_INVALID.format(value=send_at_str)}
 
                 cst = _tz(_td(hours=8))
                 now = _dt.now(cst)
@@ -778,7 +766,7 @@ class MessageRouter:
                     send_at = send_at.replace(tzinfo=cst)
                 delay = (send_at - now).total_seconds()
                 if delay < 0:
-                    return {"success": False, "error": "计划时间已过去"}
+                    return {"success": False, "error": ERR_TIME_PAST}
 
                 target_chat_id = input_data.get("chat_id", "")
                 if not target_chat_id.startswith(("oc_", "ou_", "on_")) or len(target_chat_id) < 20:
@@ -795,11 +783,11 @@ class MessageRouter:
                         logger.error("定时消息发送失败: chat=%s", target_chat_id)
 
                 asyncio.ensure_future(_delayed_send())
-                return {"success": True, "message": f"已计划在 {send_at_str} 发送消息"}
+                return {"success": True, "message": RESULT_SCHEDULE_OK.format(send_at=send_at_str)}
 
             elif name == "run_claude_code":
                 if not self.cc_executor:
-                    return {"success": False, "error": "Claude Code 执行器未加载"}
+                    return {"success": False, "error": ERR_CC_NOT_LOADED}
                 result = await self.cc_executor.execute_with_context(
                     prompt=input_data["prompt"],
                     working_dir=input_data.get("working_dir", ""),
@@ -809,7 +797,7 @@ class MessageRouter:
 
             elif name == "run_bash":
                 if not self.bash_executor:
-                    return {"success": False, "error": "Bash 执行器未加载"}
+                    return {"success": False, "error": ERR_BASH_NOT_LOADED}
                 result = await self.bash_executor.execute(
                     command=input_data["command"],
                     working_dir=input_data.get("working_dir", ""),
@@ -829,7 +817,7 @@ class MessageRouter:
                             "http": http_client,
                         }
                         return await self.tool_registry.execute(name, input_data, context)
-                return {"success": False, "error": f"未知工具: {name}"}
+                return {"success": False, "error": ERR_UNKNOWN_TOOL.format(name=name)}
 
         except Exception as e:
             logger.exception("工具执行失败: %s", name)
@@ -907,7 +895,7 @@ class MessageRouter:
             if self._is_non_text_message(message):
                 await self.sender.reply_text(
                     message.message_id,
-                    "目前只能处理文字消息，图片什么的还看不懂。有事打字说就好。",
+                    NON_TEXT_REPLY_GROUP,
                 )
             return
 
@@ -923,7 +911,7 @@ class MessageRouter:
                     text = sender_msgs[-1]
                     logger.info("群聊 @at 空消息，取缓冲区上文: %s", text[:50])
             if not text:
-                text = "（@了我但没说具体内容）"
+                text = EMPTY_AT_FALLBACK
 
         sender_name = await self.sender.get_user_name(sender_id, chat_id=message.chat_id)
         if self.sender.is_chat_left(message.chat_id):
@@ -940,25 +928,19 @@ class MessageRouter:
                 recent = await self._enrich_with_api_messages(message.chat_id, recent)
                 lines = []
                 for m in recent:
-                    name = m.get("sender_name", "未知")
+                    name = m.get("sender_name", SENDER_UNKNOWN)
                     if m.get("sender_id") == self.bot_open_id:
-                        lines.append(f"{name}（你自己）：{m['text']}")
+                        lines.append(GROUP_MSG_SELF.format(name=name, text=m['text']))
                     else:
-                        lines.append(f"{name}：{m['text']}")
-                group_context = "\n群聊近期消息：\n" + "\n".join(lines)
+                        lines.append(GROUP_MSG_OTHER.format(name=name, text=m['text']))
+                group_context = GROUP_CONTEXT_HEADER.format(messages="\n".join(lines))
 
         system = self.memory.build_context(chat_id=message.chat_id)
-        system += (
-            f"\n\n你在群聊中被 {sender_name} @at 了。当前会话 chat_id={message.chat_id}。请针对对方的问题简洁回复。"
-            f"{group_context}"
-            "\n如果涉及日程，使用 calendar 工具。"
-            "如果用户明确要求你执行某个任务且现有工具不够，可以用 create_custom_tool 创建工具来完成。"
-            "\n\n<memory_guidance>"
-            "\n- write_memory：写入全局记忆，用于跨聊天通用的信息"
-            "\n- write_chat_memory：写入当前群聊的专属记忆，用于仅与本群相关的信息（如群聊话题、群友特点）"
-            "\n</memory_guidance>"
-            f"{_CONSTRAINTS_GROUP}"
+        system += GROUP_AT_SYSTEM_SUFFIX.format(
+            sender_name=sender_name, chat_id=message.chat_id, group_context=group_context
         )
+        system += "\n\n" + wrap_tag(TAG_MEMORY_GUIDANCE, MEMORY_GUIDANCE_GROUP)
+        system += "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_GROUP)
 
         # 构建 name_to_id 映射，用于 @名字 → <at> 标签转换
         name_to_id: dict[str, str] = {}
@@ -989,7 +971,7 @@ class MessageRouter:
 
         if reply_text and self.session_mgr:
             session = self.session_mgr.get_or_create(message.chat_id)
-            session.add_message("assistant", reply_text, sender_name="你")
+            session.add_message("assistant", reply_text, sender_name=SENDER_SELF)
             if session.should_compact():
                 await self._compact_session(session)
 
@@ -1014,7 +996,7 @@ class MessageRouter:
             # 解析发送者名字：app 类型先查缓存，不走通讯录 API（会 400）
             sid = am.get("sender_id", "")
             if not sid:
-                sender_name = "未知"
+                sender_name = SENDER_UNKNOWN
             elif am.get("sender_type") == "app":
                 sender_name = self.sender._user_name_cache.get(sid, sid[-6:])
             else:
@@ -1054,12 +1036,12 @@ class MessageRouter:
         lines: list[str] = []
         has_my_reply = False
         for m in recent:
-            name = m.get("sender_name", "未知")
+            name = m.get("sender_name", SENDER_UNKNOWN)
             if m.get("sender_id") == self.bot_open_id:
-                lines.append(f"[{m['message_id']}] {name}（你自己）：{m['text']}")
+                lines.append(GROUP_MSG_WITH_ID_SELF.format(message_id=m['message_id'], name=name, text=m['text']))
                 has_my_reply = True
             else:
-                lines.append(f"[{m['message_id']}] {name}：{m['text']}")
+                lines.append(GROUP_MSG_WITH_ID_OTHER.format(message_id=m['message_id'], name=name, text=m['text']))
         conversation = "\n".join(lines)
 
         # 如果最后一条消息就是自己发的，不需要再次介入
@@ -1078,19 +1060,8 @@ class MessageRouter:
                 logger.debug("已发言且无新消息，跳过评估")
                 return
 
-        prompt = (
-            f"你是一个 AI 助理（名字：{my_name or '未知'}）。以下是你的人格定义：\n{soul}\n\n"
-            f"以下是群聊中的最近消息（方括号内是消息ID）：\n{conversation}\n\n"
-            "请判断你是否应该主动参与这个对话。考虑：\n"
-            "1. 对话是否与你相关或涉及你能帮助的话题？\n"
-            "2. 你的介入是否会增加价值？\n"
-            "3. 如果群里有另一个 bot 已经在处理这个话题，你就不要重复介入\n"
-            "4. 如果对方是在和另一个 bot 对话，且没有涉及你，不要介入\n"
-            "5. 这是否只是闲聊/情绪表达（通常不应介入）？\n"
-            "6. 如果有人直接叫你的名字或提到你，应该介入\n"
-            "7. 如果你已经在对话中发过言（标记为「你自己」），除非有人直接问你新问题或 @你，否则不要再发言\n"
-            "8. 例外：如果用户明确要求你与其他人/bot 互动（如「你俩聊一下」「跟xx说说话」），即使对方是 bot 也应该积极配合\n\n"
-            '仅输出 JSON: {"should_intervene": true/false, "reason": "简短原因", "reply_to_message_id": "要回复的消息ID或null"}'
+        prompt = GROUP_EVAL_PROMPT.format(
+            bot_name=my_name or SENDER_UNKNOWN, soul=soul, conversation=conversation
         )
 
         try:
@@ -1115,20 +1086,16 @@ class MessageRouter:
         name_to_id: dict[str, str] = {}
         lines: list[str] = []
         for m in recent:
-            name = m.get("sender_name", "未知")
+            name = m.get("sender_name", SENDER_UNKNOWN)
             name_to_id[name] = m["sender_id"]
             if m.get("sender_id") == self.bot_open_id:
-                lines.append(f"{name}（你自己）：{m['text']}")
+                lines.append(GROUP_MSG_SELF.format(name=name, text=m['text']))
             else:
-                lines.append(f"{name}：{m['text']}")
+                lines.append(GROUP_MSG_OTHER.format(name=name, text=m['text']))
         conversation = "\n".join(lines)
 
-        system += (
-            f"\n\n你决定主动参与群聊对话。原因：{judgment.get('reason', '')}\n"
-            f"最近的群聊消息：\n{conversation}\n\n"
-            "如果要提及某人，使用 @名字 格式。回复保持简洁自然。"
-            f"{_CONSTRAINTS_GROUP}"
-        )
+        system += GROUP_INTERVENE_SYSTEM_SUFFIX.format(reason=judgment.get('reason', ''), conversation=conversation)
+        system += "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_GROUP)
 
         # 校验 reply_to_message_id
         reply_to = judgment.get("reply_to_message_id")
@@ -1142,10 +1109,10 @@ class MessageRouter:
 
         if self.session_mgr:
             session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("user", f"[群聊旁听]\n{conversation}", sender_name="群聊")
+            session.add_message("user", wrap_tag(TAG_GROUP_CONTEXT, conversation), sender_name=SENDER_GROUP)
             messages = session.get_messages()
         else:
-            messages = [{"role": "user", "content": f"[群聊旁听]\n{conversation}"}]
+            messages = [{"role": "user", "content": wrap_tag(TAG_GROUP_CONTEXT, conversation)}]
 
         reply_text = await self._reply_with_tool_loop(
             system, messages, chat_id, reply_to,
@@ -1154,7 +1121,7 @@ class MessageRouter:
 
         if reply_text and self.session_mgr:
             session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("assistant", reply_text, sender_name="你")
+            session.add_message("assistant", reply_text, sender_name=SENDER_SELF)
             if session.should_compact():
                 await self._compact_session(session)
 
@@ -1258,7 +1225,7 @@ class MessageRouter:
                     new_count, chat_id[-8:], self.bot_name,
                 )
                 recent = buf.get_recent(20)
-                judgment = {"intervene": True, "reason": f"被其他 bot 以文本方式 @{self.bot_name}"}
+                judgment = {"intervene": True, "reason": BOT_POLL_AT_REASON.format(bot_name=self.bot_name)}
                 await self._intervene(chat_id, recent, judgment)
                 # 取消 _intervene 内部触发的 bot_poll，避免 bot 互@循环
                 timer = self._bot_poll_timers.pop(chat_id, None)
@@ -1282,27 +1249,21 @@ class MessageRouter:
         if old_messages:
             flush_prompt = self.memory.flush_before_compaction(old_messages)
             extracted = await self.executor.reply("", flush_prompt)
-            if extracted.strip() and extracted.strip() != "无":
+            if extracted.strip() and extracted.strip() != FLUSH_NO_RESULT:
                 self.memory.append_daily(
-                    f"### 会话记忆提取\n{extracted}\n",
+                    COMPACTION_DAILY_HEADER.format(extracted=extracted),
                     chat_id=session.chat_id,
                 )
                 # 同时写入 per-chat 长期记忆，避免 daily log 过期后丢失
                 from datetime import date as _date
                 self.memory.append_chat_memory(
                     session.chat_id,
-                    f"\n## 记忆提取 ({_date.today().isoformat()})\n{extracted}\n",
+                    COMPACTION_MEMORY_HEADER.format(date=_date.today().isoformat(), extracted=extracted),
                 )
 
         # 生成结构化摘要
-        summary_prompt = (
-            "请总结以下对话的关键内容，包括：\n"
-            "1. 讨论的主要话题\n"
-            "2. 做出的决定或达成的共识\n"
-            "3. 使用了哪些工具完成了什么任务\n"
-            "4. 用户表达的偏好或需求\n"
-            "用 3-5 句话概括，保留具体细节（如日期、名字、数字）。\n\n"
-            + "\n".join(
+        summary_prompt = COMPACTION_SUMMARY_PROMPT.format(
+            old_messages_formatted="\n".join(
                 f"[{m.get('role', '?')}] {m.get('content', '')[:200]}"
                 for m in old_messages
             )

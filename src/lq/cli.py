@@ -140,7 +140,21 @@ def stop(instance: str) -> None:
         return
 
     os.kill(pid, signal.SIGTERM)
-    click.echo(f"@{display} 已发送停止信号 (PID {pid})")
+    click.echo(f"@{display} 正在停止 (PID {pid}) ...", nl=False)
+
+    # 等待进程退出，超时后 SIGKILL
+    import time
+    for _ in range(10):  # 最多等 10 秒
+        time.sleep(1)
+        if not _is_alive(pid):
+            click.echo(" 已停止")
+            return
+        click.echo(".", nl=False)
+
+    # 宽限期结束，强制终止
+    click.echo()
+    os.kill(pid, signal.SIGKILL)
+    click.echo(f"@{display} 强制终止 (SIGKILL)")
 
 
 @cli.command()
@@ -152,9 +166,18 @@ def restart(instance: str) -> None:
 
     if pid and _is_alive(pid):
         os.kill(pid, signal.SIGTERM)
-        click.echo(f"@{display} 已停止 (PID {pid})")
+        click.echo(f"@{display} 正在停止 (PID {pid}) ...", nl=False)
         import time
-        time.sleep(2)
+        for _ in range(10):
+            time.sleep(1)
+            if not _is_alive(pid):
+                break
+            click.echo(".", nl=False)
+        click.echo()
+        if _is_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.5)
+            click.echo(f"@{display} 强制终止 (SIGKILL)")
 
     config = load_config(home)
     click.echo(f"启动 @{display} ...")
