@@ -47,6 +47,79 @@ class FeishuListener:
         except Exception:
             logger.exception("处理飞书事件失败")
 
+    def _on_reaction(self, data: Any) -> None:
+        """Reaction 事件回调 — 用于 bot 间意图信号感知"""
+        try:
+            event = data.event
+            # 提取 reaction 信息
+            message_id = getattr(event, "message_id", "") or ""
+            operator_type = getattr(event, "operator_type", "") or ""
+            reaction_type = getattr(event, "reaction_type", None)
+            emoji_type = getattr(reaction_type, "emoji_type", "") if reaction_type else ""
+            operator_id = ""
+            if hasattr(event, "user_id"):
+                uid = event.user_id
+                operator_id = getattr(uid, "open_id", "") or ""
+
+            payload = {
+                "event_type": "reaction.created",
+                "message_id": message_id,
+                "operator_id": operator_id,
+                "operator_type": operator_type,
+                "emoji_type": emoji_type,
+            }
+            self.main_loop.call_soon_threadsafe(self.queue.put_nowait, payload)
+            logger.debug("Reaction 事件入队: %s on %s by %s", emoji_type, message_id[-8:], operator_id[-6:])
+        except Exception:
+            logger.exception("处理 reaction 事件失败")
+
+    def _on_bot_added(self, data: Any) -> None:
+        """Bot 被加入群聊事件"""
+        try:
+            event = data.event
+            chat_id = getattr(event, "chat_id", "") or ""
+            operator_id = ""
+            if hasattr(event, "operator_id"):
+                oid = event.operator_id
+                operator_id = getattr(oid, "open_id", "") or ""
+            payload = {
+                "event_type": "bot.added",
+                "chat_id": chat_id,
+                "operator_id": operator_id,
+            }
+            self.main_loop.call_soon_threadsafe(self.queue.put_nowait, payload)
+            logger.info("Bot 入群事件入队: chat=%s", chat_id[-8:] if chat_id else "?")
+        except Exception:
+            logger.exception("处理 bot 入群事件失败")
+
+    def _on_user_added(self, data: Any) -> None:
+        """新用户加入群聊事件"""
+        try:
+            event = data.event
+            chat_id = getattr(event, "chat_id", "") or ""
+            users: list[dict] = []
+            raw_users = getattr(event, "users", None) or []
+            for u in raw_users:
+                open_id = ""
+                if hasattr(u, "user_id"):
+                    uid = u.user_id
+                    open_id = getattr(uid, "open_id", "") or ""
+                name = getattr(u, "name", "") or ""
+                if open_id:
+                    users.append({"open_id": open_id, "name": name})
+            payload = {
+                "event_type": "user.added",
+                "chat_id": chat_id,
+                "users": users,
+            }
+            self.main_loop.call_soon_threadsafe(self.queue.put_nowait, payload)
+            logger.info(
+                "用户入群事件入队: chat=%s users=%d",
+                chat_id[-8:] if chat_id else "?", len(users),
+            )
+        except Exception:
+            logger.exception("处理用户入群事件失败")
+
     def _on_card_action(self, data: Any) -> Any:
         """卡片交互回调"""
         try:
@@ -71,13 +144,13 @@ class FeishuListener:
         # IM
         builder.register_p2_im_message_message_read_v1(_noop)
         builder.register_p2_im_message_recalled_v1(_noop)
-        builder.register_p2_im_message_reaction_created_v1(_noop)
+        builder.register_p2_im_message_reaction_created_v1(self._on_reaction)
         builder.register_p2_im_message_reaction_deleted_v1(_noop)
         builder.register_p2_im_chat_disbanded_v1(_noop)
         builder.register_p2_im_chat_updated_v1(_noop)
-        builder.register_p2_im_chat_member_bot_added_v1(_noop)
+        builder.register_p2_im_chat_member_bot_added_v1(self._on_bot_added)
         builder.register_p2_im_chat_member_bot_deleted_v1(_noop)
-        builder.register_p2_im_chat_member_user_added_v1(_noop)
+        builder.register_p2_im_chat_member_user_added_v1(self._on_user_added)
         builder.register_p2_im_chat_member_user_deleted_v1(_noop)
         builder.register_p2_im_chat_member_user_withdrawn_v1(_noop)
         builder.register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(_noop)
