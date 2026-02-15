@@ -1863,7 +1863,11 @@ class MessageRouter:
             result = result.strip()
             if result.startswith("```"):
                 result = result.split("\n", 1)[-1].rsplit("```", 1)[0]
-            judgment = json.loads(result)
+            # GLM-5 可能在 JSON 后附带额外文本，用 raw_decode 只取第一个对象
+            try:
+                judgment = json.loads(result)
+            except json.JSONDecodeError:
+                judgment, _ = json.JSONDecoder().raw_decode(result.lstrip())
 
             if judgment.get("should_intervene"):
                 logger.info("决定介入群聊 %s: %s", chat_id, judgment.get("reason"))
