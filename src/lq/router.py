@@ -2328,15 +2328,53 @@ class MessageRouter:
             logger.exception("解析卡片回调失败: %s", event)
 
     # 非文本消息类型映射
-    _NON_TEXT_TYPES = {"image", "file", "audio", "media", "sticker", "post", "share_chat", "share_user"}
+    _NON_TEXT_TYPES = {"image", "file", "audio", "media", "sticker", "share_chat", "share_user"}
 
     def _extract_text(self, message: Any) -> str:
-        """从消息中提取纯文本，非文本消息返回空字符串"""
+        """从消息中提取文本，支持 text 和 post（富文本→Markdown）格式"""
         try:
             content = json.loads(message.content)
-            return content.get("text", "")
         except (json.JSONDecodeError, TypeError):
             return ""
+
+        # 普通文本消息
+        if "text" in content:
+            return content["text"]
+
+        # post 富文本消息：转为 Markdown
+        post = content.get("post") or content
+        # post 可能按语言分（zh_cn/en_us），取第一个
+        if isinstance(post, dict) and not post.get("content"):
+            post = next(iter(post.values()), {}) if post else {}
+        if not isinstance(post, dict):
+            return ""
+
+        lines: list[str] = []
+        title = post.get("title", "")
+        if title:
+            lines.append(f"**{title}**")
+
+        for paragraph in post.get("content", []):
+            parts: list[str] = []
+            for elem in paragraph:
+                tag = elem.get("tag", "")
+                if tag == "text":
+                    parts.append(elem.get("text", ""))
+                elif tag == "a":
+                    href = elem.get("href", "")
+                    text = elem.get("text", href)
+                    parts.append(f"[{text}]({href})" if href else text)
+                elif tag == "at":
+                    name = elem.get("user_name", "") or elem.get("user_id", "")
+                    parts.append(f"@{name}")
+                elif tag == "img":
+                    parts.append("[图片]")
+                elif tag == "media":
+                    parts.append("[媒体]")
+                # 其他 tag 忽略
+            lines.append("".join(parts))
+
+        return "\n".join(lines)
 
     def _is_non_text_message(self, message: Any) -> bool:
         """检查是否为非文本消息（图片、文件、语音等）"""
