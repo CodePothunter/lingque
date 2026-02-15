@@ -138,7 +138,6 @@ class AssistantGateway:
         router.cc_executor = cc_executor
         router.bash_executor = bash_executor
         router.tool_registry = tool_registry
-        router.zhipu_api_key = self.config.api.zhipu_api_key
         self._router = router
         logger.info("会话管理器已加载（含 Claude Code + Bash 执行器）")
 

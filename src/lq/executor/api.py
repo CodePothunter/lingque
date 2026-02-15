@@ -33,6 +33,7 @@ BASE_DELAY = 1.0  # 秒
 
 # 每百万 token 价格（USD），input / output
 MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "glm-5": (1.0, 3.2),
     "claude-opus-4-6": (15.0, 75.0),
     "claude-sonnet-4-20250514": (3.0, 15.0),
     "claude-haiku-4-20250414": (0.80, 4.0),

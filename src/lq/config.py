@@ -62,7 +62,7 @@ class LQConfig:
     slug: str = ""              # 目录名（纯 ASCII），为空时自动从 name 生成
     api: APIConfig = field(default_factory=APIConfig)
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
-    model: str = "claude-opus-4-6"
+    model: str = "glm-5"
     heartbeat_interval: int = 3600  # 秒
     active_hours: tuple[int, int] = (8, 23)  # 活跃时段
     groups: list[GroupConfig] = field(default_factory=list)
@@ -82,7 +82,7 @@ class LQConfig:
         cfg = cls.__new__(cls)
         cfg.name = d.get("name", "lingque")
         cfg.slug = d.get("slug", "")
-        cfg.model = d.get("model", "claude-opus-4-6")
+        cfg.model = d.get("model", "glm-5")
         cfg.heartbeat_interval = d.get("heartbeat_interval", 3600)
         cfg.cost_alert_daily = d.get("cost_alert_daily", 5.0)
         ah = d.get("active_hours", [8, 23])

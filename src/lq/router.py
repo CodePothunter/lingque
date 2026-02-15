@@ -1295,9 +1295,12 @@ class MessageRouter:
                 # 从 SSE 流中提取最后一个 JSON-RPC 响应
                 last_data: dict | None = None
                 for line in resp.text.splitlines():
-                    if line.startswith("data: "):
+                    if line.startswith("data:"):
+                        raw = line[5:].lstrip()
+                        if not raw:
+                            continue
                         try:
-                            last_data = json.loads(line[6:])
+                            last_data = json.loads(raw)
                         except json.JSONDecodeError:
                             continue
                 return last_data or {}
@@ -1327,7 +1330,7 @@ class MessageRouter:
 
             resp = await self._mcp_request("tools/call", {
                 "name": "webSearchPrime",
-                "arguments": {"query": query},
+                "arguments": {"search_query": query},
             })
 
             if not resp or "result" not in resp:
@@ -1338,7 +1341,7 @@ class MessageRouter:
                     await self._ensure_mcp_session()
                     resp = await self._mcp_request("tools/call", {
                         "name": "webSearchPrime",
-                        "arguments": {"query": query},
+                        "arguments": {"search_query": query},
                     })
 
             if not resp or "result" not in resp:
