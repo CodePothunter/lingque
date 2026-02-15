@@ -894,6 +894,7 @@ class MessageRouter:
         iteration = 0
         nudge_count = 0
         tools_called: list[str] = []
+        sent_to_current_chat = False  # 是否已通过 send_message 向当前 chat 发送过
 
         while iteration < max_iterations:
             iteration += 1
@@ -908,6 +909,11 @@ class MessageRouter:
                         session = self.session_mgr.get_or_create(chat_id)
                         session.add_tool_use(tc["name"], tc["input"], tc["id"])
                     result = await self._execute_tool(tc["name"], tc["input"], chat_id)
+                    # 标记是否已通过 send_message 向当前 chat 发送过
+                    if tc["name"] == "send_message" and result.get("success"):
+                        target = tc["input"].get("chat_id", "")
+                        if not target or target == chat_id:
+                            sent_to_current_chat = True
                     result_str = json.dumps(result, ensure_ascii=False)
                     tool_results.append({
                         "tool_use_id": tc["id"],
@@ -946,14 +952,16 @@ class MessageRouter:
             else:
                 break
 
-        # 发送最终文本回复
-        if resp.text:
+        # 发送最终文本回复（如果已通过 send_message 发到当前 chat 则跳过，避免重复）
+        if resp.text and not sent_to_current_chat:
             # 先清理 LLM 模仿的元数据标签，再做 transform
             cleaned = self._CLEAN_RE.sub("", resp.text).strip()
             final = text_transform(cleaned) if text_transform else cleaned
             logger.info("回复: %s", final[:80])
             await self._send_reply(final, chat_id, reply_to_message_id)
             resp.text = final
+        elif sent_to_current_chat:
+            logger.info("跳过最终回复: 已通过 send_message 发送到当前 chat")
 
         # 后处理：检测未执行的意图并补救
         if self.post_processor and resp.text:
