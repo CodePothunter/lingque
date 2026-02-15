@@ -405,7 +405,8 @@ TOOL_DESC_RUN_BASH = (
 )
 
 TOOL_DESC_WEB_SEARCH = (
-    "搜索互联网获取实时信息。用于查询新闻、天气、汇率、百科知识、技术文档等任何需要联网查询的内容。"
+    "搜索互联网获取实时信息（基于智谱 WebSearch）。"
+    "用于查询新闻、天气、汇率、百科知识、技术文档等任何需要联网查询的内容。"
     "返回搜索结果列表，包含标题、链接和摘要。如需详细内容，可配合 web_fetch 获取完整网页。"
 )
 
@@ -467,8 +468,7 @@ TOOL_FIELD_WORKING_DIR = "工作目录路径（可选，默认为工作区目录
 TOOL_FIELD_CC_TIMEOUT = "超时时间（秒），默认 300"
 TOOL_FIELD_BASH_COMMAND = "要执行的 shell 命令"
 TOOL_FIELD_BASH_TIMEOUT = "超时时间（秒），默认 60"
-TOOL_FIELD_SEARCH_QUERY = "搜索关键词，支持中英文"
-TOOL_FIELD_SEARCH_MAX_RESULTS = "返回结果数量上限，默认 5"
+TOOL_FIELD_SEARCH_QUERY = "搜索关键词，支持中英文，建议不超过 70 字"
 TOOL_FIELD_FETCH_URL = "要抓取的完整 URL（含 http:// 或 https://）"
 TOOL_FIELD_FETCH_MAX_LENGTH = "返回文本的最大字符数，默认 8000"
 TOOL_FIELD_PYTHON_CODE = "要执行的 Python 代码（支持多行）"

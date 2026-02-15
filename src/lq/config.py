@@ -37,6 +37,7 @@ def slugify(name: str) -> str:
 class APIConfig:
     base_url: str = "https://api.anthropic.com"
     api_key: str = ""
+    zhipu_api_key: str = ""  # 智谱 WebSearch MCP
 
 
 @dataclass
@@ -90,6 +91,7 @@ class LQConfig:
         cfg.api = APIConfig(
             base_url=api.get("base_url", "https://api.anthropic.com"),
             api_key=api.get("api_key", ""),
+            zhipu_api_key=api.get("zhipu_api_key", ""),
         )
 
         fs = d.get("feishu", {})
@@ -152,6 +154,7 @@ def load_from_env(env_path: Path) -> LQConfig:
     cfg = LQConfig()
     cfg.api.api_key = vals.get("ANTHROPIC_AUTH_TOKEN", "")
     cfg.api.base_url = vals.get("ANTHROPIC_BASE_URL", cfg.api.base_url)
+    cfg.api.zhipu_api_key = vals.get("ZHIPU_API_KEY", "")
     cfg.feishu.app_id = vals.get("FEISHU_APP_ID", "")
     cfg.feishu.app_secret = vals.get("FEISHU_APP_SECRET", "")
     return cfg

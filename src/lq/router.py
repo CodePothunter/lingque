@@ -62,7 +62,7 @@ from lq.prompts import (
     TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_SEND_AT,
     TOOL_FIELD_CC_PROMPT, TOOL_FIELD_WORKING_DIR, TOOL_FIELD_CC_TIMEOUT,
     TOOL_FIELD_BASH_COMMAND, TOOL_FIELD_BASH_TIMEOUT,
-    TOOL_FIELD_SEARCH_QUERY, TOOL_FIELD_SEARCH_MAX_RESULTS,
+    TOOL_FIELD_SEARCH_QUERY,
     TOOL_FIELD_FETCH_URL, TOOL_FIELD_FETCH_MAX_LENGTH,
     TOOL_FIELD_PYTHON_CODE, TOOL_FIELD_PYTHON_TIMEOUT,
     TOOL_FIELD_FILE_PATH, TOOL_FIELD_FILE_MAX_LINES,
@@ -358,11 +358,6 @@ TOOLS = [
                     "type": "string",
                     "description": TOOL_FIELD_SEARCH_QUERY,
                 },
-                "max_results": {
-                    "type": "integer",
-                    "description": TOOL_FIELD_SEARCH_MAX_RESULTS,
-                    "default": 5,
-                },
             },
             "required": ["query"],
         },
@@ -500,6 +495,7 @@ class MessageRouter:
         self.bash_executor: Any = None
         self.tool_registry: Any = None
         self.post_processor: Any = None
+        self.zhipu_api_key: str = ""
 
     async def handle(self, data: dict) -> None:
         """处理消息事件"""
@@ -1158,10 +1154,7 @@ class MessageRouter:
                 return result
 
             elif name == "web_search":
-                return await self._tool_web_search(
-                    input_data["query"],
-                    input_data.get("max_results", 5),
-                )
+                return await self._tool_web_search(input_data["query"])
 
             elif name == "web_fetch":
                 return await self._tool_web_fetch(
@@ -1207,173 +1200,143 @@ class MessageRouter:
 
     # ── 泛化工具实现 ──
 
-    @staticmethod
-    def _build_http_client(**kwargs: Any) -> Any:
-        """构建代理感知的 httpx.AsyncClient。
+    # ── 智谱 WebSearch MCP ──
 
-        自动从环境变量读取代理配置（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY），
-        使用通用 User-Agent 避免被目标站点拦截。
-        """
-        import os
+    _zhipu_session_id: str = ""
+
+    async def _zhipu_mcp_init(self) -> str:
+        """初始化智谱 MCP 会话，返回 session-id。"""
         import httpx
 
-        proxy = (
-            os.environ.get("HTTPS_PROXY")
-            or os.environ.get("HTTP_PROXY")
-            or os.environ.get("ALL_PROXY")
-            or os.environ.get("https_proxy")
-            or os.environ.get("http_proxy")
-            or os.environ.get("all_proxy")
-        )
-
-        defaults: dict[str, Any] = {
-            "follow_redirects": True,
-            "timeout": 20.0,
-            "headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "lingque", "version": "1.0"},
             },
         }
-        if proxy:
-            defaults["proxy"] = proxy
-        defaults.update(kwargs)
-        return httpx.AsyncClient(**defaults)
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {self.zhipu_api_key}",
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+        session_id = resp.headers.get("mcp-session-id", "")
+        if not session_id:
+            raise RuntimeError("智谱 MCP 未返回 session-id")
+        return session_id
 
-    async def _tool_web_search(self, query: str, max_results: int = 5) -> dict:
-        """搜索互联网，依次尝试 DuckDuckGo → Bing 两种引擎"""
-        # 先尝试 DuckDuckGo
-        result = await self._search_duckduckgo(query, max_results)
-        if result["success"] and result.get("count", 0) > 0:
-            return result
+    async def _tool_web_search(self, query: str) -> dict:
+        """通过智谱 WebSearch MCP 搜索互联网"""
+        import httpx
 
-        ddg_error = result.get("error", "无结果")
-        logger.warning("DuckDuckGo 搜索失败或无结果 (%s)，尝试百度: %s", ddg_error, query)
+        if not self.zhipu_api_key:
+            return {"success": False, "error": "未配置智谱 API Key (zhipu_api_key)"}
 
-        # 回退到百度（在中国大陆始终可访问）
-        result = await self._search_baidu(query, max_results)
-        if result["success"] and result.get("count", 0) > 0:
-            return result
+        mcp_url = "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"
 
-        baidu_error = result.get("error", "无结果")
-        logger.warning("百度搜索也失败 (%s): %s", baidu_error, query)
+        # 确保有活跃的 MCP 会话
+        if not self._zhipu_session_id:
+            try:
+                self._zhipu_session_id = await self._zhipu_mcp_init()
+            except Exception as e:
+                logger.warning("智谱 MCP 初始化失败: %s", e)
+                return {"success": False, "error": f"MCP 初始化失败: {e}"}
 
-        # 两个引擎都失败时，返回合并的错误信息
-        return {
-            "success": False,
-            "error": f"所有搜索引擎均失败。DuckDuckGo: {ddg_error}; 百度: {baidu_error}",
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "id": 1,
+            "params": {
+                "name": "webSearchPrime",
+                "arguments": {"search_query": query},
+            },
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {self.zhipu_api_key}",
+            "Mcp-Session-Id": self._zhipu_session_id,
         }
 
-    async def _search_duckduckgo(self, query: str, max_results: int = 5) -> dict:
-        """使用 DuckDuckGo HTML 搜索"""
-        import re as _re
-        from urllib.parse import unquote
-
         try:
-            async with self._build_http_client(timeout=15.0) as client:
-                resp = await client.get(
-                    "https://html.duckduckgo.com/html/",
-                    params={"q": query},
-                )
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(mcp_url, json=payload, headers=headers)
                 resp.raise_for_status()
-                html = resp.text
 
-            results: list[dict] = []
-
-            # 主解析: class="result__a" + class="result__snippet"
-            result_blocks = _re.findall(
-                r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>'
-                r'.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-                html,
-                _re.DOTALL,
-            )
-            for url, title_html, snippet_html in result_blocks[:max_results]:
-                title = _re.sub(r"<[^>]+>", "", title_html).strip()
-                snippet = _re.sub(r"<[^>]+>", "", snippet_html).strip()
-                real_url = url
-                uddg_match = _re.search(r"uddg=([^&]+)", url)
-                if uddg_match:
-                    real_url = unquote(uddg_match.group(1))
-                if title and real_url:
-                    results.append({"title": title, "url": real_url, "snippet": snippet})
-
-            if not results:
-                # 备用解析: rel="nofollow" 链接
-                links = _re.findall(
-                    r'<a[^>]+rel="nofollow"[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
-                    html,
-                )
-                for url, title_html in links[:max_results]:
-                    title = _re.sub(r"<[^>]+>", "", title_html).strip()
-                    if title and url.startswith("http"):
-                        results.append({"title": title, "url": url, "snippet": ""})
-
-            return {
-                "success": True,
-                "query": query,
-                "results": results,
-                "count": len(results),
-                "engine": "duckduckgo",
-            }
-        except Exception as e:
-            logger.warning("DuckDuckGo 搜索异常: %s — %s", query, e)
-            return {"success": False, "error": str(e)}
-
-    async def _search_baidu(self, query: str, max_results: int = 5) -> dict:
-        """使用百度 HTML 搜索（备用引擎，在中国大陆始终可访问）"""
-        import re as _re
-
-        try:
-            async with self._build_http_client(timeout=15.0) as client:
-                resp = await client.get(
-                    "https://www.baidu.com/s",
-                    params={"wd": query},
-                )
-                resp.raise_for_status()
-                html = resp.text
-
-            results: list[dict] = []
-
-            # 百度搜索结果在 <h3> > <a href="..."> 中
-            h3_links = _re.findall(
-                r'<h3[^>]*>\s*<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
-                html,
-                _re.DOTALL,
-            )
-            for url, title_html in h3_links[:max_results * 2]:
-                title = _re.sub(r"<[^>]+>", "", title_html).strip()
-                if not title or len(title) < 3:
-                    continue
-                # 过滤广告链接（baidu.php 格式）
-                if "/baidu.php?" in url:
-                    continue
-                if title and url:
-                    results.append({"title": title, "url": url, "snippet": ""})
-                if len(results) >= max_results:
+            # 响应为 SSE 格式，提取 data: 行中的 JSON
+            data_line = ""
+            for line in resp.text.splitlines():
+                if line.startswith("data:"):
+                    data_line = line[5:]
                     break
 
+            if not data_line:
+                return {"success": False, "error": "MCP 响应中未找到 data 字段"}
+
+            rpc_result = json.loads(data_line)
+
+            # 检查 MCP 层面的错误
+            mcp_content = rpc_result.get("result", {})
+            if mcp_content.get("isError"):
+                error_text = mcp_content.get("content", [{}])[0].get("text", "未知错误")
+                # 会话过期时重置，下次调用会自动重新初始化
+                if "-401" in error_text:
+                    self._zhipu_session_id = ""
+                return {"success": False, "error": error_text}
+
+            content = mcp_content.get("content", [])
+            if not content:
+                return {"success": False, "error": "MCP 返回空结果"}
+
+            # text 字段可能是双重 JSON 编码（外层多一对引号）
+            raw_text = content[0].get("text", "")
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
+
+            results = [
+                {
+                    "title": item.get("title", ""),
+                    "url": item.get("link", ""),
+                    "snippet": item.get("content", ""),
+                    "source": item.get("media", ""),
+                }
+                for item in parsed
+            ]
+
             return {
                 "success": True,
                 "query": query,
                 "results": results,
                 "count": len(results),
-                "engine": "baidu",
+                "engine": "zhipu",
             }
         except Exception as e:
-            logger.warning("百度搜索异常: %s — %s", query, e)
-            return {"success": False, "error": str(e)}
+            logger.exception("智谱 WebSearch MCP 调用失败: %s", query)
+            return {"success": False, "error": f"搜索失败: {e}"}
 
     async def _tool_web_fetch(self, url: str, max_length: int = 8000) -> dict:
         """抓取网页并提取纯文本内容"""
         import re as _re
+        import httpx
 
         if not url.startswith(("http://", "https://")):
             return {"success": False, "error": "URL 必须以 http:// 或 https:// 开头"}
 
         try:
-            async with self._build_http_client(timeout=20.0) as client:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=20.0,
+            ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "")
@@ -1387,22 +1350,15 @@ class MessageRouter:
                 return {"success": True, "url": url, "content": text, "type": content_type}
 
             # HTML → 纯文本
-            # 移除 script/style 标签及其内容
             text = _re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=_re.DOTALL | _re.IGNORECASE)
-            # 将 <br>, <p>, <div>, <li>, <tr> 等块级标签转为换行
             text = _re.sub(r"<(?:br|p|div|li|tr|h[1-6])[^>]*>", "\n", text, flags=_re.IGNORECASE)
-            # 移除所有 HTML 标签
             text = _re.sub(r"<[^>]+>", "", text)
-            # 解码常见 HTML 实体
             text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
             text = text.replace("&quot;", '"').replace("&apos;", "'").replace("&nbsp;", " ")
-            # 合并多个空行
             text = _re.sub(r"\n{3,}", "\n\n", text)
-            # 移除行首尾空白
             text = "\n".join(line.strip() for line in text.splitlines())
             text = text.strip()
 
-            # 截断
             if len(text) > max_length:
                 text = text[:max_length] + f"\n... (内容已截断，原始长度 {len(text)} 字符)"
 
