@@ -38,6 +38,7 @@ class APIConfig:
     base_url: str = "https://api.anthropic.com"
     api_key: str = ""
     proxy: str = ""  # HTTP/SOCKS 代理（如 socks5://127.0.0.1:1080）
+    mcp_key: str = ""  # 智谱 MCP API Key（联网搜索等），默认复用 api_key
 
 
 @dataclass
@@ -88,10 +89,12 @@ class LQConfig:
         cfg.active_hours = (ah[0], ah[1])
 
         api = d.get("api", {})
+        api_key = api.get("api_key", "")
         cfg.api = APIConfig(
             base_url=api.get("base_url", "https://api.anthropic.com"),
-            api_key=api.get("api_key", ""),
+            api_key=api_key,
             proxy=api.get("proxy", ""),
+            mcp_key=api.get("mcp_key", "") or api_key,
         )
 
         fs = d.get("feishu", {})
@@ -163,6 +166,7 @@ def load_from_env(env_path: Path) -> LQConfig:
         or vals.get("all_proxy")
         or ""
     )
+    cfg.api.mcp_key = vals.get("ZHIPU_API_KEY", "") or cfg.api.api_key
     cfg.feishu.app_id = vals.get("FEISHU_APP_ID", "")
     cfg.feishu.app_secret = vals.get("FEISHU_APP_SECRET", "")
     return cfg
