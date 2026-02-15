@@ -312,14 +312,24 @@ def logs(instance: str, since: str | None) -> None:
 
 @cli.command()
 @click.argument("instance")
-@click.argument("message")
+@click.argument("message", required=False, default="")
 def say(instance: str, message: str) -> None:
-    """给实例发送消息"""
-    home, display, _ = _resolve(instance)
-    inbox = home / "inbox.txt"
-    with open(inbox, "a") as f:
-        f.write(message + "\n")
-    click.echo(f"消息已写入 @{display} 收件箱")
+    """和灵雀对话（不依赖飞书，本地终端交互）
+
+    \b
+    交互模式:  lq say @name
+    单条模式:  lq say @name "你好"
+    """
+    home, display, cfg = _resolve(instance)
+
+    if not home.exists():
+        click.echo(f"错误: 实例 @{display} 不存在，请先运行 uv run lq init", err=True)
+        raise SystemExit(1)
+
+    config = cfg or load_config(home)
+
+    from lq.conversation import run_conversation
+    asyncio.run(run_conversation(home, config, single_message=message))
 
 
 @cli.command()

@@ -29,6 +29,8 @@ from lq.prompts import (
     ERR_CALENDAR_NOT_LOADED, ERR_TOOL_REGISTRY_NOT_LOADED,
     ERR_CC_NOT_LOADED, ERR_BASH_NOT_LOADED, ERR_UNKNOWN_TOOL,
     ERR_TIME_FORMAT_INVALID, ERR_TIME_PAST, ERR_CODE_VALIDATION_OK,
+    ERR_FILE_NOT_FOUND, ERR_FILE_READ_FAILED, ERR_FILE_WRITE_FAILED,
+    RESULT_FILE_WRITTEN,
     DAILY_LOG_PRIVATE, DAILY_LOG_STATUS_OK, DAILY_LOG_STATUS_FAIL,
     GROUP_MSG_SELF, GROUP_MSG_OTHER,
     GROUP_MSG_WITH_ID_SELF, GROUP_MSG_WITH_ID_OTHER,
@@ -46,6 +48,8 @@ from lq.prompts import (
     TOOL_DESC_TEST_CUSTOM_TOOL, TOOL_DESC_DELETE_CUSTOM_TOOL,
     TOOL_DESC_TOGGLE_CUSTOM_TOOL, TOOL_DESC_SEND_MESSAGE,
     TOOL_DESC_SCHEDULE_MESSAGE, TOOL_DESC_RUN_CLAUDE_CODE, TOOL_DESC_RUN_BASH,
+    TOOL_DESC_WEB_SEARCH, TOOL_DESC_WEB_FETCH,
+    TOOL_DESC_RUN_PYTHON, TOOL_DESC_READ_FILE, TOOL_DESC_WRITE_FILE,
     TOOL_FIELD_SECTION, TOOL_FIELD_CONTENT_MEMORY,
     TOOL_FIELD_CHAT_SECTION, TOOL_FIELD_CHAT_CONTENT,
     TOOL_FIELD_SUMMARY, TOOL_FIELD_START_TIME, TOOL_FIELD_END_TIME,
@@ -58,6 +62,11 @@ from lq.prompts import (
     TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_SEND_AT,
     TOOL_FIELD_CC_PROMPT, TOOL_FIELD_WORKING_DIR, TOOL_FIELD_CC_TIMEOUT,
     TOOL_FIELD_BASH_COMMAND, TOOL_FIELD_BASH_TIMEOUT,
+    TOOL_FIELD_SEARCH_QUERY, TOOL_FIELD_SEARCH_MAX_RESULTS,
+    TOOL_FIELD_FETCH_URL, TOOL_FIELD_FETCH_MAX_LENGTH,
+    TOOL_FIELD_PYTHON_CODE, TOOL_FIELD_PYTHON_TIMEOUT,
+    TOOL_FIELD_FILE_PATH, TOOL_FIELD_FILE_MAX_LINES,
+    TOOL_FIELD_WRITE_PATH, TOOL_FIELD_WRITE_CONTENT,
 )
 
 logger = logging.getLogger(__name__)
@@ -337,6 +346,100 @@ TOOLS = [
                 },
             },
             "required": ["command"],
+        },
+    },
+    {
+        "name": "web_search",
+        "description": TOOL_DESC_WEB_SEARCH,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": TOOL_FIELD_SEARCH_QUERY,
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_SEARCH_MAX_RESULTS,
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "web_fetch",
+        "description": TOOL_DESC_WEB_FETCH,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": TOOL_FIELD_FETCH_URL,
+                },
+                "max_length": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_FETCH_MAX_LENGTH,
+                    "default": 8000,
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "run_python",
+        "description": TOOL_DESC_RUN_PYTHON,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": TOOL_FIELD_PYTHON_CODE,
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_PYTHON_TIMEOUT,
+                    "default": 30,
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": TOOL_DESC_READ_FILE,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": TOOL_FIELD_FILE_PATH,
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_FILE_MAX_LINES,
+                    "default": 500,
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": TOOL_DESC_WRITE_FILE,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": TOOL_FIELD_WRITE_PATH,
+                },
+                "content": {
+                    "type": "string",
+                    "description": TOOL_FIELD_WRITE_CONTENT,
+                },
+            },
+            "required": ["path", "content"],
         },
     },
 ]
@@ -689,16 +792,10 @@ class MessageRouter:
             "如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
             "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
-            "\n\n<constraints>"
-            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-            "\n- 回复务必简短精炼，不要长篇大论"
-            "\n- 禁止使用 emoji"
-            "\n- 不要自我否定能力——如果系统提供了某个工具或功能，就直接使用，不要说自己做不到"
-            "\n- 当用户的需求超出现有工具能力时（如联网搜索、查汇率、翻译、查天气等），"
-            "直接调用 create_custom_tool 创建新工具，然后立即调用它完成任务。"
-            "不要先说「我需要创建工具」再行动——直接做，做完再说结果。"
-            "不要说「我做不到」或「我没有这个功能」——你可以给自己创造能力。"
-            "\n</constraints>"
+            "需要联网查询时（搜索、天气、新闻等），使用 web_search / web_fetch 工具。"
+            "需要计算或处理数据时，使用 run_python 工具。"
+            "需要读写文件时，使用 read_file / write_file 工具。"
+            "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE)
         )
 
         # 使用会话管理器维护上下文
@@ -1058,6 +1155,36 @@ class MessageRouter:
                 )
                 return result
 
+            elif name == "web_search":
+                return await self._tool_web_search(
+                    input_data["query"],
+                    input_data.get("max_results", 5),
+                )
+
+            elif name == "web_fetch":
+                return await self._tool_web_fetch(
+                    input_data["url"],
+                    input_data.get("max_length", 8000),
+                )
+
+            elif name == "run_python":
+                return await self._tool_run_python(
+                    input_data["code"],
+                    input_data.get("timeout", 30),
+                )
+
+            elif name == "read_file":
+                return self._tool_read_file(
+                    input_data["path"],
+                    input_data.get("max_lines", 500),
+                )
+
+            elif name == "write_file":
+                return self._tool_write_file(
+                    input_data["path"],
+                    input_data["content"],
+                )
+
             else:
                 # 尝试自定义工具注册表
                 if self.tool_registry and self.tool_registry.has_tool(name):
@@ -1075,6 +1202,232 @@ class MessageRouter:
         except Exception as e:
             logger.exception("工具执行失败: %s", name)
             return {"success": False, "error": str(e)}
+
+    # ── 泛化工具实现 ──
+
+    async def _tool_web_search(self, query: str, max_results: int = 5) -> dict:
+        """使用 DuckDuckGo HTML 搜索互联网"""
+        import httpx
+        import re as _re
+
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=15.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; LingQue/1.0)"},
+            ) as client:
+                resp = await client.get(
+                    "https://html.duckduckgo.com/html/",
+                    params={"q": query},
+                )
+                resp.raise_for_status()
+                html = resp.text
+
+            # 解析 DuckDuckGo HTML 搜索结果
+            results: list[dict] = []
+            # 匹配结果块: <a class="result__a" href="...">Title</a>
+            # 和 <a class="result__snippet" ...>Snippet</a>
+            result_blocks = _re.findall(
+                r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>'
+                r'.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                html,
+                _re.DOTALL,
+            )
+            for url, title_html, snippet_html in result_blocks[:max_results]:
+                # 清理 HTML 标签
+                title = _re.sub(r"<[^>]+>", "", title_html).strip()
+                snippet = _re.sub(r"<[^>]+>", "", snippet_html).strip()
+                # DuckDuckGo 的链接是重定向 URL，提取真实 URL
+                real_url = url
+                uddg_match = _re.search(r"uddg=([^&]+)", url)
+                if uddg_match:
+                    from urllib.parse import unquote
+                    real_url = unquote(uddg_match.group(1))
+                if title and real_url:
+                    results.append({
+                        "title": title,
+                        "url": real_url,
+                        "snippet": snippet,
+                    })
+
+            if not results:
+                # 备用解析：尝试 <a rel="nofollow" ...> 模式
+                links = _re.findall(
+                    r'<a[^>]+rel="nofollow"[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
+                    html,
+                )
+                for url, title_html in links[:max_results]:
+                    title = _re.sub(r"<[^>]+>", "", title_html).strip()
+                    if title and url.startswith("http"):
+                        results.append({"title": title, "url": url, "snippet": ""})
+
+            return {
+                "success": True,
+                "query": query,
+                "results": results,
+                "count": len(results),
+            }
+        except Exception as e:
+            logger.exception("web_search 失败: %s", query)
+            return {"success": False, "error": f"搜索失败: {e}"}
+
+    async def _tool_web_fetch(self, url: str, max_length: int = 8000) -> dict:
+        """抓取网页并提取纯文本内容"""
+        import httpx
+        import re as _re
+
+        if not url.startswith(("http://", "https://")):
+            return {"success": False, "error": "URL 必须以 http:// 或 https:// 开头"}
+
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=20.0,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; LingQue/1.0)"},
+            ) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+                raw = resp.text
+
+            # 非 HTML 内容直接返回
+            if "html" not in content_type.lower() and "text" not in content_type.lower():
+                text = raw[:max_length]
+                if len(raw) > max_length:
+                    text += f"\n... (内容已截断，原始长度 {len(raw)} 字符)"
+                return {"success": True, "url": url, "content": text, "type": content_type}
+
+            # HTML → 纯文本
+            # 移除 script/style 标签及其内容
+            text = _re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=_re.DOTALL | _re.IGNORECASE)
+            # 将 <br>, <p>, <div>, <li>, <tr> 等块级标签转为换行
+            text = _re.sub(r"<(?:br|p|div|li|tr|h[1-6])[^>]*>", "\n", text, flags=_re.IGNORECASE)
+            # 移除所有 HTML 标签
+            text = _re.sub(r"<[^>]+>", "", text)
+            # 解码常见 HTML 实体
+            text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            text = text.replace("&quot;", '"').replace("&apos;", "'").replace("&nbsp;", " ")
+            # 合并多个空行
+            text = _re.sub(r"\n{3,}", "\n\n", text)
+            # 移除行首尾空白
+            text = "\n".join(line.strip() for line in text.splitlines())
+            text = text.strip()
+
+            # 截断
+            if len(text) > max_length:
+                text = text[:max_length] + f"\n... (内容已截断，原始长度 {len(text)} 字符)"
+
+            return {"success": True, "url": url, "content": text, "length": len(text)}
+        except Exception as e:
+            logger.exception("web_fetch 失败: %s", url)
+            return {"success": False, "error": f"网页抓取失败: {e}"}
+
+    async def _tool_run_python(self, code: str, timeout: int = 30) -> dict:
+        """在子进程中执行 Python 代码"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "python3", "-c", code,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.memory.workspace),
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout,
+            )
+
+            output = stdout.decode("utf-8", errors="replace").strip()
+            error = stderr.decode("utf-8", errors="replace").strip()
+
+            # 截断过长输出
+            if len(output) > 10000:
+                output = output[:10000] + f"\n... (输出已截断，共 {len(stdout)} 字节)"
+            if len(error) > 5000:
+                error = error[:5000] + f"\n... (错误输出已截断)"
+
+            exit_code = proc.returncode or 0
+            return {
+                "success": exit_code == 0,
+                "output": output,
+                "error": error,
+                "exit_code": exit_code,
+            }
+        except asyncio.TimeoutError:
+            logger.error("run_python 超时 (%ds)", timeout)
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return {"success": False, "output": "", "error": f"执行超时 ({timeout}s)", "exit_code": -1}
+        except Exception as e:
+            logger.exception("run_python 失败")
+            return {"success": False, "output": "", "error": str(e), "exit_code": -1}
+
+    def _tool_read_file(self, path: str, max_lines: int = 500) -> dict:
+        """读取文件系统中的文件"""
+        from pathlib import Path as _Path
+
+        file_path = _Path(path)
+        # 相对路径基于工作区
+        if not file_path.is_absolute():
+            file_path = self.memory.workspace / file_path
+
+        if not file_path.exists():
+            return {"success": False, "error": ERR_FILE_NOT_FOUND.format(path=str(file_path))}
+
+        if not file_path.is_file():
+            return {"success": False, "error": f"路径不是文件: {file_path}"}
+
+        try:
+            # 检查文件大小，避免读取超大文件
+            size = file_path.stat().st_size
+            if size > 5_000_000:  # 5MB
+                return {
+                    "success": False,
+                    "error": f"文件过大 ({size} 字节，上限 5MB)，请使用 run_bash 的 head/tail 命令读取部分内容",
+                }
+
+            text = file_path.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            total_lines = len(lines)
+
+            if total_lines > max_lines:
+                text = "\n".join(lines[:max_lines])
+                text += f"\n... (已显示前 {max_lines} 行，共 {total_lines} 行)"
+
+            return {
+                "success": True,
+                "path": str(file_path),
+                "content": text,
+                "lines": min(total_lines, max_lines),
+                "total_lines": total_lines,
+                "size": size,
+            }
+        except Exception as e:
+            return {"success": False, "error": ERR_FILE_READ_FAILED.format(error=str(e))}
+
+    def _tool_write_file(self, path: str, content: str) -> dict:
+        """写入文件到文件系统"""
+        from pathlib import Path as _Path
+
+        file_path = _Path(path)
+        # 相对路径基于工作区
+        if not file_path.is_absolute():
+            file_path = self.memory.workspace / file_path
+
+        try:
+            # 自动创建父目录
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+            size = file_path.stat().st_size
+            logger.info("write_file: %s (%d 字节)", file_path, size)
+            return {
+                "success": True,
+                "message": RESULT_FILE_WRITTEN.format(path=str(file_path), size=size),
+            }
+        except Exception as e:
+            return {"success": False, "error": ERR_FILE_WRITE_FAILED.format(error=str(e))}
 
     async def _handle_group(self, event: Any) -> None:
         """处理群聊消息"""
@@ -1194,15 +1547,10 @@ class MessageRouter:
             f"{group_context}"
             "\n如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
-            "如果用户明确要求你执行某个任务且现有工具不够，可以用 create_custom_tool 创建工具来完成。"
-            "\n\n<constraints>"
-            "\n- 严格遵守 SOUL.md 定义的性格，这是你的核心身份，不可偏离"
-            "\n- 回复务必简短精炼，不要长篇大论"
-            "\n- 禁止使用 emoji"
-            "\n- 不要在回复中暴露用户的内部 ID（如 ou_、oc_ 开头的标识符）"
-            "\n- 群聊中禁止修改配置文件（SOUL.md, MEMORY.md, HEARTBEAT.md），这只允许在私聊中操作"
-            "\n- 没有被明确要求执行任务时，不要主动调用工具——正常聊天就好"
-            "\n</constraints>"
+            "需要联网查询时（搜索、天气、新闻等），使用 web_search / web_fetch 工具。"
+            "需要计算或处理数据时，使用 run_python 工具。"
+            "如果用户明确要求你执行某个任务且以上工具不够，可以用 create_custom_tool 创建工具来完成。"
+            "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_GROUP)
         )
 
         # 构建 name_to_id 映射，用于 @名字 → <at> 标签转换
