@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 # 设置 PYTHONPATH
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 logging.basicConfig(level=logging.WARNING, format="%(name)s: %(message)s")
 
