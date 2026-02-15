@@ -693,6 +693,50 @@ MORNING_GREETING_SYSTEM = (
 MORNING_GREETING_USER = "请发一条早安问候。"
 
 
+# =====================================================================
+# Self-Awareness: Runtime Stats Template
+# =====================================================================
+
+# {model}, {uptime}, {today_calls}, {today_tokens}, {today_cost},
+# {monthly_cost}, {active_sessions}
+SELF_AWARENESS_STATS = (
+    "\n### 运行状态\n"
+    "- 模型: {model}\n"
+    "- 已运行: {uptime}\n"
+    "- 今日调用: {today_calls} 次 | tokens: {today_tokens} | 费用: ${today_cost:.4f}\n"
+    "- 本月累计费用: ${monthly_cost:.4f}\n"
+    "- 活跃会话: {active_sessions} 个\n"
+)
+
+# =====================================================================
+# Self-Awareness: Capability Line Template
+# =====================================================================
+
+# {tool_name}, {total}, {rate}
+CAPABILITY_LINE_TEMPLATE = "  - {tool_name} (调用{total}次, 成功率{rate}%)"
+
+
+# =====================================================================
+# Reflection Prompt  (post-interaction self-evaluation)
+# =====================================================================
+
+REFLECTION_PROMPT = (
+    "请用一句话评估你刚才的回复质量。格式：[质量:好/中/差] 原因\n\n"
+    "你的回复：\n{reply}"
+)
+
+
+# =====================================================================
+# get_my_stats Tool Description
+# =====================================================================
+
+TOOL_DESC_GET_MY_STATS = "查看自己的运行状态和统计信息"
+
+TOOL_FIELD_STATS_CATEGORY = (
+    "要查看的统计类别：today（今日统计）、month（本月统计）、capability（工具使用统计）"
+)
+
+
 EXTRACTION_PROMPTS = {
     "memory_write": (
         "从用户消息中提取要记住的内容。\n"

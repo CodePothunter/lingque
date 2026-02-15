@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,7 @@ from lq.prompts import (
     GLOBAL_MEMORY_INIT, CHAT_MEMORY_INIT, CHAT_MEMORY_INIT_APPEND,
     ERR_FILE_NOT_ALLOWED_READ, ERR_FILE_NOT_ALLOWED_WRITE,
     SELF_AWARENESS_TEMPLATE, CUSTOM_TOOLS_SECTION_WITH_TOOLS, CUSTOM_TOOLS_SECTION_EMPTY,
+    SELF_AWARENESS_STATS, CAPABILITY_LINE_TEMPLATE,
     FLUSH_BEFORE_COMPACTION, FLUSH_ROLE_TOOL_CALL, FLUSH_ROLE_TOOL_RESULT, FLUSH_ROLE_DEFAULT,
 )
 from lq.session import estimate_tokens
@@ -40,8 +42,13 @@ _AWARENESS_CACHE_TTL = 300  # 5 分钟
 
 
 class MemoryManager:
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        stats_provider: Callable[[], dict] | None = None,
+    ) -> None:
         self.workspace = workspace
+        self.stats_provider = stats_provider
         self.memory_dir = workspace / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.chat_memories_dir = workspace / "chat_memories"
@@ -251,6 +258,48 @@ class MemoryManager:
             log_list=log_list,
             custom_tools_section=self._build_custom_tools_awareness(),
         )
+
+        # 运行状态注入
+        if self.stats_provider:
+            try:
+                stats = self.stats_provider()
+                awareness_content += SELF_AWARENESS_STATS.format(
+                    model=stats.get("model", "unknown"),
+                    uptime=stats.get("uptime", "unknown"),
+                    today_calls=stats.get("today_calls", 0),
+                    today_tokens=stats.get("today_tokens", 0),
+                    today_cost=stats.get("today_cost", 0.0),
+                    monthly_cost=stats.get("monthly_cost", 0.0),
+                    active_sessions=stats.get("active_sessions", 0),
+                )
+                # 工具能力统计
+                tool_stats: dict[str, dict[str, int]] = stats.get("tool_stats", {})
+                if tool_stats:
+                    cap_lines = []
+                    for tname, ts in tool_stats.items():
+                        total = ts.get("success", 0) + ts.get("fail", 0)
+                        if total > 0:
+                            rate = round(ts["success"] / total * 100)
+                            cap_lines.append(
+                                CAPABILITY_LINE_TEMPLATE.format(
+                                    tool_name=tname, total=total, rate=rate,
+                                )
+                            )
+                    if cap_lines:
+                        awareness_content += "\n### 工具使用统计\n" + "\n".join(cap_lines) + "\n"
+            except Exception:
+                logger.warning("运行状态注入失败", exc_info=True)
+
+        # 跨实例感知（基于飞书群聊中观察到的其他 bot）
+        if self.stats_provider:
+            try:
+                siblings = self.stats_provider().get("siblings", [])
+                if siblings:
+                    names = "、".join(siblings)
+                    awareness_content += f"\n### 姐妹实例\n你在飞书群聊中的姐妹实例: {names}\n"
+            except Exception:
+                pass
+
         return wrap_tag(TAG_SELF_AWARENESS, awareness_content)
 
     def _build_custom_tools_awareness(self) -> str:

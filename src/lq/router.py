@@ -50,6 +50,8 @@ from lq.prompts import (
     TOOL_DESC_SCHEDULE_MESSAGE, TOOL_DESC_RUN_CLAUDE_CODE, TOOL_DESC_RUN_BASH,
     TOOL_DESC_WEB_SEARCH, TOOL_DESC_WEB_FETCH,
     TOOL_DESC_RUN_PYTHON, TOOL_DESC_READ_FILE, TOOL_DESC_WRITE_FILE,
+    TOOL_DESC_GET_MY_STATS, TOOL_FIELD_STATS_CATEGORY,
+    REFLECTION_PROMPT,
     TOOL_FIELD_SECTION, TOOL_FIELD_CONTENT_MEMORY,
     TOOL_FIELD_CHAT_SECTION, TOOL_FIELD_CHAT_CONTENT,
     TOOL_FIELD_SUMMARY, TOOL_FIELD_START_TIME, TOOL_FIELD_END_TIME,
@@ -442,6 +444,21 @@ TOOLS = [
             "required": ["path", "content"],
         },
     },
+    {
+        "name": "get_my_stats",
+        "description": TOOL_DESC_GET_MY_STATS,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": TOOL_FIELD_STATS_CATEGORY,
+                    "enum": ["today", "month", "capability"],
+                    "default": "today",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -492,6 +509,8 @@ class MessageRouter:
         self._reply_cooldown_ts: dict[str, float] = {}  # chat_id → 上次回复完成的时间戳
         # 已知群聊 ID（持久化到 groups.json，用于早安问候等）
         self._known_group_ids: set[str] = set()
+        # 工具调用统计（per-tool success/fail）
+        self._tool_stats: dict[str, dict[str, int]] = {}
         # 注入依赖
         self.session_mgr: Any = None
         self.calendar: Any = None
@@ -830,6 +849,56 @@ class MessageRouter:
         # 记录日志
         self.memory.append_daily(f"- 私聊 [{sender_name}]: {combined_text[:50]}... → {'已回复' if reply_text else '回复失败'}\n", chat_id=chat_id)
 
+        # 异步自我反思（fire-and-forget，不阻塞回复）
+        if reply_text:
+            asyncio.create_task(self._reflect_on_reply(chat_id, reply_text))
+
+    async def _reflect_on_reply(self, chat_id: str, reply_text: str) -> None:
+        """轻量级 LLM 调用，对刚发出的回复做质量自评"""
+        try:
+            prompt = REFLECTION_PROMPT.format(reply=reply_text[:500])
+            reflection = await self.executor.reply_with_history(
+                "", [{"role": "user", "content": prompt}], max_tokens=100,
+            )
+            reflection = reflection.strip()
+            if reflection:
+                logger.info("自我评估 [%s]: %s", chat_id[-8:], reflection)
+                # 追加到反思日志
+                self._append_reflection(chat_id, reflection)
+        except Exception:
+            logger.debug("自我反思失败", exc_info=True)
+
+    def _append_reflection(self, chat_id: str, reflection: str) -> None:
+        """将反思结果追加到当日反思日志"""
+        import json as _json
+        from datetime import date as _date, datetime as _dt, timedelta as _td, timezone as _tz
+
+        cst = _tz(_td(hours=8))
+        today = _dt.now(cst).strftime("%Y-%m-%d")
+        log_dir = self.memory.workspace / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"reflections-{today}.jsonl"
+        entry = {
+            "ts": time.time(),
+            "chat_id": chat_id,
+            "reflection": reflection,
+        }
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.debug("反思日志写入失败", exc_info=True)
+
+    def _track_tool_result(self, tool_name: str, success: bool, error: str = "") -> None:
+        """记录工具调用成功/失败统计"""
+        entry = self._tool_stats.setdefault(tool_name, {"success": 0, "fail": 0, "last_error": ""})
+        if success:
+            entry["success"] += 1
+        else:
+            entry["fail"] += 1
+            if error:
+                entry["last_error"] = error[:200]
+
     def _build_all_tools(self) -> list[dict]:
         """合并内置工具和自定义工具的定义列表。"""
         all_tools = list(TOOLS)
@@ -909,6 +978,12 @@ class MessageRouter:
                         session = self.session_mgr.get_or_create(chat_id)
                         session.add_tool_use(tc["name"], tc["input"], tc["id"])
                     result = await self._execute_tool(tc["name"], tc["input"], chat_id)
+                    # 记录工具调用统计
+                    self._track_tool_result(
+                        tc["name"],
+                        result.get("success", True),
+                        result.get("error", ""),
+                    )
                     # 标记是否已通过 send_message 向当前 chat 发送过
                     if tc["name"] == "send_message" and result.get("success"):
                         target = tc["input"].get("chat_id", "")
@@ -1221,6 +1296,11 @@ class MessageRouter:
                 return self._tool_write_file(
                     input_data["path"],
                     input_data["content"],
+                )
+
+            elif name == "get_my_stats":
+                return self._tool_get_my_stats(
+                    input_data.get("category", "today"),
                 )
 
             else:
@@ -1541,6 +1621,46 @@ class MessageRouter:
             logger.exception("run_python 失败")
             return {"success": False, "output": "", "error": str(e), "exit_code": -1}
 
+    def _tool_get_my_stats(self, category: str = "today") -> dict:
+        """返回自身运行统计信息"""
+        result: dict[str, Any] = {"success": True}
+        if category == "today" and self.stats:
+            daily = self.stats.get_daily_summary()
+            result["today"] = daily
+            result["uptime"] = self._format_uptime()
+            result["model"] = getattr(self.executor, "model", "unknown")
+        elif category == "month" and self.stats:
+            monthly = self.stats.get_monthly_summary()
+            result["month"] = monthly
+        elif category == "capability":
+            result["tool_stats"] = {
+                name: {
+                    "total": s["success"] + s["fail"],
+                    "success_rate": round(s["success"] / max(s["success"] + s["fail"], 1) * 100),
+                    "last_error": s.get("last_error", ""),
+                }
+                for name, s in self._tool_stats.items()
+                if s["success"] + s["fail"] > 0
+            }
+        else:
+            result["message"] = "统计模块未加载或类别无效"
+        return result
+
+    def _format_uptime(self) -> str:
+        """格式化运行时间"""
+        elapsed = int(time.time()) - self._startup_ts // 1000
+        if elapsed < 60:
+            return f"{elapsed}秒"
+        if elapsed < 3600:
+            return f"{elapsed // 60}分钟"
+        hours = elapsed // 3600
+        minutes = (elapsed % 3600) // 60
+        if hours < 24:
+            return f"{hours}小时{minutes}分钟"
+        days = hours // 24
+        hours = hours % 24
+        return f"{days}天{hours}小时"
+
     def _tool_read_file(self, path: str, max_lines: int = 500) -> dict:
         """读取文件系统中的文件"""
         from pathlib import Path as _Path
@@ -1627,6 +1747,21 @@ class MessageRouter:
                 is_at_me = True
 
         if is_at_me:
+            # 先把 @at 消息也写入缓冲区，保留完整上下文
+            at_text = self._extract_text(message)
+            at_text = self._resolve_at_mentions(at_text, mentions)
+            if at_text:
+                sender_id = event.sender.sender_id.open_id
+                sender_name = await self.sender.get_user_name(sender_id, chat_id=chat_id)
+                if chat_id not in self.group_buffers:
+                    self.group_buffers[chat_id] = MessageBuffer()
+                self.group_buffers[chat_id].add({
+                    "text": at_text,
+                    "sender_id": sender_id,
+                    "sender_name": sender_name,
+                    "message_id": message.message_id,
+                    "chat_id": chat_id,
+                })
             await self._handle_group_at(event)
             return
 
@@ -1688,13 +1823,13 @@ class MessageRouter:
             # 空 @：从缓冲区取该用户最近的消息作为上下文
             buf = self.group_buffers.get(message.chat_id)
             if buf:
-                recent = buf.get_recent(5)
+                recent = buf.get_recent(20)
                 sender_msgs = [m["text"] for m in recent if m["sender_id"] == sender_id]
                 if sender_msgs:
                     text = sender_msgs[-1]
                     logger.info("群聊 @at 空消息，取缓冲区上文: %s", text[:50])
             if not text:
-                text = "（@了我但没说具体内容）"
+                text = "（@了我，没有附带文字。请结合群聊近期消息判断对方意图并回应）"
 
         sender_name = await self.sender.get_user_name(sender_id, chat_id=message.chat_id)
         if self.sender.is_chat_left(message.chat_id):
@@ -1886,7 +2021,7 @@ class MessageRouter:
 
         # 如果最后一条消息就是自己发的，不需要再次介入
         if recent and recent[-1].get("sender_id") == self.bot_open_id:
-            logger.debug("最后一条消息是自己发的，跳过评估")
+            logger.info("最后一条消息是自己发的，跳过评估 %s", chat_id[-8:])
             return
 
         # 如果已经发言过，且之后没有任何新消息，不再介入
@@ -1897,7 +2032,7 @@ class MessageRouter:
             )
             new_msgs_after = recent[my_last_idx + 1:]
             if not new_msgs_after:
-                logger.debug("已发言且无新消息，跳过评估")
+                logger.info("已发言且无新消息，跳过评估 %s", chat_id[-8:])
                 return
 
         prompt = GROUP_EVAL_PROMPT.format(
@@ -1920,7 +2055,7 @@ class MessageRouter:
                 logger.info("决定介入群聊 %s: %s", chat_id, judgment.get("reason"))
                 await self._intervene(chat_id, recent, judgment, last_msg_id)
             else:
-                logger.debug("不介入群聊 %s: %s", chat_id, judgment.get("reason"))
+                logger.info("不介入群聊 %s: %s", chat_id[-8:], judgment.get("reason"))
                 # 不介入 → 清除 thinking reaction
                 if last_msg_id and reaction_id:
                     await self.sender.remove_reaction(last_msg_id, reaction_id)
