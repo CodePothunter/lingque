@@ -1627,6 +1627,21 @@ class MessageRouter:
                 is_at_me = True
 
         if is_at_me:
+            # 先把 @at 消息也写入缓冲区，保留完整上下文
+            at_text = self._extract_text(message)
+            at_text = self._resolve_at_mentions(at_text, mentions)
+            if at_text:
+                sender_id = event.sender.sender_id.open_id
+                sender_name = await self.sender.get_user_name(sender_id, chat_id=chat_id)
+                if chat_id not in self.group_buffers:
+                    self.group_buffers[chat_id] = MessageBuffer()
+                self.group_buffers[chat_id].add({
+                    "text": at_text,
+                    "sender_id": sender_id,
+                    "sender_name": sender_name,
+                    "message_id": message.message_id,
+                    "chat_id": chat_id,
+                })
             await self._handle_group_at(event)
             return
 
@@ -1688,13 +1703,13 @@ class MessageRouter:
             # 空 @：从缓冲区取该用户最近的消息作为上下文
             buf = self.group_buffers.get(message.chat_id)
             if buf:
-                recent = buf.get_recent(5)
+                recent = buf.get_recent(20)
                 sender_msgs = [m["text"] for m in recent if m["sender_id"] == sender_id]
                 if sender_msgs:
                     text = sender_msgs[-1]
                     logger.info("群聊 @at 空消息，取缓冲区上文: %s", text[:50])
             if not text:
-                text = "（@了我但没说具体内容）"
+                text = "（@了我，没有附带文字。请结合群聊近期消息判断对方意图并回应）"
 
         sender_name = await self.sender.get_user_name(sender_id, chat_id=message.chat_id)
         if self.sender.is_chat_left(message.chat_id):
