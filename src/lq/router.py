@@ -858,6 +858,8 @@ class MessageRouter:
         等需要多步骤执行的复杂任务。工具调用记录会写入会话历史。
         """
         all_tools = self._build_all_tools()
+        tool_names = [t["name"] for t in all_tools]
+        logger.debug("工具循环开始: chat=%s 共 %d 个工具 %s", chat_id[-8:], len(all_tools), tool_names)
         resp = await self.executor.reply_with_tools(system, messages, all_tools)
 
         # 复杂任务（如 Claude Code 执行）可能需要更多轮次
@@ -1205,17 +1207,72 @@ class MessageRouter:
 
     # ── 泛化工具实现 ──
 
-    async def _tool_web_search(self, query: str, max_results: int = 5) -> dict:
-        """使用 DuckDuckGo HTML 搜索互联网"""
+    @staticmethod
+    def _build_http_client(**kwargs: Any) -> Any:
+        """构建代理感知的 httpx.AsyncClient。
+
+        自动从环境变量读取代理配置（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY），
+        使用通用 User-Agent 避免被目标站点拦截。
+        """
+        import os
         import httpx
+
+        proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("ALL_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("http_proxy")
+            or os.environ.get("all_proxy")
+        )
+
+        defaults: dict[str, Any] = {
+            "follow_redirects": True,
+            "timeout": 20.0,
+            "headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            },
+        }
+        if proxy:
+            defaults["proxy"] = proxy
+        defaults.update(kwargs)
+        return httpx.AsyncClient(**defaults)
+
+    async def _tool_web_search(self, query: str, max_results: int = 5) -> dict:
+        """搜索互联网，依次尝试 DuckDuckGo → Bing 两种引擎"""
+        # 先尝试 DuckDuckGo
+        result = await self._search_duckduckgo(query, max_results)
+        if result["success"] and result.get("count", 0) > 0:
+            return result
+
+        ddg_error = result.get("error", "无结果")
+        logger.warning("DuckDuckGo 搜索失败或无结果 (%s)，尝试百度: %s", ddg_error, query)
+
+        # 回退到百度（在中国大陆始终可访问）
+        result = await self._search_baidu(query, max_results)
+        if result["success"] and result.get("count", 0) > 0:
+            return result
+
+        baidu_error = result.get("error", "无结果")
+        logger.warning("百度搜索也失败 (%s): %s", baidu_error, query)
+
+        # 两个引擎都失败时，返回合并的错误信息
+        return {
+            "success": False,
+            "error": f"所有搜索引擎均失败。DuckDuckGo: {ddg_error}; 百度: {baidu_error}",
+        }
+
+    async def _search_duckduckgo(self, query: str, max_results: int = 5) -> dict:
+        """使用 DuckDuckGo HTML 搜索"""
         import re as _re
+        from urllib.parse import unquote
 
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=15.0,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; LingQue/1.0)"},
-            ) as client:
+            async with self._build_http_client(timeout=15.0) as client:
                 resp = await client.get(
                     "https://html.duckduckgo.com/html/",
                     params={"q": query},
@@ -1223,10 +1280,9 @@ class MessageRouter:
                 resp.raise_for_status()
                 html = resp.text
 
-            # 解析 DuckDuckGo HTML 搜索结果
             results: list[dict] = []
-            # 匹配结果块: <a class="result__a" href="...">Title</a>
-            # 和 <a class="result__snippet" ...>Snippet</a>
+
+            # 主解析: class="result__a" + class="result__snippet"
             result_blocks = _re.findall(
                 r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>'
                 r'.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
@@ -1234,24 +1290,17 @@ class MessageRouter:
                 _re.DOTALL,
             )
             for url, title_html, snippet_html in result_blocks[:max_results]:
-                # 清理 HTML 标签
                 title = _re.sub(r"<[^>]+>", "", title_html).strip()
                 snippet = _re.sub(r"<[^>]+>", "", snippet_html).strip()
-                # DuckDuckGo 的链接是重定向 URL，提取真实 URL
                 real_url = url
                 uddg_match = _re.search(r"uddg=([^&]+)", url)
                 if uddg_match:
-                    from urllib.parse import unquote
                     real_url = unquote(uddg_match.group(1))
                 if title and real_url:
-                    results.append({
-                        "title": title,
-                        "url": real_url,
-                        "snippet": snippet,
-                    })
+                    results.append({"title": title, "url": real_url, "snippet": snippet})
 
             if not results:
-                # 备用解析：尝试 <a rel="nofollow" ...> 模式
+                # 备用解析: rel="nofollow" 链接
                 links = _re.findall(
                     r'<a[^>]+rel="nofollow"[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
                     html,
@@ -1266,25 +1315,65 @@ class MessageRouter:
                 "query": query,
                 "results": results,
                 "count": len(results),
+                "engine": "duckduckgo",
             }
         except Exception as e:
-            logger.exception("web_search 失败: %s", query)
-            return {"success": False, "error": f"搜索失败: {e}"}
+            logger.warning("DuckDuckGo 搜索异常: %s — %s", query, e)
+            return {"success": False, "error": str(e)}
+
+    async def _search_baidu(self, query: str, max_results: int = 5) -> dict:
+        """使用百度 HTML 搜索（备用引擎，在中国大陆始终可访问）"""
+        import re as _re
+
+        try:
+            async with self._build_http_client(timeout=15.0) as client:
+                resp = await client.get(
+                    "https://www.baidu.com/s",
+                    params={"wd": query},
+                )
+                resp.raise_for_status()
+                html = resp.text
+
+            results: list[dict] = []
+
+            # 百度搜索结果在 <h3> > <a href="..."> 中
+            h3_links = _re.findall(
+                r'<h3[^>]*>\s*<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
+                html,
+                _re.DOTALL,
+            )
+            for url, title_html in h3_links[:max_results * 2]:
+                title = _re.sub(r"<[^>]+>", "", title_html).strip()
+                if not title or len(title) < 3:
+                    continue
+                # 过滤广告链接（baidu.php 格式）
+                if "/baidu.php?" in url:
+                    continue
+                if title and url:
+                    results.append({"title": title, "url": url, "snippet": ""})
+                if len(results) >= max_results:
+                    break
+
+            return {
+                "success": True,
+                "query": query,
+                "results": results,
+                "count": len(results),
+                "engine": "baidu",
+            }
+        except Exception as e:
+            logger.warning("百度搜索异常: %s — %s", query, e)
+            return {"success": False, "error": str(e)}
 
     async def _tool_web_fetch(self, url: str, max_length: int = 8000) -> dict:
         """抓取网页并提取纯文本内容"""
-        import httpx
         import re as _re
 
         if not url.startswith(("http://", "https://")):
             return {"success": False, "error": "URL 必须以 http:// 或 https:// 开头"}
 
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=20.0,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; LingQue/1.0)"},
-            ) as client:
+            async with self._build_http_client(timeout=20.0) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "")
