@@ -5,17 +5,21 @@
 ## 特性
 
 - **飞书原生** — WebSocket 长连接，私聊即时回复，群聊三层智能介入
-- **长期记忆** — SOUL.md 人格定义 + MEMORY.md 持久记忆 + 每日日志
-- **多轮会话** — 上下文管理、自动压缩、重启恢复
+- **本地开发模式** — `lq say @name` 在终端启动交互式对话，支持完整工具链，无需飞书依赖
+- **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
+- **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
 - **日历集成** — 查询/创建飞书日程，每日晨报
 - **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡）
 - **自我认知** — 助理了解自己的架构，可读写自身配置文件
 - **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
+- **通用 Agent 能力** — 21 个内置工具，覆盖记忆、日历、消息、联网搜索、代码执行、文件读写、Claude Code 委托
 - **多实例群聊协作** — 多个独立 bot 共存同一群聊，自动感知邻居、避免抢答，通过消息信号自主推断彼此身份并持久记忆
+- **群聊智能** — @at 消息防抖合并连续消息，ReplyGate 串行化并发回复并带冷却窗口
 - **社交互动** — 入群自我介绍、新成员欢迎消息、每日早安问候（deterministic jitter 防重发）
 - **API 消耗追踪** — 按日/月统计 Token 用量与费用
 - **多实例** — 同时运行多个独立助理，各自隔离，无共享状态
 - **拼音路径** — 中文名自动转拼音 slug，避免文件系统问题
+- **测试框架** — 5 级 LLM 能力测试套件（基础 → 推理 → 编程 → 综合 → 工程），自动化测试基座
 
 ## 快速开始
 
@@ -119,16 +123,48 @@ uv run lq stop @奶油            # 停止
 
 ## 内置工具
 
-助理在对话中可使用以下 11 个内置工具：
+助理在对话中可使用以下 21 个内置工具：
+
+**记忆与自我管理**
 
 | 工具 | 说明 |
 |------|------|
-| `write_memory` | 将信息写入 MEMORY.md 长期记忆 |
+| `write_memory` | 将信息写入 MEMORY.md 全局长期记忆 |
+| `write_chat_memory` | 写入当前对话专属的 per-chat 记忆 |
+| `read_self_file` | 读取自身配置（SOUL.md / MEMORY.md / HEARTBEAT.md） |
+| `write_self_file` | 修改自身配置 |
+
+**日历与消息**
+
+| 工具 | 说明 |
+|------|------|
 | `calendar_create_event` | 在飞书日历创建日程 |
 | `calendar_list_events` | 查询日历事件 |
 | `send_card` | 发送飞书卡片消息 |
-| `read_self_file` | 读取自身配置（SOUL.md / MEMORY.md / HEARTBEAT.md） |
-| `write_self_file` | 修改自身配置 |
+| `send_message` | 向任意会话发送文本消息 |
+| `schedule_message` | 定时发送消息 |
+
+**联网与信息获取**
+
+| 工具 | 说明 |
+|------|------|
+| `web_search` | 搜索互联网获取实时信息 |
+| `web_fetch` | 抓取并提取网页文本内容 |
+
+**代码与文件执行**
+
+| 工具 | 说明 |
+|------|------|
+| `run_python` | 执行 Python 代码片段，用于计算和数据处理 |
+| `run_bash` | 执行 Shell 命令 |
+| `run_claude_code` | 委托复杂任务给 Claude Code 子进程 |
+| `read_file` | 读取文件系统中的文件 |
+| `write_file` | 创建或写入文件 |
+
+**自定义工具管理**
+
+| 工具 | 说明 |
+|------|------|
 | `create_custom_tool` | 创建新的自定义工具插件 |
 | `list_custom_tools` | 列出已安装的自定义工具 |
 | `test_custom_tool` | 校验工具代码（不创建） |
@@ -238,14 +274,19 @@ src/lq/
 ├── cli.py              # CLI 入口
 ├── config.py           # 配置加载（含拼音 slug）
 ├── gateway.py          # 主编排器（双线程架构 + 群聊轮询 + 早安问候）
-├── router.py           # 消息路由 + 三层介入 + 工具调用 + 多 bot 协作
+├── router.py           # 消息路由 + 三层介入 + 21 个内置工具 + 多 bot 协作
+├── prompts.py          # 集中管理所有 prompt、工具描述、约束块
+├── conversation.py     # 本地交互式对话（lq say）
 ├── tools.py            # 自定义工具插件系统
 ├── buffer.py           # 群聊消息缓冲区
-├── session.py          # 会话管理 + compaction
-├── memory.py           # SOUL/MEMORY/日志 + 自我认知
+├── session.py          # per-chat 会话管理 + compaction
+├── memory.py           # SOUL/MEMORY/per-chat 记忆/日志 + 自我认知
 ├── heartbeat.py        # 定时心跳
+├── intent.py           # 后处理意图检测
+├── subagent.py         # 轻量 LLM 参数提取
 ├── stats.py            # API 消耗统计
 ├── templates.py        # 模板生成
+├── timeparse.py        # 时间表达式解析
 ├── executor/
 │   ├── api.py          # Anthropic API（含重试 + tool use）
 │   └── claude_code.py  # Claude Code 子进程
@@ -254,4 +295,14 @@ src/lq/
     ├── sender.py       # 消息发送 + bot 身份推断 + 成员管理
     ├── calendar.py     # 日历 API
     └── cards.py        # 卡片构建
+
+tests/
+├── harness.py              # 测试基座（调用 lq say，校验响应）
+├── run_all.py              # 多级测试运行器
+├── test_infrastructure.py  # 基础设施与会话测试
+├── test_level1_basic.py    # 第 1 级：基本工具调用
+├── test_level2_reasoning.py # 第 2 级：数学与逻辑推理
+├── test_level3_coding.py   # 第 3 级：代码生成与调试
+├── test_level4_complex.py  # 第 4 级：联网 + Agent 循环
+└── test_level5_project.py  # 第 5 级：大型项目构建与部署
 ```
