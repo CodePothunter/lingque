@@ -51,7 +51,7 @@ from lq.prompts import (
     TOOL_DESC_WEB_SEARCH, TOOL_DESC_WEB_FETCH,
     TOOL_DESC_RUN_PYTHON, TOOL_DESC_READ_FILE, TOOL_DESC_WRITE_FILE,
     TOOL_DESC_GET_MY_STATS, TOOL_FIELD_STATS_CATEGORY,
-    REFLECTION_PROMPT,
+    REFLECTION_PROMPT, REFLECTION_WITH_CURIOSITY_PROMPT,
     TOOL_FIELD_SECTION, TOOL_FIELD_CONTENT_MEMORY,
     TOOL_FIELD_CHAT_SECTION, TOOL_FIELD_CHAT_CONTENT,
     TOOL_FIELD_SUMMARY, TOOL_FIELD_START_TIME, TOOL_FIELD_END_TIME,
@@ -519,6 +519,7 @@ class MessageRouter:
         self.bash_executor: Any = None
         self.tool_registry: Any = None
         self.post_processor: Any = None
+        self.config: Any = None  # LQConfig, 由 gateway 注入
 
     async def handle(self, data: dict) -> None:
         """处理消息事件"""
@@ -805,6 +806,9 @@ class MessageRouter:
         message_id = pending["message_id"]
         sender_name = pending["sender_name"]
 
+        # 主人身份自动发现
+        self._try_discover_owner(chat_id, sender_name)
+
         system = self.memory.build_context(chat_id=chat_id)
         system += (
             f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
@@ -854,17 +858,18 @@ class MessageRouter:
             asyncio.create_task(self._reflect_on_reply(chat_id, reply_text))
 
     async def _reflect_on_reply(self, chat_id: str, reply_text: str) -> None:
-        """轻量级 LLM 调用，对刚发出的回复做质量自评"""
+        """轻量级 LLM 调用，对刚发出的回复做质量自评 + 好奇心信号检测"""
         try:
-            prompt = REFLECTION_PROMPT.format(reply=reply_text[:500])
+            prompt = REFLECTION_WITH_CURIOSITY_PROMPT.format(reply=reply_text[:500])
             reflection = await self.executor.reply_with_history(
-                "", [{"role": "user", "content": prompt}], max_tokens=100,
+                "", [{"role": "user", "content": prompt}], max_tokens=150,
             )
             reflection = reflection.strip()
             if reflection:
                 logger.info("自我评估 [%s]: %s", chat_id[-8:], reflection)
-                # 追加到反思日志
                 self._append_reflection(chat_id, reflection)
+                # 提取好奇心信号
+                self._extract_curiosity_from_reflection(reflection, "私聊反思", chat_id)
         except Exception:
             logger.debug("自我反思失败", exc_info=True)
 
@@ -888,6 +893,179 @@ class MessageRouter:
                 f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception:
             logger.debug("反思日志写入失败", exc_info=True)
+
+    def _extract_curiosity_from_reflection(
+        self, reflection: str, source: str, chat_id: str,
+    ) -> None:
+        """从反思结果中提取 [好奇:...] 标记并写入好奇心信号日志"""
+        import re as _re
+        match = _re.search(r"\[好奇[:：]\s*(.+?)\]", reflection)
+        if match:
+            topic = match.group(1).strip()
+            if topic and topic != "无":
+                self._append_curiosity_signal(topic, source, chat_id)
+
+    def _append_curiosity_signal(
+        self, topic: str, source: str, chat_id: str,
+    ) -> None:
+        """将好奇心信号追加到当日信号日志（自动去重）"""
+        import json as _json
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        cst = _tz(_td(hours=8))
+        today = _dt.now(cst).strftime("%Y-%m-%d")
+        log_dir = self.memory.workspace / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"curiosity-signals-{today}.jsonl"
+
+        # 去重：检查今日是否已有相似话题（前 20 字匹配）
+        topic_prefix = topic[:20]
+        if log_path.exists():
+            try:
+                for line in log_path.read_text(encoding="utf-8").strip().splitlines():
+                    existing = _json.loads(line)
+                    if existing.get("topic", "")[:20] == topic_prefix:
+                        logger.debug("跳过重复好奇心信号: %s", topic[:40])
+                        return
+            except Exception:
+                pass
+
+        entry = {
+            "ts": time.time(),
+            "topic": topic,
+            "source": source,
+            "chat_id": chat_id,
+        }
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+            logger.info("好奇心信号: %s (来源: %s)", topic, source)
+        except Exception:
+            logger.warning("好奇心信号写入失败", exc_info=True)
+
+    def _extract_group_curiosity(
+        self, chat_id: str, recent: list[dict], reason: str,
+    ) -> None:
+        """从群聊对话中被动提取好奇心信号（不调用 LLM）。
+
+        仅当消息足够长且包含技术性关键词组合时才触发，避免误报。
+        """
+        texts = [m.get("text", "") for m in recent[-5:]]
+        # 需要同时包含「动作词」+「对象词」才算有意义的信号
+        action_words = ["怎么做", "怎么实现", "有没有办法", "能不能", "如何"]
+        for text in texts:
+            if len(text) < 15:
+                continue
+            for aw in action_words:
+                if aw in text:
+                    topic = text[:60].strip()
+                    self._append_curiosity_signal(topic, "群聊旁听", chat_id)
+                    return  # 每次评估最多一个信号
+
+    # ── 审批机制 ──
+
+    async def _request_owner_approval(
+        self, action_desc: str, callback_id: str,
+    ) -> None:
+        """向主人发送审批卡片"""
+        from lq.feishu.cards import build_confirm_card
+
+        owner_chat_id = ""
+        if self.config:
+            owner_chat_id = self.config.feishu.owner_chat_id
+        if not owner_chat_id:
+            logger.warning("无法发送审批: 未配置 owner_chat_id")
+            return
+
+        card = build_confirm_card(
+            title="操作审批",
+            content=action_desc,
+            confirm_text="批准",
+            cancel_text="拒绝",
+            callback_data={"type": "approval", "id": callback_id},
+        )
+        await self.sender.send_card(owner_chat_id, card)
+
+        # 记录待审批
+        import json as _json
+        log_dir = self.memory.workspace / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "pending-approvals.jsonl"
+        entry = {
+            "id": callback_id,
+            "ts": time.time(),
+            "action": action_desc,
+            "status": "pending",
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        logger.info("审批请求已发送: %s", callback_id)
+
+    def _update_approval_status(self, callback_id: str, status: str) -> None:
+        """更新审批记录状态"""
+        import json as _json
+
+        log_dir = self.memory.workspace / "logs"
+        log_path = log_dir / "pending-approvals.jsonl"
+        if not log_path.exists():
+            return
+        try:
+            lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+            updated = []
+            for line in lines:
+                entry = _json.loads(line)
+                if entry.get("id") == callback_id:
+                    entry["status"] = status
+                    entry["resolved_ts"] = time.time()
+                updated.append(_json.dumps(entry, ensure_ascii=False))
+            log_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+        except Exception:
+            logger.debug("更新审批状态失败", exc_info=True)
+
+    def _check_approval(self, callback_id: str) -> str | None:
+        """检查审批状态，返回 'approved'/'rejected'/None(pending)"""
+        import json as _json
+
+        log_dir = self.memory.workspace / "logs"
+        log_path = log_dir / "pending-approvals.jsonl"
+        if not log_path.exists():
+            return None
+        try:
+            for line in log_path.read_text(encoding="utf-8").strip().splitlines():
+                entry = _json.loads(line)
+                if entry.get("id") == callback_id:
+                    status = entry.get("status", "pending")
+                    return status if status != "pending" else None
+        except Exception:
+            pass
+        return None
+
+    # ── 主人身份自动发现 ──
+
+    def _try_discover_owner(self, chat_id: str, sender_name: str) -> None:
+        """尝试自动发现主人身份（首个私聊用户或名字匹配的用户）"""
+        if not self.config:
+            return
+        # 已有 owner_chat_id，不需要发现
+        if self.config.feishu.owner_chat_id:
+            return
+        # 如果配置了 owner_name，只匹配该名字
+        if self.config.owner_name:
+            if sender_name != self.config.owner_name:
+                return
+        # 设置 owner_chat_id（首个私聊用户或名字匹配的用户）
+        self.config.feishu.owner_chat_id = chat_id
+        if not self.config.owner_name:
+            self.config.owner_name = sender_name
+        # 持久化到 config.json
+        try:
+            from lq.config import save_config
+            save_config(self.memory.workspace, self.config)
+            logger.info("主人身份已发现并保存: %s (chat_id: %s)", sender_name, chat_id[-8:])
+        except Exception:
+            logger.warning("主人身份保存失败", exc_info=True)
+        # 刷新自我认知缓存
+        self.memory.invalidate_awareness_cache()
 
     def _track_tool_result(self, tool_name: str, success: bool, error: str = "") -> None:
         """记录工具调用成功/失败统计"""
@@ -2060,6 +2238,11 @@ class MessageRouter:
                 if last_msg_id and reaction_id:
                     await self.sender.remove_reaction(last_msg_id, reaction_id)
                     self._my_reaction_ids.pop(last_msg_id, None)
+                # 被动好奇心信号：从群聊对话中提取感兴趣的话题
+                reason = judgment.get("reason", "")
+                if reason and len(reason) > 10:
+                    # 从评估 reason 中检测好奇心线索
+                    self._extract_group_curiosity(chat_id, recent, reason)
         except Exception:
             logger.exception("介入判断失败")
             # 异常时也清除 reaction
@@ -2451,6 +2634,15 @@ class MessageRouter:
                 "卡片回调: action=%s tag=%s operator=%s value=%s",
                 action_type, tag, operator_id[:12], value,
             )
+
+            # 审批卡片回调
+            card_type = value.get("type", "") if isinstance(value, dict) else ""
+            if card_type == "approval":
+                approval_id = value.get("id", "")
+                status = "approved" if action_type == "confirm" else "rejected"
+                self._update_approval_status(approval_id, status)
+                logger.info("审批 %s: %s (操作者: %s)", approval_id, status, operator_id[:12])
+                return
 
             if action_type == "confirm":
                 logger.info("用户 %s 确认了操作", operator_id[:12])

@@ -238,7 +238,8 @@ SELF_AWARENESS_TEMPLATE = (
     "### 文件说明\n"
     "- **SOUL.md**: 定义你的身份、性格、沟通风格和介入原则。修改它会改变你的行为方式。\n"
     "- **MEMORY.md**: 长期记忆存储，按分区组织。你已有 write_memory 工具来更新它。\n"
-    "- **HEARTBEAT.md**: 定义你的定时任务和主动行为模板。\n\n"
+    "- **HEARTBEAT.md**: 定义你的定时任务和主动行为模板。\n"
+    "- **CURIOSITY.md**: 好奇心日志，记录你的探索兴趣、进展和改进建议。\n\n"
     "### 你的能力（均有对应工具可调用）\n"
     "- 使用 web_search 工具搜索互联网获取实时信息（新闻、天气、百科、技术文档等）\n"
     "- 使用 web_fetch 工具抓取任意网页的文本内容\n"
@@ -364,11 +365,13 @@ TOOL_DESC_CALENDAR_LIST = "查询指定时间范围内的日历事件。用于�
 TOOL_DESC_SEND_CARD = "发送一张信息卡片给用户。用于展示结构化信息如日程、任务列表等。"
 
 TOOL_DESC_READ_SELF_FILE = (
-    "读取自己的配置文件。可读文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、HEARTBEAT.md（心跳任务模板）。"
+    "读取自己的配置文件。可读文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、"
+    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）。"
 )
 
 TOOL_DESC_WRITE_SELF_FILE = (
-    "修改自己的配置文件。可写文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、HEARTBEAT.md（心跳任务模板）。"
+    "修改自己的配置文件。可写文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、"
+    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）。"
     "修改 SOUL.md 会改变核心人格，请谨慎。建议先用 read_self_file 读取当前内容再修改。"
 )
 
@@ -723,6 +726,74 @@ CAPABILITY_LINE_TEMPLATE = "  - {tool_name} (调用{total}次, 成功率{rate}%)
 REFLECTION_PROMPT = (
     "请用一句话评估你刚才的回复质量。格式：[质量:好/中/差] 原因\n\n"
     "你的回复：\n{reply}"
+)
+
+
+# =====================================================================
+# Reflection with Curiosity  (extended post-interaction self-evaluation)
+# =====================================================================
+
+# {reply}
+REFLECTION_WITH_CURIOSITY_PROMPT = (
+    "请评估你刚才的回复，并检查是否有值得好奇的线索。\n\n"
+    "格式：\n"
+    "[质量:好/中/差] 原因\n"
+    "[好奇:话题] 或 [好奇:无]\n\n"
+    "好奇心信号：用户提到了你不了解的概念？你的回答有知识盲区？"
+    "有什么能力你做不到但应该能做到？\n\n"
+    "你的回复：\n{reply}"
+)
+
+
+# =====================================================================
+# Owner Identity Template  (injected into self-awareness)
+# =====================================================================
+
+# {owner_name}, {owner_chat_id}
+OWNER_IDENTITY_TEMPLATE = (
+    "\n### 你的主人\n"
+    "你的主人是 {owner_name}（chat_id: {owner_chat_id}）。\n"
+    "对于可能涉及安全风险或隐私信息的操作，你应该先向主人确认。\n"
+    "不需要硬性规则——用你的判断力评估什么需要确认。\n"
+)
+
+
+# =====================================================================
+# Curiosity Exploration Prompt  (heartbeat-driven autonomous exploration)
+# =====================================================================
+
+# {signals}, {curiosity_md}
+CURIOSITY_EXPLORE_PROMPT = (
+    "你现在有一段空闲时间。以下是最近的好奇心信号和你的好奇心日志。\n"
+    "请选择一个最值得探索的方向，执行 1-2 步探索动作。\n\n"
+    "好奇心信号：\n{signals}\n\n"
+    "当前好奇心日志：\n{curiosity_md}\n\n"
+    "规则：\n"
+    "- 只选一个方向，控制成本\n"
+    "- 可以使用 web_search、read_file 等工具探索\n"
+    "- 如果有收获，更新 CURIOSITY.md 和 MEMORY.md\n"
+    "- 如果涉及敏感操作（修改 SOUL.md、执行 bash 命令、创建可联网的工具等），"
+    "先用 send_message 告诉主人你想做什么，等待主人回复后再执行\n"
+    "- 用你自己的判断力决定什么需要确认——不要事事都问，也不要什么都不问\n"
+    "- 如果你的探索发现了一个用户会受益的新能力，可以使用 create_custom_tool 创建它\n"
+    "- 你可以使用 read_file 阅读 lingque 的源代码（src/lq/ 下的文件）来理解框架\n"
+    "- 如果你有改进建议，写入 CURIOSITY.md 的「改进建议」部分，并通过 send_message 通知主人\n"
+    "- 不要直接修改源代码——所有代码变更必须经过主人审批\n"
+    "- 如果没什么值得探索的，输出「无」\n"
+)
+
+
+# =====================================================================
+# Curiosity Init Template  (initial CURIOSITY.md content)
+# =====================================================================
+
+CURIOSITY_INIT_TEMPLATE = (
+    "# 好奇心日志\n\n"
+    "## 当前兴趣\n\n"
+    "## 正在探索\n\n"
+    "## 已完成的探索\n\n"
+    "## 暂时搁置\n\n"
+    "## 改进建议\n"
 )
 
 

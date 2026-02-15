@@ -24,6 +24,7 @@ from lq.prompts import (
     SELF_AWARENESS_TEMPLATE, CUSTOM_TOOLS_SECTION_WITH_TOOLS, CUSTOM_TOOLS_SECTION_EMPTY,
     SELF_AWARENESS_STATS, CAPABILITY_LINE_TEMPLATE,
     FLUSH_BEFORE_COMPACTION, FLUSH_ROLE_TOOL_CALL, FLUSH_ROLE_TOOL_RESULT, FLUSH_ROLE_DEFAULT,
+    OWNER_IDENTITY_TEMPLATE,
 )
 from lq.session import estimate_tokens
 
@@ -239,7 +240,7 @@ class MemoryManager:
         """构建自我认知上下文，让助理了解自己的架构和可修改的文件"""
         ws = self.workspace
         editable_files = []
-        for name in ["SOUL.md", "MEMORY.md", "HEARTBEAT.md"]:
+        for name in ["SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md"]:
             p = ws / name
             if p.exists():
                 editable_files.append(EDITABLE_FILE_EXISTS.format(name=name, size=p.stat().st_size))
@@ -297,6 +298,20 @@ class MemoryManager:
                 if siblings:
                     names = "、".join(siblings)
                     awareness_content += f"\n### 姐妹实例\n你在飞书群聊中的姐妹实例: {names}\n"
+            except Exception:
+                pass
+
+        # 主人身份注入
+        if self.stats_provider:
+            try:
+                stats = self.stats_provider()
+                owner_name = stats.get("owner_name", "")
+                owner_chat_id = stats.get("owner_chat_id", "")
+                if owner_name and owner_chat_id:
+                    awareness_content += OWNER_IDENTITY_TEMPLATE.format(
+                        owner_name=owner_name,
+                        owner_chat_id=owner_chat_id,
+                    )
             except Exception:
                 pass
 
@@ -390,7 +405,7 @@ class MemoryManager:
 
     # ── 自我修改 API ──
 
-    EDITABLE_FILES = {"SOUL.md", "MEMORY.md", "HEARTBEAT.md"}
+    EDITABLE_FILES = {"SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md"}
 
     def read_self_file(self, filename: str) -> str:
         """读取工作区配置文件"""

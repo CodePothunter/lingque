@@ -67,6 +67,8 @@ class LQConfig:
     active_hours: tuple[int, int] = (8, 23)  # 活跃时段
     groups: list[GroupConfig] = field(default_factory=list)
     cost_alert_daily: float = 5.0  # USD
+    curiosity_budget: float = 1.0  # 每日好奇心探索预算 (USD)
+    owner_name: str = ""  # 主人的飞书名（init 时设置，用于运行时自动发现 owner_chat_id）
 
     def __post_init__(self) -> None:
         if not self.slug:
@@ -85,6 +87,8 @@ class LQConfig:
         cfg.model = d.get("model", "glm-5")
         cfg.heartbeat_interval = d.get("heartbeat_interval", 3600)
         cfg.cost_alert_daily = d.get("cost_alert_daily", 5.0)
+        cfg.curiosity_budget = d.get("curiosity_budget", 1.0)
+        cfg.owner_name = d.get("owner_name", "")
         ah = d.get("active_hours", [8, 23])
         cfg.active_hours = (ah[0], ah[1])
 

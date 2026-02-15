@@ -149,6 +149,22 @@ class AssistantGateway:
                         seen.add(bid)
                         siblings.append(sender.get_member_name(bid))
 
+            # 解析主人身份
+            owner_chat_id = self.config.feishu.owner_chat_id
+            owner_name = self.config.owner_name
+            if not owner_name and owner_chat_id:
+                # 尝试从 session 中推断主人名字：
+                # 私聊 session 文件名就是 chat_id，里面的 user 消息有 sender_name
+                try:
+                    sess = session_mgr.get_or_create(owner_chat_id)
+                    for msg in sess.get_messages():
+                        sn = msg.get("sender_name", "")
+                        if msg.get("role") == "user" and sn and sn != "你":
+                            owner_name = sn
+                            break
+                except Exception:
+                    pass
+
             return {
                 "model": self.config.model,
                 "uptime": uptime,
@@ -159,6 +175,8 @@ class AssistantGateway:
                 "active_sessions": active_sessions,
                 "tool_stats": tool_stats,
                 "siblings": siblings,
+                "owner_name": owner_name,
+                "owner_chat_id": owner_chat_id,
             }
 
         memory = MemoryManager(self.home, stats_provider=_stats_provider)
@@ -182,6 +200,7 @@ class AssistantGateway:
 
         # 创建路由器并注入依赖
         router = MessageRouter(executor, memory, sender, bot_open_id, bot_name)
+        router.config = self.config  # 注入配置引用（用于主人身份自动发现等）
         _stats_router_ref[0] = router  # 完成闭包引用
         router.session_mgr = session_mgr
         router.calendar = calendar
@@ -336,6 +355,12 @@ class AssistantGateway:
                 except Exception:
                     logger.exception("群聊早安问候调度失败")
 
+            # 好奇心探索（心跳后触发）
+            try:
+                await self._run_curiosity_exploration(router, stats)
+            except Exception:
+                logger.exception("好奇心探索失败")
+
             # 费用告警
             if stats:
                 daily = stats.get_daily_summary()
@@ -412,6 +437,94 @@ class AssistantGateway:
         if parts:
             return "\n" + "\n".join(parts) + "\n请对比 SOUL.md 中的行为准则，判断是否存在行为漂移。"
         return ""
+
+    async def _run_curiosity_exploration(
+        self, router: MessageRouter, stats: StatsTracker,
+    ) -> None:
+        """心跳后的好奇心探索：读取信号、决定是否探索、执行探索。"""
+        from lq.prompts import CURIOSITY_EXPLORE_PROMPT, CURIOSITY_INIT_TEMPLATE
+
+        # 每日预算检查：只有当总花费仍低于 (总预算 - 好奇心预算) 时才探索
+        # 这样确保总是为好奇心探索保留 curiosity_budget 额度的空间
+        if stats:
+            daily = stats.get_daily_summary()
+            today_cost = daily.get("total_cost", 0.0)
+            exploration_ceiling = self.config.cost_alert_daily - self.config.curiosity_budget
+            if today_cost > exploration_ceiling:
+                logger.debug("今日费用 $%.4f 超过探索阈值 $%.2f (总预算 $%.2f - 好奇心预算 $%.2f)，跳过",
+                             today_cost, exploration_ceiling,
+                             self.config.cost_alert_daily, self.config.curiosity_budget)
+                return
+
+        # 读取好奇心信号（最近 20 条）
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cst = _tz(_td(hours=8))
+        today = _dt.now(cst).strftime("%Y-%m-%d")
+        signals_path = self.home / "logs" / f"curiosity-signals-{today}.jsonl"
+        signals_text = "（暂无信号）"
+        if signals_path.exists():
+            try:
+                lines = signals_path.read_text(encoding="utf-8").strip().splitlines()
+                if lines:
+                    entries = []
+                    for line in lines[-20:]:
+                        entry = json.loads(line)
+                        entries.append(f"- {entry.get('topic', '?')}（来源: {entry.get('source', '?')}）")
+                    signals_text = "\n".join(entries)
+            except Exception:
+                logger.debug("读取好奇心信号失败", exc_info=True)
+
+        # 读取 CURIOSITY.md
+        curiosity_path = self.home / "CURIOSITY.md"
+        if not curiosity_path.exists():
+            curiosity_path.write_text(CURIOSITY_INIT_TEMPLATE, encoding="utf-8")
+            logger.info("已创建 CURIOSITY.md")
+        curiosity_md = curiosity_path.read_text(encoding="utf-8")
+
+        # 如果没有信号且 CURIOSITY.md 没有当前兴趣，跳过
+        if signals_text == "（暂无信号）" and "## 当前兴趣\n\n##" in curiosity_md:
+            logger.debug("无好奇心信号且无当前兴趣，跳过探索")
+            return
+
+        # 构建探索 prompt
+        system = router.memory.build_context()
+        system += "\n\n" + CURIOSITY_EXPLORE_PROMPT.format(
+            signals=signals_text,
+            curiosity_md=curiosity_md,
+        )
+
+        chat_id = self.config.feishu.owner_chat_id or "curiosity"
+        messages = [{"role": "user", "content": "请检查好奇心信号并决定是否探索。"}]
+
+        # 记录探索前的 CURIOSITY.md 内容用于变更检测
+        old_curiosity = curiosity_md
+
+        try:
+            result = await router._reply_with_tool_loop(
+                system, messages, chat_id, None,
+            )
+            if result and result.strip() and result.strip() != "无":
+                router.memory.append_daily(f"- 好奇心探索: {result[:100]}\n")
+                logger.info("好奇心探索完成: %s", result[:80])
+
+                # 检查是否有新的改进建议（对比探索前后的内容差异）
+                new_curiosity = curiosity_path.read_text(encoding="utf-8")
+                if new_curiosity != old_curiosity and "改进建议" in new_curiosity:
+                    # 提取「改进建议」部分（兼容 ## 改进建议 或 ##改进建议 等格式）
+                    import re as _re
+                    m = _re.search(r"##\s*改进建议\s*\n(.*?)(?:\n##|\Z)",
+                                   new_curiosity, _re.DOTALL)
+                    section = m.group(1).strip() if m else ""
+                    owner_chat_id = self.config.feishu.owner_chat_id
+                    if section and owner_chat_id:
+                        await router.sender.send_text(
+                            owner_chat_id,
+                            f"我在探索中发现了一些改进建议，已记录在 CURIOSITY.md 中。",
+                        )
+            else:
+                logger.debug("好奇心探索结果为空或「无」")
+        except Exception:
+            logger.exception("好奇心探索执行失败")
 
     async def _poll_inbox(self, router: MessageRouter) -> None:
         """轮询 inbox.txt，处理 `lq say` 写入的本地消息。

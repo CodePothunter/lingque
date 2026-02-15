@@ -55,7 +55,8 @@ def cli() -> None:
 @cli.command()
 @click.option("--name", prompt="助理名称", help="助理实例名称（支持中文）")
 @click.option("--from-env", type=click.Path(exists=True), help="从 .env 文件读取凭证")
-def init(name: str, from_env: str | None) -> None:
+@click.option("--owner", default="", help="主人的飞书名（安全相关：用于审批确认。留空则首个私聊用户自动成为主人）")
+def init(name: str, from_env: str | None, owner: str) -> None:
     """初始化一个新的灵雀实例"""
     slug = slugify(name)
     home = resolve_home(slug)
@@ -84,6 +85,10 @@ def init(name: str, from_env: str | None) -> None:
     for sub in ("memory", "sessions", "sessions/archive", "groups", "logs", "chat_memories"):
         (home / sub).mkdir(parents=True, exist_ok=True)
 
+    # 主人名配置
+    if owner:
+        config.owner_name = owner
+
     # 写入配置
     save_config(home, config)
 
@@ -92,12 +97,25 @@ def init(name: str, from_env: str | None) -> None:
     write_memory_template(home / "MEMORY.md")
     write_heartbeat_template(home / "HEARTBEAT.md")
 
+    # 生成好奇心日志
+    from lq.prompts import CURIOSITY_INIT_TEMPLATE
+    curiosity_path = home / "CURIOSITY.md"
+    if not curiosity_path.exists():
+        curiosity_path.write_text(CURIOSITY_INIT_TEMPLATE, encoding="utf-8")
+
     # 生成 systemd service
     service_path = write_systemd_service(slug)
 
     click.echo(f"✓ 实例 @{name} (slug: {slug}) 初始化完成")
     click.echo(f"  配置目录: {home}")
     click.echo(f"  Systemd:  {service_path}")
+    if owner:
+        click.echo(f"  主人:      {owner}")
+    else:
+        click.echo("  主人:      未设置（首个私聊用户将自动成为主人）")
+    click.echo()
+    click.echo("⚠ 安全提示: 主人身份决定了谁能审批敏感操作。")
+    click.echo("  建议使用 --owner 指定主人名，或在启动后尽快私聊 bot 以绑定身份。")
     click.echo()
     click.echo("后续操作:")
     click.echo(f"  编辑人格:   $EDITOR {home}/SOUL.md")
