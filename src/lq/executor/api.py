@@ -88,6 +88,7 @@ class DirectAPIExecutor:
 
     def __init__(self, api_config: APIConfig, model: str) -> None:
         self.model = model
+        self.mcp_key: str = api_config.mcp_key or api_config.api_key
         self.client = anthropic.AsyncAnthropic(
             api_key=api_config.api_key,
             base_url=api_config.base_url,
