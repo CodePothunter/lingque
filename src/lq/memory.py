@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import glob as _glob_mod
 import logging
+import os
 import re
 import time
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,6 +24,7 @@ from lq.prompts import (
     GLOBAL_MEMORY_INIT, CHAT_MEMORY_INIT, CHAT_MEMORY_INIT_APPEND,
     ERR_FILE_NOT_ALLOWED_READ, ERR_FILE_NOT_ALLOWED_WRITE,
     SELF_AWARENESS_TEMPLATE, CUSTOM_TOOLS_SECTION_WITH_TOOLS, CUSTOM_TOOLS_SECTION_EMPTY,
+    SELF_AWARENESS_STATS, CAPABILITY_LINE_TEMPLATE,
     FLUSH_BEFORE_COMPACTION, FLUSH_ROLE_TOOL_CALL, FLUSH_ROLE_TOOL_RESULT, FLUSH_ROLE_DEFAULT,
 )
 from lq.session import estimate_tokens
@@ -40,8 +44,13 @@ _AWARENESS_CACHE_TTL = 300  # 5 分钟
 
 
 class MemoryManager:
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        stats_provider: Callable[[], dict] | None = None,
+    ) -> None:
         self.workspace = workspace
+        self.stats_provider = stats_provider
         self.memory_dir = workspace / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.chat_memories_dir = workspace / "chat_memories"
@@ -251,7 +260,72 @@ class MemoryManager:
             log_list=log_list,
             custom_tools_section=self._build_custom_tools_awareness(),
         )
+
+        # 运行状态注入
+        if self.stats_provider:
+            try:
+                stats = self.stats_provider()
+                awareness_content += SELF_AWARENESS_STATS.format(
+                    model=stats.get("model", "unknown"),
+                    uptime=stats.get("uptime", "unknown"),
+                    today_calls=stats.get("today_calls", 0),
+                    today_tokens=stats.get("today_tokens", 0),
+                    today_cost=stats.get("today_cost", 0.0),
+                    monthly_cost=stats.get("monthly_cost", 0.0),
+                    active_sessions=stats.get("active_sessions", 0),
+                )
+                # 工具能力统计
+                tool_stats: dict[str, dict[str, int]] = stats.get("tool_stats", {})
+                if tool_stats:
+                    cap_lines = []
+                    for tname, ts in tool_stats.items():
+                        total = ts.get("success", 0) + ts.get("fail", 0)
+                        if total > 0:
+                            rate = round(ts["success"] / total * 100)
+                            cap_lines.append(
+                                CAPABILITY_LINE_TEMPLATE.format(
+                                    tool_name=tname, total=total, rate=rate,
+                                )
+                            )
+                    if cap_lines:
+                        awareness_content += "\n### 工具使用统计\n" + "\n".join(cap_lines) + "\n"
+            except Exception:
+                logger.warning("运行状态注入失败", exc_info=True)
+
+        # 跨实例感知
+        awareness_content += self._build_sibling_awareness()
+
         return wrap_tag(TAG_SELF_AWARENESS, awareness_content)
+
+    def _build_sibling_awareness(self) -> str:
+        """检测同机器上运行的姐妹实例"""
+        siblings: list[str] = []
+        my_pid_path = self.workspace / "gateway.pid"
+        my_pid = ""
+        if my_pid_path.exists():
+            my_pid = my_pid_path.read_text().strip()
+
+        for pid_file in _glob_mod.glob(str(Path.home() / ".lq-*" / "gateway.pid")):
+            pid_path = Path(pid_file)
+            if pid_path == my_pid_path:
+                continue
+            try:
+                pid = pid_path.read_text().strip()
+                if not pid:
+                    continue
+                # 检查进程是否存活
+                os.kill(int(pid), 0)
+                # 从目录名推断实例名
+                instance_dir = pid_path.parent.name  # e.g. ".lq-naiyou"
+                name = instance_dir.replace(".lq-", "", 1)
+                siblings.append(name)
+            except (ProcessLookupError, ValueError, PermissionError, OSError):
+                continue
+
+        if not siblings:
+            return ""
+        names = "、".join(siblings)
+        return f"\n### 姐妹实例\n你的姐妹实例目前在线: {names}\n"
 
     def _build_custom_tools_awareness(self) -> str:
         """构建自定义工具的自我认知段落。"""

@@ -10,6 +10,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -106,12 +107,51 @@ class AssistantGateway:
         logger.info("Bot open_id: %s app_id: %s name: %s", bot_open_id, self.config.feishu.app_id, bot_name)
 
         # 初始化核心组件
-        memory = MemoryManager(self.home)
         executor = DirectAPIExecutor(self.config.api, self.config.model)
         cc_executor = ClaudeCodeExecutor(self.home, self.config.api)
         stats = StatsTracker(self.home)
         executor.stats = stats  # 注入统计跟踪
         session_mgr = SessionManager(self.home)
+
+        # stats_provider 闭包 — router 会在后面赋值给 _stats_router_ref
+        startup_ts = int(time.time() * 1000)
+        _stats_router_ref: list[MessageRouter | None] = [None]
+
+        def _stats_provider() -> dict:
+            """收集运行状态给 MemoryManager 的自我认知模块"""
+            router_ref = _stats_router_ref[0]
+            # uptime
+            elapsed = int(time.time()) - startup_ts // 1000
+            if elapsed < 3600:
+                uptime = f"{elapsed // 60}分钟"
+            elif elapsed < 86400:
+                uptime = f"{elapsed // 3600}小时{(elapsed % 3600) // 60}分钟"
+            else:
+                uptime = f"{elapsed // 86400}天{(elapsed % 86400) // 3600}小时"
+
+            daily = stats.get_daily_summary()
+            monthly = stats.get_monthly_summary()
+
+            active_sessions = 0
+            if session_mgr:
+                active_sessions = len(session_mgr._sessions)
+
+            tool_stats: dict = {}
+            if router_ref:
+                tool_stats = router_ref._tool_stats
+
+            return {
+                "model": self.config.model,
+                "uptime": uptime,
+                "today_calls": daily.get("total_calls", 0),
+                "today_tokens": daily.get("total_input_tokens", 0) + daily.get("total_output_tokens", 0),
+                "today_cost": daily.get("total_cost", 0.0),
+                "monthly_cost": monthly.get("total_cost", 0.0),
+                "active_sessions": active_sessions,
+                "tool_stats": tool_stats,
+            }
+
+        memory = MemoryManager(self.home, stats_provider=_stats_provider)
 
         # 初始化自定义工具注册表
         tool_registry = ToolRegistry(self.home)
@@ -132,6 +172,7 @@ class AssistantGateway:
 
         # 创建路由器并注入依赖
         router = MessageRouter(executor, memory, sender, bot_open_id, bot_name)
+        _stats_router_ref[0] = router  # 完成闭包引用
         router.session_mgr = session_mgr
         router.calendar = calendar
         router.stats = stats
@@ -315,6 +356,8 @@ class AssistantGateway:
                 "深夜自省时：读取 SOUL.md，结合今天的日志和经历，微调它以体现你的成长。"
                 "如果当前没有需要执行的任务，输出「无」。"
             )
+            # 注入今日反思摘要和工具统计（漂移检测上下文）
+            system += self._build_heartbeat_drift_context(router)
             chat_id = self.config.feishu.owner_chat_id or "heartbeat"
             messages = [{"role": "user", "content": "请检查并执行心跳任务。"}]
             result = await router._reply_with_tool_loop(system, messages, chat_id, None)
@@ -326,6 +369,39 @@ class AssistantGateway:
                 logger.info("心跳任务执行: %s", result[:80])
         except Exception:
             logger.exception("心跳任务执行失败")
+
+    def _build_heartbeat_drift_context(self, router: MessageRouter) -> str:
+        """构建心跳任务的漂移检测上下文（反思摘要 + 工具统计）"""
+        parts: list[str] = []
+        # 今日反思摘要
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cst = _tz(_td(hours=8))
+        today = _dt.now(cst).strftime("%Y-%m-%d")
+        ref_path = self.home / "logs" / f"reflections-{today}.jsonl"
+        if ref_path.exists():
+            try:
+                lines = ref_path.read_text(encoding="utf-8").strip().splitlines()
+                if lines:
+                    reflections = []
+                    for line in lines[-10:]:  # 最近10条
+                        entry = json.loads(line)
+                        reflections.append(f"  - {entry.get('reflection', '')}")
+                    parts.append("\n### 今日自我反思记录\n" + "\n".join(reflections))
+            except Exception:
+                pass
+        # 工具成功/失败摘要
+        if router._tool_stats:
+            tool_lines = []
+            for tname, ts in router._tool_stats.items():
+                total = ts.get("success", 0) + ts.get("fail", 0)
+                if total > 0:
+                    rate = round(ts["success"] / total * 100)
+                    tool_lines.append(f"  - {tname}: {total}次, 成功率{rate}%")
+            if tool_lines:
+                parts.append("\n### 工具使用摘要\n" + "\n".join(tool_lines))
+        if parts:
+            return "\n" + "\n".join(parts) + "\n请对比 SOUL.md 中的行为准则，判断是否存在行为漂移。"
+        return ""
 
     async def _poll_inbox(self, router: MessageRouter) -> None:
         """轮询 inbox.txt，处理 `lq say` 写入的本地消息。
