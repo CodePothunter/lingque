@@ -164,6 +164,7 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     router.stats = stats
     router.cc_executor = cc_executor
     router.bash_executor = bash_executor
+    router.zhipu_api_key = config.api.zhipu_api_key
     router.tool_registry = tool_registry
 
     # 初始化后处理管线
