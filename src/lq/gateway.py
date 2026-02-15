@@ -75,6 +75,15 @@ class AssistantGateway:
     async def _start(self) -> None:
         loop = asyncio.get_running_loop()
 
+        # 将 config 中的代理设置注入环境变量，
+        # 使 httpx（含 Anthropic SDK 内部客户端）自动使用代理
+        if self.config.api.proxy:
+            proxy = self.config.api.proxy
+            for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                        "https_proxy", "http_proxy", "all_proxy"):
+                os.environ.setdefault(var, proxy)
+            logger.info("代理已注入环境变量: %s", proxy)
+
         # 初始化发送器并获取 bot info
         sender = FeishuSender(
             self.config.feishu.app_id,

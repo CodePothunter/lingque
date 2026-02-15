@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,12 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
         config: 实例配置
         single_message: 如果非空，发送单条消息后退出（非交互模式）
     """
+    # 将 config 中的代理设置注入环境变量
+    if config.api.proxy:
+        for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy"):
+            os.environ.setdefault(var, config.api.proxy)
+
     # 压低日志噪音
     logging.basicConfig(
         level=logging.WARNING,

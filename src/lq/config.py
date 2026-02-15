@@ -37,6 +37,7 @@ def slugify(name: str) -> str:
 class APIConfig:
     base_url: str = "https://api.anthropic.com"
     api_key: str = ""
+    proxy: str = ""  # HTTP/SOCKS 代理（如 socks5://127.0.0.1:1080）
 
 
 @dataclass
@@ -90,6 +91,7 @@ class LQConfig:
         cfg.api = APIConfig(
             base_url=api.get("base_url", "https://api.anthropic.com"),
             api_key=api.get("api_key", ""),
+            proxy=api.get("proxy", ""),
         )
 
         fs = d.get("feishu", {})
@@ -152,6 +154,15 @@ def load_from_env(env_path: Path) -> LQConfig:
     cfg = LQConfig()
     cfg.api.api_key = vals.get("ANTHROPIC_AUTH_TOKEN", "")
     cfg.api.base_url = vals.get("ANTHROPIC_BASE_URL", cfg.api.base_url)
+    cfg.api.proxy = (
+        vals.get("HTTPS_PROXY")
+        or vals.get("HTTP_PROXY")
+        or vals.get("ALL_PROXY")
+        or vals.get("https_proxy")
+        or vals.get("http_proxy")
+        or vals.get("all_proxy")
+        or ""
+    )
     cfg.feishu.app_id = vals.get("FEISHU_APP_ID", "")
     cfg.feishu.app_secret = vals.get("FEISHU_APP_SECRET", "")
     return cfg
