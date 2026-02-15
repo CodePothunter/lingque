@@ -53,7 +53,7 @@ Level 4 (Self-Evolving) — 自我进化
 | 文件 | 新增行数 | 变更类型 |
 |------|---------|---------|
 | src/lq/prompts.py | +44 | 新增模板常量 |
-| src/lq/memory.py | +76 | 统计注入 + 同伴检测 |
+| src/lq/memory.py | +76 | 统计注入 + 飞书群聊同伴感知 |
 | src/lq/router.py | +120 | 新工具 + 能力追踪 + 反思循环 |
 | src/lq/gateway.py | +78 | 统计桥接 + 漂移检测 |
 | **总计** | **+318 行** | |
@@ -125,10 +125,11 @@ Level 4 (Self-Evolving) — 自我进化
 - **效果**: 心跳自省时有数据支撑的漂移检测能力
 
 #### 3.3 跨实例社交感知
-- `memory.py` 新增 `_build_sibling_awareness()`
-- 扫描 `~/.lq-*/gateway.pid`，通过 `os.kill(pid, 0)` 检测同伴存活
-- 在自我感知区块报告: "你的姐妹实例目前在线: nienie"
-- **效果**: 奶油知道捏捏在线，捏捏知道奶油在线
+- `gateway.py` `_stats_provider()` 遍历飞书群聊的 bot 成员列表发现姐妹实例
+- `memory.py` `_build_self_awareness()` 从 stats 中读取 siblings 并渲染
+- 数据源为飞书群成员 API，不依赖系统 PID 或文件系统信号
+- 在自我感知区块报告: "你在飞书群聊中的姐妹实例: 捏捏"
+- **效果**: 奶油知道捏捏在线，捏捏知道奶油在线，通过共同群聊自然感知
 
 ---
 
@@ -177,12 +178,12 @@ Level 4 (Self-Evolving) — 自我进化
 ### 非阻塞原则
 - 微反思: `asyncio.create_task` (不影响回复延迟)
 - 统计追踪: 内存字典递增 (O(1) 开销)
-- 同伴检测: 缓存在自我感知区块中 (5 分钟 TTL)
+- 同伴检测: 复用飞书群成员缓存，自我感知区块 5 分钟 TTL
 
 ### 优雅降级
 - stats_provider 为 None → 跳过统计区块
 - 反思 LLM 调用失败 → `logger.debug` 静默
-- PID 文件不存在或进程已死 → 跳过同伴
+- 飞书群聊中无其他 bot → 跳过同伴
 - 反思日志不存在 → 心跳正常运行（无漂移上下文）
 
 ---

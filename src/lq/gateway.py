@@ -140,6 +140,15 @@ class AssistantGateway:
             if router_ref:
                 tool_stats = router_ref._tool_stats
 
+            # 通过飞书群聊发现姐妹实例（而非系统 PID）
+            siblings: list[str] = []
+            seen: set[str] = set()
+            for cid in list(sender._bot_members.keys()):
+                for bid in sender.get_bot_members(cid):
+                    if bid not in seen:
+                        seen.add(bid)
+                        siblings.append(sender.get_member_name(bid))
+
             return {
                 "model": self.config.model,
                 "uptime": uptime,
@@ -149,6 +158,7 @@ class AssistantGateway:
                 "monthly_cost": monthly.get("total_cost", 0.0),
                 "active_sessions": active_sessions,
                 "tool_stats": tool_stats,
+                "siblings": siblings,
             }
 
         memory = MemoryManager(self.home, stats_provider=_stats_provider)
@@ -585,6 +595,7 @@ class AssistantGateway:
         sender: Any,
     ) -> None:
         """延迟后检查群聊活跃度并发送早安问候"""
+        from lq.prompts import MORNING_GREETING_SYSTEM, MORNING_GREETING_USER
         try:
             await asyncio.sleep(delay)
             # 检查今天是否已有消息（包括自己的）

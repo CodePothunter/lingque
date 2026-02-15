@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import glob as _glob_mod
 import logging
-import os
 import re
 import time
 from collections.abc import Callable
@@ -292,40 +290,17 @@ class MemoryManager:
             except Exception:
                 logger.warning("运行状态注入失败", exc_info=True)
 
-        # 跨实例感知
-        awareness_content += self._build_sibling_awareness()
+        # 跨实例感知（基于飞书群聊中观察到的其他 bot）
+        if self.stats_provider:
+            try:
+                siblings = self.stats_provider().get("siblings", [])
+                if siblings:
+                    names = "、".join(siblings)
+                    awareness_content += f"\n### 姐妹实例\n你在飞书群聊中的姐妹实例: {names}\n"
+            except Exception:
+                pass
 
         return wrap_tag(TAG_SELF_AWARENESS, awareness_content)
-
-    def _build_sibling_awareness(self) -> str:
-        """检测同机器上运行的姐妹实例"""
-        siblings: list[str] = []
-        my_pid_path = self.workspace / "gateway.pid"
-        my_pid = ""
-        if my_pid_path.exists():
-            my_pid = my_pid_path.read_text().strip()
-
-        for pid_file in _glob_mod.glob(str(Path.home() / ".lq-*" / "gateway.pid")):
-            pid_path = Path(pid_file)
-            if pid_path == my_pid_path:
-                continue
-            try:
-                pid = pid_path.read_text().strip()
-                if not pid:
-                    continue
-                # 检查进程是否存活
-                os.kill(int(pid), 0)
-                # 从目录名推断实例名
-                instance_dir = pid_path.parent.name  # e.g. ".lq-naiyou"
-                name = instance_dir.replace(".lq-", "", 1)
-                siblings.append(name)
-            except (ProcessLookupError, ValueError, PermissionError, OSError):
-                continue
-
-        if not siblings:
-            return ""
-        names = "、".join(siblings)
-        return f"\n### 姐妹实例\n你的姐妹实例目前在线: {names}\n"
 
     def _build_custom_tools_awareness(self) -> str:
         """构建自定义工具的自我认知段落。"""

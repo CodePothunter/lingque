@@ -2021,7 +2021,7 @@ class MessageRouter:
 
         # 如果最后一条消息就是自己发的，不需要再次介入
         if recent and recent[-1].get("sender_id") == self.bot_open_id:
-            logger.debug("最后一条消息是自己发的，跳过评估")
+            logger.info("最后一条消息是自己发的，跳过评估 %s", chat_id[-8:])
             return
 
         # 如果已经发言过，且之后没有任何新消息，不再介入
@@ -2032,7 +2032,7 @@ class MessageRouter:
             )
             new_msgs_after = recent[my_last_idx + 1:]
             if not new_msgs_after:
-                logger.debug("已发言且无新消息，跳过评估")
+                logger.info("已发言且无新消息，跳过评估 %s", chat_id[-8:])
                 return
 
         prompt = GROUP_EVAL_PROMPT.format(
@@ -2055,7 +2055,7 @@ class MessageRouter:
                 logger.info("决定介入群聊 %s: %s", chat_id, judgment.get("reason"))
                 await self._intervene(chat_id, recent, judgment, last_msg_id)
             else:
-                logger.debug("不介入群聊 %s: %s", chat_id, judgment.get("reason"))
+                logger.info("不介入群聊 %s: %s", chat_id[-8:], judgment.get("reason"))
                 # 不介入 → 清除 thinking reaction
                 if last_msg_id and reaction_id:
                     await self.sender.remove_reaction(last_msg_id, reaction_id)

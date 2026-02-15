@@ -77,13 +77,14 @@
 
 ### Test 5: 同伴实例感知 (Social Awareness)
 
-**测试内容:** 验证 `_build_sibling_awareness()` 检测运行中的同伴实例
+**测试内容:** 验证同伴实例感知通过飞书群聊发现（而非系统 PID）
 
 **证据:**
-- `memory.py:300-328` — 扫描 `~/.lq-*/gateway.pid`，通过 `os.kill(pid, 0)` 检测进程存活
-- 从 naiyou 测试: `"你的姐妹实例目前在线: nienie"`
-- 从 nienie 测试: `"你的姐妹实例目前在线: naiyou"`
-- 双向检测正确
+- `gateway.py:_stats_provider()` — 遍历 `sender._bot_members` 收集飞书群聊中的姐妹 bot
+- `memory.py:_build_self_awareness()` — 从 stats_provider 获取 siblings 列表渲染到自我感知区块
+- 数据源: 飞书群成员 API (`sender.cache_chat_members()`) 自动发现同群的其他 bot
+- 渲染格式: `"你在飞书群聊中的姐妹实例: 捏捏"` / `"你在飞书群聊中的姐妹实例: 奶油"`
+- 不依赖 PID 文件或系统信号，完全基于飞书社交关系
 
 **评分: 1.0**
 
