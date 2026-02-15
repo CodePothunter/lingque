@@ -16,8 +16,8 @@ from harness import TestSuite, clear_session
 def main() -> int:
     parser = argparse.ArgumentParser(description="灵雀 LLM 能力测试")
     parser.add_argument(
-        "--level", "-l", type=int, choices=[0, 1, 2, 3, 4], default=0,
-        help="运行指定级别的测试（0=全部, 1=简单, 2=中等, 3=困难, 4=专家）",
+        "--level", "-l", type=int, choices=[0, 1, 2, 3, 4, 5], default=0,
+        help="运行指定级别的测试（0=全部, 1=简单, 2=中等, 3=困难, 4=专家, 5=大型项目）",
     )
     parser.add_argument(
         "--infra", action="store_true",
@@ -75,6 +75,14 @@ def main() -> int:
         print("\033[1;35m" + "=" * 60 + "\033[0m")
         from test_level4_complex import run as run_lv4
         suites.append(run_lv4())
+
+    # Lv5 大型项目测试
+    if args.level in (0, 5):
+        print("\n\033[1;35m" + "=" * 60 + "\033[0m")
+        print("\033[1;35m  [Lv5] 大型项目测试 — 构建与部署\033[0m")
+        print("\033[1;35m" + "=" * 60 + "\033[0m")
+        from test_level5_project import run as run_lv5
+        suites.append(run_lv5())
 
     # ── 总结 ──
     elapsed = time.time() - total_start

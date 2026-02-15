@@ -50,7 +50,7 @@ class TestSuite:
         return len(self.results)
 
     def summary(self) -> str:
-        level_labels = {1: "简单", 2: "中等", 3: "困难", 4: "专家"}
+        level_labels = {1: "简单", 2: "中等", 3: "困难", 4: "专家", 5: "项目"}
         label = level_labels.get(self.level, "?")
         if self.failed == 0:
             return f"\033[1;32m[Lv{self.level} {label}] {self.name}: 全部通过 {self.passed}/{self.total}\033[0m"
