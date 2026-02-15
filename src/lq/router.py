@@ -806,6 +806,9 @@ class MessageRouter:
         else:
             messages = [{"role": "user", "content": combined_text}]
 
+        # 添加 thinking reaction
+        reaction_id = await self.sender.add_reaction(message_id, self._thinking_emoji) or ""
+
         # 尝试带工具回复
         try:
             reply_text = await self._reply_with_tool_loop(
@@ -814,6 +817,9 @@ class MessageRouter:
         except Exception:
             logger.exception("私聊回复失败 (chat=%s)", chat_id)
             reply_text = ""
+        finally:
+            if reaction_id:
+                await self.sender.remove_reaction(message_id, reaction_id)
 
         if self.session_mgr and reply_text:
             session = self.session_mgr.get_or_create(chat_id)
@@ -856,7 +862,28 @@ class MessageRouter:
 
         支持更长的工具调用链（最多 20 轮），适应 Claude Code 和 Bash
         等需要多步骤执行的复杂任务。工具调用记录会写入会话历史。
+        Per-chat 互斥锁确保同一群聊不会并发回复。
         """
+        lock = self._get_reply_lock(chat_id)
+        if lock.locked():
+            logger.info("跳过回复: 群 %s 已有回复进行中", chat_id[-8:])
+            return ""
+        async with lock:
+            return await self._reply_with_tool_loop_inner(
+                system, messages, chat_id, reply_to_message_id,
+                text_transform, allow_nudge,
+            )
+
+    async def _reply_with_tool_loop_inner(
+        self,
+        system: str,
+        messages: list[dict],
+        chat_id: str,
+        reply_to_message_id: str,
+        text_transform: Any = None,
+        allow_nudge: bool = True,
+    ) -> str:
+        """_reply_with_tool_loop 的实际实现（已持锁）。"""
         all_tools = self._build_all_tools()
         tool_names = [t["name"] for t in all_tools]
         logger.debug("工具循环开始: chat=%s 共 %d 个工具 %s", chat_id[-8:], len(all_tools), tool_names)
@@ -944,6 +971,7 @@ class MessageRouter:
                 except Exception:
                     logger.exception("PostProcessor failed")
 
+        self._reply_cooldown_ts[chat_id] = time.time()
         return resp.text
 
     # 清理 LLM 模仿的元数据格式
@@ -1716,10 +1744,17 @@ class MessageRouter:
         else:
             messages = [{"role": "user", "content": text}]
 
-        reply_text = await self._reply_with_tool_loop(
-            system, messages, message.chat_id, message.message_id,
-            text_transform=transform,
-        )
+        # 添加 thinking reaction
+        reaction_id = await self.sender.add_reaction(message.message_id, self._thinking_emoji) or ""
+
+        try:
+            reply_text = await self._reply_with_tool_loop(
+                system, messages, message.chat_id, message.message_id,
+                text_transform=transform,
+            )
+        finally:
+            if reaction_id:
+                await self.sender.remove_reaction(message.message_id, reaction_id)
 
         if reply_text and self.session_mgr:
             session = self.session_mgr.get_or_create(message.chat_id)
@@ -1796,8 +1831,12 @@ class MessageRouter:
                 await asyncio.sleep(random.uniform(3, 5))
                 recent = buf.get_recent(10)
 
-            # 添加自己的 "thinking" reaction 到最新消息
-            last_msg_id = recent[-1].get("message_id", "") if recent else ""
+            # 添加 thinking reaction 到最近一条非自己的消息
+            last_msg_id = ""
+            for m in reversed(recent):
+                if m.get("sender_id") != self.bot_open_id and m.get("message_id"):
+                    last_msg_id = m["message_id"]
+                    break
             if last_msg_id:
                 reaction_id = await self.sender.add_reaction(last_msg_id, self._thinking_emoji) or ""
                 if reaction_id:
