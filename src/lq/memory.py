@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from lq.config import LQConfig
     from lq.feishu.sender import FeishuSender
 
 from lq.prompts import (
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 # system prompt 的各部分 token 预算
 SOUL_BUDGET = 3000        # 人格定义
 MEMORY_BUDGET = 4000      # 长期记忆
-CHAT_MEMORY_BUDGET = 2000 # per-chat 长期记忆（防止单聊记忆无限膨胀挤占上下文）
+CHAT_MEMORY_BUDGET_DEFAULT = 2000  # per-chat 长期记忆默认预算（可通过 config 覆盖）
 DAILY_LOG_BUDGET = 2000   # 日志
 AWARENESS_BUDGET = 2000   # 自我认知
 TOTAL_SYSTEM_BUDGET = 15000  # 总预算
@@ -48,9 +49,11 @@ class MemoryManager:
         self,
         workspace: Path,
         stats_provider: Callable[[], dict] | None = None,
+        config: LQConfig | None = None,
     ) -> None:
         self.workspace = workspace
         self.stats_provider = stats_provider
+        self.config = config
         self.memory_dir = workspace / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.chat_memories_dir = workspace / "chat_memories"
@@ -132,14 +135,17 @@ class MemoryManager:
             used_tokens += mem_tokens
 
         # 3.5 注入 per-chat 长期记忆（区别于全局 MEMORY.md）
-        # 使用 CHAT_MEMORY_BUDGET 控制，防止单聊记忆无限膨胀挤占上下文
+        # 使用 chat_memory_budget 控制，防止单聊记忆无限膨胀挤占上下文
+        chat_memory_budget = (
+            self.config.chat_memory_budget if self.config else CHAT_MEMORY_BUDGET_DEFAULT
+        )
         if chat_id:
             chat_mem = self.read_chat_memory(chat_id)
             if chat_mem:
                 cm_tokens = estimate_tokens(chat_mem)
-                if cm_tokens > CHAT_MEMORY_BUDGET:
-                    chat_mem = self._truncate_memory(chat_mem, CHAT_MEMORY_BUDGET)
-                    cm_tokens = CHAT_MEMORY_BUDGET
+                if cm_tokens > chat_memory_budget:
+                    chat_mem = self._truncate_memory(chat_mem, chat_memory_budget)
+                    cm_tokens = chat_memory_budget
                 parts.append(wrap_tag(TAG_CHAT_MEMORY, chat_mem))
                 used_tokens += cm_tokens
 

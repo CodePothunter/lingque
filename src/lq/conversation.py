@@ -137,7 +137,7 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     from lq.prompts import TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE, wrap_tag
 
     sender = LocalSender(config.name)
-    memory = MemoryManager(home)
+    memory = MemoryManager(home, config=config)
     executor = DirectAPIExecutor(config.api, config.model)
     stats = StatsTracker(home)
     executor.stats = stats

@@ -179,7 +179,7 @@ class AssistantGateway:
                 "owner_chat_id": owner_chat_id,
             }
 
-        memory = MemoryManager(self.home, stats_provider=_stats_provider)
+        memory = MemoryManager(self.home, stats_provider=_stats_provider, config=self.config)
 
         # 初始化自定义工具注册表
         tool_registry = ToolRegistry(self.home)
