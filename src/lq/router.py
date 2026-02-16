@@ -560,6 +560,13 @@ class MessageRouter:
         """从持久化数据恢复已知群聊 ID"""
         self._known_group_ids = set(ids)
 
+    def remove_known_group(self, chat_id: str) -> None:
+        """移除无效群聊（API 持续报错时调用）"""
+        self._known_group_ids.discard(chat_id)
+        self._active_groups.pop(chat_id, None)
+        self._polled_msg_ids.pop(chat_id, None)
+        self._thinking_signals.pop(chat_id, None)
+
     def _reply_is_busy(self, chat_id: str) -> bool:
         """判断该群是否正在回复或在冷却期内"""
         lock = self._reply_locks.get(chat_id)

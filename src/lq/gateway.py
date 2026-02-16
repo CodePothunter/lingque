@@ -14,6 +14,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
+
 from lq.config import LQConfig
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
@@ -586,6 +588,7 @@ class AssistantGateway:
         每 3 秒轮询一个活跃群聊，将新发现的 bot 消息注入 router 的 group_buffers。
         """
         logger.info("群聊主动轮询启动")
+        poll_fail_count: dict[str, int] = {}  # chat_id → 连续失败次数
         while not self.shutdown_event.is_set():
             try:
                 await asyncio.sleep(3.0)
@@ -595,11 +598,30 @@ class AssistantGateway:
                 for chat_id in active:
                     if self.shutdown_event.is_set():
                         break
+                    # 连续失败 3 次的群暂停轮询，从已知群中移除
+                    if poll_fail_count.get(chat_id, 0) >= 3:
+                        continue
                     try:
                         api_msgs = await sender.fetch_chat_messages(chat_id, 10)
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code in (400, 403):
+                            poll_fail_count[chat_id] = poll_fail_count.get(chat_id, 0) + 1
+                            if poll_fail_count[chat_id] >= 3:
+                                logger.warning(
+                                    "群 %s 连续 %d 次 %d 错误，停止轮询并移出已知群",
+                                    chat_id[-8:], poll_fail_count[chat_id],
+                                    exc.response.status_code,
+                                )
+                                router.remove_known_group(chat_id)
+                                self._save_known_groups(router)
+                        else:
+                            logger.warning("主动轮询群 %s 失败", chat_id[-8:], exc_info=True)
+                        continue
                     except Exception:
                         logger.warning("主动轮询群 %s 失败", chat_id[-8:], exc_info=True)
                         continue
+                    # 轮询成功，重置失败计数
+                    poll_fail_count.pop(chat_id, None)
                     if not api_msgs:
                         continue
                     bot_self_ids = {router.bot_open_id, self.config.feishu.app_id}
