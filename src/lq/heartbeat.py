@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -25,9 +26,10 @@ class HeartbeatRunner:
         # 回调（Phase 3+ 注入）
         self.on_heartbeat: Any = None
 
-        # 频率控制
+        # 频率控制（从持久化文件恢复）
         self._last_daily: str | None = None
         self._last_weekly: str | None = None
+        self._load_state()
 
     async def run_forever(self, shutdown_event: asyncio.Event) -> None:
         """定时循环，检查活跃时段"""
@@ -73,6 +75,37 @@ class HeartbeatRunner:
             self._last_daily = today
         if is_weekly:
             self._last_weekly = today
+        if is_daily or is_weekly:
+            self._save_state()
+
+    def _state_path(self) -> Path | None:
+        if self.workspace:
+            return self.workspace / "heartbeat-state.json"
+        return None
+
+    def _load_state(self) -> None:
+        p = self._state_path()
+        if not p or not p.exists():
+            return
+        try:
+            data = json.loads(p.read_text())
+            self._last_daily = data.get("last_daily")
+            self._last_weekly = data.get("last_weekly")
+            logger.info("心跳状态已恢复: daily=%s weekly=%s", self._last_daily, self._last_weekly)
+        except Exception:
+            logger.warning("心跳状态文件损坏，忽略")
+
+    def _save_state(self) -> None:
+        p = self._state_path()
+        if not p:
+            return
+        try:
+            p.write_text(json.dumps({
+                "last_daily": self._last_daily,
+                "last_weekly": self._last_weekly,
+            }))
+        except Exception:
+            logger.warning("心跳状态保存失败")
 
     def _is_active_hour(self) -> bool:
         hour = datetime.now().hour
