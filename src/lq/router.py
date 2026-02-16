@@ -681,6 +681,9 @@ class MessageRouter:
 
         known.add(msg_id)
 
+        # 发现新 bot 消息 → 刷新群活跃时间戳，避免 TTL 过期停止轮询
+        self._active_groups[chat_id] = time.time()
+
         # 注入 buffer
         if chat_id not in self.group_buffers:
             self.group_buffers[chat_id] = MessageBuffer()
