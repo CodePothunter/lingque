@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # 成功通知模板
 _NOTIFY_TEMPLATES: dict[str, str] = {
     "write_memory": "[已记入记忆 — {section}]",
-    "schedule_message": "[已设置提醒: {send_at_short} — {text}]",
+    "schedule_message": "[已设置定时任务: {send_at_short} — {text}]",
     "calendar_create_event": "[已创建日程: {summary}]",
 }
 

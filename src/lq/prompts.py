@@ -246,7 +246,7 @@ SELF_AWARENESS_TEMPLATE = (
     "- 使用 run_python 工具执行 Python 代码片段（计算、数据处理、文本操作等）\n"
     "- 使用 read_file / write_file 工具读写文件系统中的任意文件\n"
     "- 使用 send_message 工具主动给任何用户或群聊发消息\n"
-    "- 使用 schedule_message 工具定时发送消息（如「5分钟后提醒我」）\n"
+    "- 使用 schedule_message 工具定时执行任务（如「5分钟后提醒我」「每小时检查进展」）\n"
     "- 使用 calendar_create_event / calendar_list_events 工具创建和查询日历事件\n"
     "- 使用 read_self_file / write_self_file 工具读写配置文件（SOUL.md、MEMORY.md、HEARTBEAT.md）\n"
     "- 使用 write_memory 工具将跨聊天通用的重要信息写入全局长期记忆\n"
@@ -394,8 +394,25 @@ TOOL_DESC_TOGGLE_CUSTOM_TOOL = "启用或禁用一个自定义工具。"
 TOOL_DESC_SEND_MESSAGE = "主动发送一条纯文本消息到指定会话（chat_id）。用于主动联系用户、发送通知等。"
 
 TOOL_DESC_SCHEDULE_MESSAGE = (
-    "定时发送一条消息。在指定的时间（ISO 8601 格式，含时区）到达后，自动发送消息到目标会话。"
-    "用于实现「5分钟后提醒我」等场景。"
+    "定时任务。到达指定时间后，你将被唤醒来执行 text 中描述的任务。"
+    "你届时拥有全部工具（send_message、web_search、read_file 等）来完成任务。\n"
+    "示例：\n"
+    "- 简单提醒：text='提醒主人该开会了'\n"
+    "- 检查任务：text='检查捏捏最近的 commit，有新进展就在群里夸她'\n"
+    "- 定时问候：text='给主人发一条晚安消息'\n"
+    "注意：text 是你未来要执行的指令，不是要原封不动发送的文本。"
+)
+
+SCHEDULED_ACTION_PROMPT = (
+    "\n\n--- 定时任务触发 ---\n"
+    "你之前设置的一个定时任务现在触发了。请执行以下任务：\n\n"
+    "任务指令：{instruction}\n"
+    "目标会话：{chat_id}\n\n"
+    "规则：\n"
+    "- 使用工具完成任务（send_message、web_search、read_file 等均可用）\n"
+    "- 如果需要发消息给用户，用 send_message 发到目标会话\n"
+    "- 不要把任务指令原封不动发给用户——真正执行任务，发送有意义的结果\n"
+    "- 如果是简单提醒，生成一条自然的提醒消息即可\n"
 )
 
 TOOL_DESC_RUN_CLAUDE_CODE = (
@@ -468,6 +485,7 @@ TOOL_FIELD_TOGGLE_NAME = "工具名称"
 TOOL_FIELD_TOGGLE_ENABLED = "true=启用, false=禁用"
 TOOL_FIELD_CHAT_ID = "目标会话 ID（用户私聊或群聊的 chat_id）"
 TOOL_FIELD_TEXT = "要发送的文本内容"
+TOOL_FIELD_SCHEDULE_TEXT = "定时任务的指令——描述到时间后你要做什么（不会原文发送，而是由你执行）"
 TOOL_FIELD_SEND_AT = "计划发送时间，ISO 8601 格式且包含时区，如 2026-02-13T15:05:00+08:00"
 TOOL_FIELD_CC_PROMPT = "要执行的任务描述，尽量详细具体。Claude Code 会自主完成这个任务。"
 TOOL_FIELD_WORKING_DIR = "工作目录路径（可选，默认为工作区目录）"
@@ -816,10 +834,10 @@ EXTRACTION_PROMPTS = {
         "只输出 JSON，不要其他文字。"
     ),
     "schedule_reminder": (
-        "从用户消息中提取定时提醒的参数。\n"
-        '输出 JSON：{{"text": "提醒内容", "time_expr": "原始时间表达式"}}\n'
+        "从用户消息中提取定时任务的参数。\n"
+        '输出 JSON：{{"text": "任务指令（描述到时间后要做什么）", "time_expr": "原始时间表达式"}}\n'
         "time_expr 保留用户的原始表达（如 '5分钟后'、'明天下午3点'）。\n"
-        "text 是要提醒的内容（去掉时间部分）。\n"
+        "text 是任务内容（去掉时间部分），可以是提醒内容也可以是要执行的动作。\n"
         "只输出 JSON，不要其他文字。"
     ),
     "calendar_create": (

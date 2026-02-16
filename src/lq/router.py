@@ -61,7 +61,8 @@ from lq.prompts import (
     TOOL_FIELD_TOOL_NAME, TOOL_FIELD_TOOL_CODE,
     TOOL_FIELD_VALIDATE_CODE, TOOL_FIELD_DELETE_NAME,
     TOOL_FIELD_TOGGLE_NAME, TOOL_FIELD_TOGGLE_ENABLED,
-    TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_SEND_AT,
+    TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_SCHEDULE_TEXT, TOOL_FIELD_SEND_AT,
+    SCHEDULED_ACTION_PROMPT,
     TOOL_FIELD_CC_PROMPT, TOOL_FIELD_WORKING_DIR, TOOL_FIELD_CC_TIMEOUT,
     TOOL_FIELD_BASH_COMMAND, TOOL_FIELD_BASH_TIMEOUT,
     TOOL_FIELD_SEARCH_QUERY, TOOL_FIELD_SEARCH_MAX_RESULTS,
@@ -292,7 +293,7 @@ TOOLS = [
                 },
                 "text": {
                     "type": "string",
-                    "description": TOOL_FIELD_TEXT,
+                    "description": TOOL_FIELD_SCHEDULE_TEXT,
                 },
                 "send_at": {
                     "type": "string",
@@ -1474,18 +1475,30 @@ class MessageRouter:
                 target_chat_id = input_data.get("chat_id", "")
                 if not target_chat_id.startswith(("oc_", "ou_", "on_")) or len(target_chat_id) < 20:
                     target_chat_id = chat_id  # LLM 给了无效或截断的 ID，回退到当前会话
-                target_text = input_data["text"]
-                sender_ref = self.sender
+                instruction = input_data["text"]
+                router_ref = self
 
-                async def _delayed_send():
+                async def _delayed_action():
                     await asyncio.sleep(delay)
-                    msg_id = await sender_ref.send_text(target_chat_id, target_text)
-                    if msg_id:
-                        logger.info("定时消息已发送: chat=%s", target_chat_id)
-                    else:
-                        logger.error("定时消息发送失败: chat=%s", target_chat_id)
+                    try:
+                        system = router_ref.memory.build_context(
+                            chat_id=target_chat_id, sender=router_ref.sender,
+                        )
+                        system += SCHEDULED_ACTION_PROMPT.format(
+                            instruction=instruction, chat_id=target_chat_id,
+                        )
+                        messages = [{"role": "user", "content": instruction}]
+                        result = await router_ref._reply_with_tool_loop(
+                            system, messages, target_chat_id, None,
+                        )
+                        logger.info(
+                            "定时任务已执行: chat=%s result=%s",
+                            target_chat_id, (result or "")[:80],
+                        )
+                    except Exception:
+                        logger.exception("定时任务执行失败: chat=%s", target_chat_id)
 
-                asyncio.ensure_future(_delayed_send())
+                asyncio.ensure_future(_delayed_action())
                 return {"success": True, "message": RESULT_SCHEDULE_OK.format(send_at=send_at_str)}
 
             elif name == "run_claude_code":
