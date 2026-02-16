@@ -520,6 +520,8 @@ class FeishuSender:
             # 尝试从消息上下文推断未知 bot 的身份
             self.infer_bot_identities(results)
             return results
+        except httpx.HTTPStatusError:
+            raise  # 让 400/403 等 HTTP 错误向上传播，由调用方处理
         except Exception as e:
             logger.warning("拉取群消息异常: %s %s", chat_id, e)
             return []
