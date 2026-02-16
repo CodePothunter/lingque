@@ -490,6 +490,8 @@ class MessageRouter:
         self._bot_poll_count: dict[str, int] = {}
         self._bot_poll_timers: dict[str, asyncio.TimerHandle] = {}
         self._bot_seen_ids: dict[str, set[str]] = {}  # chat_id → 已处理的 message_id
+        # 延迟评估定时器：冷却中收到 @提及时，安排冷却结束后重试
+        self._deferred_eval_timers: dict[str, asyncio.TimerHandle] = {}
         # 回复去重：chat_id → 上次发送的文本，防止 bot 轮询循环导致重复回复
         self._last_reply_per_chat: dict[str, str] = {}
         # WS 消息去重：飞书偶尔用不同 event_id 重复推送同一 message_id
@@ -570,6 +572,64 @@ class MessageRouter:
             self._reply_locks[chat_id] = asyncio.Lock()
         return self._reply_locks[chat_id]
 
+    def _remaining_cooldown(self, chat_id: str) -> float:
+        """估算冷却剩余秒数（锁持有中按 2 倍冷却估算）"""
+        lock = self._reply_locks.get(chat_id)
+        if lock and lock.locked():
+            return self.REPLY_COOLDOWN * 2
+        elapsed = time.time() - self._reply_cooldown_ts.get(chat_id, 0)
+        remaining = self.REPLY_COOLDOWN - elapsed
+        return max(remaining, 0) + 0.5
+
+    def _schedule_deferred_eval(
+        self, chat_id: str, msg_id: str = "", at_mention: bool = False,
+    ) -> None:
+        """冷却中收到 bot 消息时，安排冷却结束后重新触发评估/介入。"""
+        old = self._deferred_eval_timers.pop(chat_id, None)
+        if old:
+            old.cancel()
+        delay = self._remaining_cooldown(chat_id)
+        try:
+            loop = asyncio.get_running_loop()
+            handle = loop.call_later(
+                delay,
+                lambda: asyncio.ensure_future(
+                    self._deferred_eval_callback(chat_id, msg_id, at_mention)
+                ),
+            )
+            self._deferred_eval_timers[chat_id] = handle
+            logger.info(
+                "安排延迟评估: 群 %s, %.1fs 后%s",
+                chat_id[-8:], delay, "(@提及)" if at_mention else "",
+            )
+        except Exception:
+            logger.exception("安排延迟评估失败")
+
+    async def _deferred_eval_callback(
+        self, chat_id: str, msg_id: str, at_mention: bool,
+    ) -> None:
+        """延迟评估回调：冷却结束后重新触发。"""
+        self._deferred_eval_timers.pop(chat_id, None)
+
+        if self._reply_is_busy(chat_id):
+            logger.info("延迟评估仍受阻: 群 %s，放弃", chat_id[-8:])
+            return
+
+        if at_mention and msg_id:
+            buf = self.group_buffers.get(chat_id)
+            if buf:
+                recent = buf.get_recent(20)
+                judgment = {
+                    "intervene": True,
+                    "reason": BOT_POLL_AT_REASON.format(bot_name=self.bot_name),
+                    "reply_to_message_id": msg_id,
+                }
+                logger.info("延迟触发 @提及介入: 群 %s", chat_id[-8:])
+                await self._intervene(chat_id, recent, judgment)
+        else:
+            logger.info("延迟触发评估: 群 %s", chat_id[-8:])
+            await self._evaluate_buffer(chat_id)
+
     def get_active_groups(self, ttl: float = 600.0) -> list[str]:
         """返回近 10 分钟内有消息的群聊 ID 列表"""
         now = time.time()
@@ -629,9 +689,10 @@ class MessageRouter:
             # 标记到 _bot_seen_ids 防止 _poll_bot_messages 重复触发
             seen = self._bot_seen_ids.setdefault(chat_id, set())
             seen.add(msg_id)
-            # ReplyGate: 消息已入 buffer，锁忙时跳过触发
+            # ReplyGate: 消息已入 buffer，锁忙时延迟到冷却后重试
             if self._reply_is_busy(chat_id):
-                logger.info("跳过轮询触发: 群 %s 正在回复或冷却中", chat_id[-8:])
+                logger.info("轮询 @提及受阻: 群 %s 冷却中，安排延迟重试", chat_id[-8:])
+                self._schedule_deferred_eval(chat_id, msg_id, at_mention=True)
                 return
             logger.info(
                 "轮询注入检测到 @%s，触发介入: %s",
@@ -654,9 +715,10 @@ class MessageRouter:
                 timer.cancel()
         elif is_new:
             # 新 bot 消息但无 @at — 触发评估让 LLM 决定是否回应
-            # ReplyGate: 消息已入 buffer，锁忙时跳过触发
+            # ReplyGate: 消息已入 buffer，锁忙时延迟到冷却后重试
             if self._reply_is_busy(chat_id):
-                logger.info("跳过轮询触发: 群 %s 正在回复或冷却中", chat_id[-8:])
+                logger.info("轮询触发受阻: 群 %s 冷却中，安排延迟评估", chat_id[-8:])
+                self._schedule_deferred_eval(chat_id, msg_id, at_mention=False)
                 return
             count = self._bot_poll_count.get(chat_id, 0)
             if count < 5:
@@ -2487,31 +2549,45 @@ class MessageRouter:
                         at_msg_id = am["message_id"]
                         break
             if at_me:
-                logger.info(
-                    "补充 %d 条 bot 消息到群 %s，检测到文本 @%s，直接介入",
-                    new_count, chat_id[-8:], self.bot_name,
-                )
-                recent = buf.get_recent(20)
-                judgment = {
-                    "intervene": True,
-                    "reason": BOT_POLL_AT_REASON.format(bot_name=self.bot_name),
-                    "reply_to_message_id": at_msg_id,
-                }
-                await self._intervene(chat_id, recent, judgment)
-                # 取消 _intervene 内部触发的 bot_poll，避免 bot 互@循环
-                timer = self._bot_poll_timers.pop(chat_id, None)
-                if timer:
-                    timer.cancel()
+                if self._reply_is_busy(chat_id):
+                    logger.info(
+                        "补充 %d 条 bot 消息到群 %s，检测到 @%s 但冷却中，安排延迟",
+                        new_count, chat_id[-8:], self.bot_name,
+                    )
+                    self._schedule_deferred_eval(chat_id, at_msg_id, at_mention=True)
+                else:
+                    logger.info(
+                        "补充 %d 条 bot 消息到群 %s，检测到文本 @%s，直接介入",
+                        new_count, chat_id[-8:], self.bot_name,
+                    )
+                    recent = buf.get_recent(20)
+                    judgment = {
+                        "intervene": True,
+                        "reason": BOT_POLL_AT_REASON.format(bot_name=self.bot_name),
+                        "reply_to_message_id": at_msg_id,
+                    }
+                    await self._intervene(chat_id, recent, judgment)
+                    # 取消 _intervene 内部触发的 bot_poll，避免 bot 互@循环
+                    timer = self._bot_poll_timers.pop(chat_id, None)
+                    if timer:
+                        timer.cancel()
             else:
-                logger.info(
-                    "补充 %d 条 bot 消息到群 %s，触发评估 (%d/%d)",
-                    new_count, chat_id[-8:], count + 1, 5,
-                )
-                await self._evaluate_buffer(chat_id)
-                # 取消 _intervene 内部触发的 bot_poll，避免 evaluate→intervene→poll 循环
-                timer = self._bot_poll_timers.pop(chat_id, None)
-                if timer:
-                    timer.cancel()
+                if self._reply_is_busy(chat_id):
+                    logger.info(
+                        "补充 %d 条 bot 消息到群 %s，冷却中安排延迟评估",
+                        new_count, chat_id[-8:],
+                    )
+                    self._schedule_deferred_eval(chat_id, at_mention=False)
+                else:
+                    logger.info(
+                        "补充 %d 条 bot 消息到群 %s，触发评估 (%d/%d)",
+                        new_count, chat_id[-8:], count + 1, 5,
+                    )
+                    await self._evaluate_buffer(chat_id)
+                    # 取消 _intervene 内部触发的 bot_poll，避免 evaluate→intervene→poll 循环
+                    timer = self._bot_poll_timers.pop(chat_id, None)
+                    if timer:
+                        timer.cancel()
 
     async def _handle_bot_added(self, data: dict) -> None:
         """处理 bot 被加入群聊事件 — 发送自我介绍"""
