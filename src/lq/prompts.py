@@ -508,8 +508,8 @@ TOOL_FIELD_WRITE_CONTENT = "要写入的文件内容"
 # UI / User-Facing Messages
 # =====================================================================
 
-NON_TEXT_REPLY_PRIVATE = "目前只能处理文字消息，图片、文件什么的还看不懂。有事直接打字跟我说就好。"
-NON_TEXT_REPLY_GROUP = "目前只能处理文字消息，图片什么的还看不懂。有事打字说就好。"
+NON_TEXT_REPLY_PRIVATE = "目前只能处理文字和图片消息，文件、语音什么的还处理不了。有事直接打字或发图给我就好。"
+NON_TEXT_REPLY_GROUP = "目前只能处理文字和图片消息，文件、语音什么的还处理不了。有事打字或发图说就好。"
 EMPTY_AT_FALLBACK = "（@了我但没说具体内容）"
 
 

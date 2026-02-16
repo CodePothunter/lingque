@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -525,6 +526,40 @@ class FeishuSender:
         except Exception as e:
             logger.warning("拉取群消息异常: %s %s", chat_id, e)
             return []
+
+    async def download_image(self, message_id: str, file_key: str) -> tuple[str, str] | None:
+        """下载飞书消息中的图片，返回 (base64_data, media_type) 或 None。
+
+        通过 GET /im/v1/messages/{message_id}/resources/{file_key}?type=image 下载。
+        """
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}",
+                    params={"type": "image"},
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/png")
+            # 归一化常见 MIME 类型
+            if "jpeg" in content_type or "jpg" in content_type:
+                media_type = "image/jpeg"
+            elif "png" in content_type:
+                media_type = "image/png"
+            elif "gif" in content_type:
+                media_type = "image/gif"
+            elif "webp" in content_type:
+                media_type = "image/webp"
+            else:
+                media_type = "image/png"
+            b64 = base64.b64encode(resp.content).decode("ascii")
+            logger.info("下载图片成功: msg=%s key=%s size=%d bytes", message_id[-8:], file_key[:8], len(resp.content))
+            return b64, media_type
+        except Exception:
+            logger.warning("下载图片失败: msg=%s key=%s", message_id[-8:], file_key[:8], exc_info=True)
+            return None
 
     async def _get_tenant_token(self) -> str:
         """获取 tenant_access_token，过期前自动刷新"""
