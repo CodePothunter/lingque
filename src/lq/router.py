@@ -1971,6 +1971,9 @@ class MessageRouter:
         message = event.message
         chat_id = message.chat_id
 
+        # 标记群聊为活跃，使 gateway 主动轮询能发现其他 bot 的消息
+        self.register_active_group(chat_id)
+
         # 第一层：检查是否被 @at
         mentions = getattr(message, "mentions", None)
         is_at_me = False
