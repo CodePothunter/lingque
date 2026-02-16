@@ -527,13 +527,25 @@ class FeishuSender:
             logger.warning("拉取群消息异常: %s %s", chat_id, e)
             return []
 
-    async def download_image(self, message_id: str, file_key: str) -> tuple[str, str] | None:
+    # 图片大小限制：超过此值会自动压缩
+    IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+
+    async def download_image(
+        self, message_id: str, file_key: str,
+    ) -> tuple[str, str] | None:
         """下载飞书消息中的图片，返回 (base64_data, media_type) 或 None。
 
         通过 GET /im/v1/messages/{message_id}/resources/{file_key}?type=image 下载。
+        超过 IMAGE_MAX_BYTES 的图片会自动压缩为 JPEG。
+        下载失败时返回 None 并记录具体错误原因。
         """
         try:
             token = await self._get_tenant_token()
+        except Exception:
+            logger.error("下载图片失败（获取 token 异常）: msg=%s key=%s", message_id[-8:], file_key[:8], exc_info=True)
+            return None
+
+        try:
             async with httpx.AsyncClient() as http:
                 resp = await http.get(
                     f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}",
@@ -542,23 +554,107 @@ class FeishuSender:
                     timeout=30.0,
                 )
                 resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "image/png")
-            # 归一化常见 MIME 类型
-            if "jpeg" in content_type or "jpg" in content_type:
-                media_type = "image/jpeg"
-            elif "png" in content_type:
-                media_type = "image/png"
-            elif "gif" in content_type:
-                media_type = "image/gif"
-            elif "webp" in content_type:
-                media_type = "image/webp"
-            else:
-                media_type = "image/png"
-            b64 = base64.b64encode(resp.content).decode("ascii")
-            logger.info("下载图片成功: msg=%s key=%s size=%d bytes", message_id[-8:], file_key[:8], len(resp.content))
-            return b64, media_type
+        except httpx.TimeoutException:
+            logger.warning("下载图片超时: msg=%s key=%s", message_id[-8:], file_key[:8])
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.warning(
+                "下载图片 HTTP 错误: msg=%s key=%s status=%d",
+                message_id[-8:], file_key[:8], e.response.status_code,
+            )
+            return None
+        except httpx.RequestError as e:
+            logger.warning("下载图片网络错误: msg=%s key=%s error=%s", message_id[-8:], file_key[:8], e)
+            return None
+
+        raw_bytes = resp.content
+        content_type = resp.headers.get("content-type", "image/png")
+
+        # 归一化常见 MIME 类型
+        if "jpeg" in content_type or "jpg" in content_type:
+            media_type = "image/jpeg"
+        elif "png" in content_type:
+            media_type = "image/png"
+        elif "gif" in content_type:
+            media_type = "image/gif"
+        elif "webp" in content_type:
+            media_type = "image/webp"
+        else:
+            media_type = "image/png"
+
+        raw_size = len(raw_bytes)
+        logger.info(
+            "下载图片成功: msg=%s key=%s size=%d bytes type=%s",
+            message_id[-8:], file_key[:8], raw_size, media_type,
+        )
+
+        # 超过大小限制时压缩为 JPEG
+        if raw_size > self.IMAGE_MAX_BYTES:
+            logger.info("图片超过 %dMB 限制，尝试压缩: %d bytes", self.IMAGE_MAX_BYTES // (1024 * 1024), raw_size)
+            compressed = self._compress_image(raw_bytes, media_type)
+            if compressed is None:
+                logger.warning("图片压缩失败，跳过: msg=%s key=%s", message_id[-8:], file_key[:8])
+                return None
+            raw_bytes, media_type = compressed
+            logger.info("图片压缩完成: %d -> %d bytes", raw_size, len(raw_bytes))
+
+        b64 = base64.b64encode(raw_bytes).decode("ascii")
+        return b64, media_type
+
+    @staticmethod
+    def _compress_image(
+        raw_bytes: bytes, media_type: str, max_bytes: int = 10 * 1024 * 1024,
+    ) -> tuple[bytes, str] | None:
+        """将图片压缩到 max_bytes 以内，返回 (compressed_bytes, media_type) 或 None。
+
+        策略：先按比例缩小尺寸，再用 JPEG quality 递降。
+        GIF 动图不压缩（丢失动画），直接返回 None。
+        """
+        try:
+            from io import BytesIO
+            from PIL import Image
+
+            if media_type == "image/gif":
+                # GIF 可能是动图，压缩会丢失帧，放弃
+                logger.info("GIF 图片过大，跳过压缩（避免丢失动画帧）")
+                return None
+
+            img = Image.open(BytesIO(raw_bytes))
+            # RGBA → RGB（JPEG 不支持透明通道）
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGB")
+
+            # 先按面积缩小：如果图片面积大于 4096x4096，等比缩放
+            max_dim = 4096
+            if img.width > max_dim or img.height > max_dim:
+                ratio = min(max_dim / img.width, max_dim / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+
+            # 逐步降低 JPEG 质量直到满足大小限制
+            for quality in (85, 70, 50, 30):
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=quality, optimize=True)
+                if buf.tell() <= max_bytes:
+                    return buf.getvalue(), "image/jpeg"
+
+            # 极端情况：进一步缩小尺寸
+            for scale in (0.5, 0.25):
+                small = img.resize(
+                    (int(img.width * scale), int(img.height * scale)),
+                    Image.LANCZOS,
+                )
+                buf = BytesIO()
+                small.save(buf, format="JPEG", quality=50, optimize=True)
+                if buf.tell() <= max_bytes:
+                    return buf.getvalue(), "image/jpeg"
+
+            return None
+        except ImportError:
+            logger.warning("Pillow 未安装，无法压缩图片")
+            return None
         except Exception:
-            logger.warning("下载图片失败: msg=%s key=%s", message_id[-8:], file_key[:8], exc_info=True)
+            logger.warning("图片压缩异常", exc_info=True)
             return None
 
     async def _get_tenant_token(self) -> str:

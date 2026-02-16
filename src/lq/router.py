@@ -2908,12 +2908,15 @@ class MessageRouter:
         返回格式兼容 Anthropic Messages API：
         - 纯文本: "hello"
         - 多模态: [{"type": "image", "source": {...}}, {"type": "text", "text": "hello"}]
+
+        图片下载失败时会在文本中附带提示，让 LLM 知道有图片未能加载。
         """
         image_keys = self._extract_image_keys(message)
         if not image_keys:
             return text
 
         blocks: list[dict] = []
+        failed_count = 0
         message_id = getattr(message, "message_id", "")
 
         for key in image_keys:
@@ -2928,10 +2931,20 @@ class MessageRouter:
                         "data": b64_data,
                     },
                 })
+            else:
+                failed_count += 1
 
-        # 附加文本（可能为空，比如纯图片消息）
+        # 构建文本部分，附带下载失败提示
+        text_parts = []
         if text:
-            blocks.append({"type": "text", "text": text})
+            text_parts.append(text)
+        if failed_count:
+            text_parts.append(f"（有 {failed_count} 张图片加载失败，无法查看）")
+
+        text_combined = "\n".join(text_parts) if text_parts else ""
+
+        if text_combined:
+            blocks.append({"type": "text", "text": text_combined})
         elif not blocks:
             # 无图片也无文本
             return ""
@@ -2947,8 +2960,10 @@ class MessageRouter:
         """从多条图片消息中下载图片，与文本合并为 content blocks。
 
         用于防抖合并场景：多条消息（可能混合文本和图片）合并后统一处理。
+        图片下载失败时会在文本中附带提示。
         """
         blocks: list[dict] = []
+        failed_count = 0
         for msg in image_messages:
             keys = self._extract_image_keys(msg)
             msg_id = getattr(msg, "message_id", "")
@@ -2964,9 +2979,19 @@ class MessageRouter:
                             "data": b64_data,
                         },
                     })
+                else:
+                    failed_count += 1
 
+        text_parts = []
         if text:
-            blocks.append({"type": "text", "text": text})
+            text_parts.append(text)
+        if failed_count:
+            text_parts.append(f"（有 {failed_count} 张图片加载失败，无法查看）")
+
+        text_combined = "\n".join(text_parts) if text_parts else ""
+
+        if text_combined:
+            blocks.append({"type": "text", "text": text_combined})
         elif not blocks:
             return ""
         elif not any(b.get("type") == "text" for b in blocks):
