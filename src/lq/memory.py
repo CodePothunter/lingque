@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # system prompt 的各部分 token 预算
 SOUL_BUDGET = 3000        # 人格定义
 MEMORY_BUDGET = 4000      # 长期记忆
+CHAT_MEMORY_BUDGET = 2000 # per-chat 长期记忆（防止单聊记忆无限膨胀挤占上下文）
 DAILY_LOG_BUDGET = 2000   # 日志
 AWARENESS_BUDGET = 2000   # 自我认知
 TOTAL_SYSTEM_BUDGET = 15000  # 总预算
@@ -131,10 +132,16 @@ class MemoryManager:
             used_tokens += mem_tokens
 
         # 3.5 注入 per-chat 长期记忆（区别于全局 MEMORY.md）
+        # 使用 CHAT_MEMORY_BUDGET 控制，防止单聊记忆无限膨胀挤占上下文
         if chat_id:
             chat_mem = self.read_chat_memory(chat_id)
             if chat_mem:
+                cm_tokens = estimate_tokens(chat_mem)
+                if cm_tokens > CHAT_MEMORY_BUDGET:
+                    chat_mem = self._truncate_memory(chat_mem, CHAT_MEMORY_BUDGET)
+                    cm_tokens = CHAT_MEMORY_BUDGET
                 parts.append(wrap_tag(TAG_CHAT_MEMORY, chat_mem))
+                used_tokens += cm_tokens
 
         # 4. 日志 — 按 chat_id 过滤，限制预算
         if chat_id:
