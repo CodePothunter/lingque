@@ -632,13 +632,24 @@ class MessageRouter:
             await self._evaluate_buffer(chat_id)
 
     def get_active_groups(self, ttl: float = 600.0) -> list[str]:
-        """返回近 10 分钟内有消息的群聊 ID 列表"""
+        """返回需要轮询的群聊 ID 列表。
+
+        known_group_ids 中的群永不过期（持久化已知群），
+        其余群按 TTL 淘汰。
+        """
         now = time.time()
-        expired = [cid for cid, ts in self._active_groups.items() if now - ts > ttl]
+        expired = [
+            cid for cid, ts in self._active_groups.items()
+            if now - ts > ttl and cid not in self._known_group_ids
+        ]
         for cid in expired:
             self._active_groups.pop(cid, None)
             self._polled_msg_ids.pop(cid, None)
             self._thinking_signals.pop(cid, None)
+        # 确保所有已知群都在活跃列表中（即使从未收到 WS 消息）
+        for cid in self._known_group_ids:
+            if cid not in self._active_groups:
+                self._active_groups[cid] = now
         # 清理过期的 reaction ID 缓存（超过 5 分钟的条目）
         stale_rids = [mid for mid, _ in self._my_reaction_ids.items()
                       if not any(mid in {m.get("message_id", "") for m in buf.get_recent(20)}
