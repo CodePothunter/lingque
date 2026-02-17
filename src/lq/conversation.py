@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from lq.config import LQConfig
+from lq.platform import (
+    PlatformAdapter,
+    BotIdentity,
+    ChatMember,
+    OutgoingMessage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,74 +23,60 @@ logger = logging.getLogger(__name__)
 LOCAL_CHAT_ID = "local_say"
 
 
-class LocalSender:
-    """替代 FeishuSender 的本地终端发送器。
-
-    实现 FeishuSender 的关键接口，将消息输出到终端而非飞书。
-    """
+class LocalAdapter(PlatformAdapter):
+    """本地终端适配器 — 实现 PlatformAdapter，将消息输出到终端。"""
 
     def __init__(self, bot_name: str) -> None:
-        self.bot_name = bot_name
-        self.bot_open_id = "local_bot"
-        self._user_name_cache: dict[str, str] = {
-            "local_bot": bot_name,
-            "local_cli_user": "用户",
-        }
-        self._left_chats: set[str] = set()
-        self._bot_members: dict[str, set[str]] = {}
+        self._bot_name = bot_name
 
-    # ── 消息发送 ──
+    # ── 身份 ──
 
-    async def send_text(self, chat_id: str, text: str) -> str | None:
-        _print_bot(self.bot_name, text)
-        return "local_msg"
+    async def get_identity(self) -> BotIdentity:
+        return BotIdentity(bot_id="local_bot", bot_name=self._bot_name)
 
-    async def reply_text(self, message_id: str, text: str) -> str | None:
-        _print_bot(self.bot_name, text)
-        return "local_msg"
+    # ── 感知 ──
 
-    async def send_card(self, chat_id: str, card_json: dict, **kw: Any) -> str | None:
-        content = _extract_card_text(card_json)
-        if content:
-            _print_bot(self.bot_name, content, prefix="卡片")
-        return "local_msg"
+    async def connect(self, queue: asyncio.Queue) -> None:
+        pass  # 本地模式无需连接
 
-    async def reply_card(self, message_id: str, card_json: dict, **kw: Any) -> str | None:
-        content = _extract_card_text(card_json)
-        if content:
-            _print_bot(self.bot_name, content, prefix="卡片")
-        return "local_msg"
-
-    # ── 用户信息 ──
-
-    async def fetch_bot_info(self) -> dict[str, Any]:
-        return {"open_id": self.bot_open_id, "app_name": self.bot_name}
-
-    async def get_user_name(self, open_id: str, chat_id: str = "") -> str:
-        return self._user_name_cache.get(open_id, "用户")
-
-    async def resolve_name(self, open_id: str) -> str:
-        return self._user_name_cache.get(open_id, "用户")
-
-    # ── 群聊/状态相关（本地模式不需要） ──
-
-    def is_chat_left(self, chat_id: str) -> bool:
-        return False
-
-    def register_bot_member(self, chat_id: str, bot_open_id: str) -> None:
+    async def disconnect(self) -> None:
         pass
 
-    def load_bot_identities(self, home: Path) -> None:
+    # ── 表达 ──
+
+    async def send(self, message: OutgoingMessage) -> str | None:
+        if message.card:
+            content = _extract_card_text(message.card)
+            if content:
+                _print_bot(self._bot_name, content, prefix="卡片")
+        elif message.text:
+            _print_bot(self._bot_name, message.text)
+        return "local_msg"
+
+    # ── 存在感 ──
+
+    async def start_thinking(self, message_id: str) -> str | None:
+        return None  # 终端无需思考指示器
+
+    async def stop_thinking(self, message_id: str, handle: str) -> None:
         pass
 
-    def get_bot_members(self, chat_id: str) -> set[str]:
-        return set()
+    # ── 感官 ──
 
-    def get_member_name(self, open_id: str) -> str:
-        return self._user_name_cache.get(open_id, "")
+    async def fetch_media(
+        self, message_id: str, resource_key: str,
+    ) -> tuple[str, str] | None:
+        return None  # 本地模式不支持媒体
 
-    async def fetch_chat_messages(self, chat_id: str, count: int = 10) -> list[dict]:
-        return []
+    # ── 认知 ──
+
+    async def resolve_name(self, user_id: str) -> str:
+        if user_id == "local_cli_user":
+            return "用户"
+        return user_id[-8:]
+
+    async def list_members(self, chat_id: str) -> list[ChatMember]:
+        return []  # 本地模式无群聊
 
 
 def _print_bot(name: str, text: str, prefix: str = "") -> None:
@@ -136,7 +128,7 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     from lq.tools import ToolRegistry
     from lq.prompts import TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE, wrap_tag
 
-    sender = LocalSender(config.name)
+    adapter = LocalAdapter(config.name)
     memory = MemoryManager(home, config=config)
     executor = DirectAPIExecutor(config.api, config.model)
     stats = StatsTracker(home)
@@ -147,18 +139,13 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     cc_executor = ClaudeCodeExecutor(home, config.api)
     bash_executor = BashExecutor(home)
 
-    # 日历模块（可选，本地模式可能无飞书 client）
+    # 日历模块不可用（本地模式无飞书 client）
     calendar = None
-    try:
-        from lq.feishu.calendar import FeishuCalendar
-        # FeishuCalendar 需要飞书 client，本地模式下跳过
-    except Exception:
-        pass
 
     # 创建路由器并注入依赖
     from lq.router import MessageRouter
 
-    router = MessageRouter(executor, memory, sender, "local_bot", config.name)
+    router = MessageRouter(executor, memory, adapter, "local_bot", config.name)
     router.session_mgr = session_mgr
     router.calendar = calendar
     router.stats = stats
