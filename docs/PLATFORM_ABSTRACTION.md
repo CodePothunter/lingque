@@ -1,6 +1,6 @@
 # 聊天平台抽象层接口规范
 
-> LingQue 平台无关通信协议 v1.4
+> LingQue 平台无关通信协议 v1.5
 >
 > 本文档定义了一个拟人化 AI Agent 在任意通讯平台上所需的**最小完备动作集**。
 > 任何新平台（Discord、Telegram、Slack、微信等）只需实现本文档定义的接口，即可接入 LingQue。
@@ -20,15 +20,14 @@
 9. [感官 — 我看到的图片和文件](#9-感官--我看到的图片和文件)
 10. [认知 — 我知道谁是谁](#10-认知--我知道谁是谁)
 11. [可选行为](#11-可选行为)
-12. [能力声明](#12-能力声明)
-13. [平台配置](#13-平台配置)
-14. [外部服务层（非平台抽象）](#14-外部服务层非平台抽象)
-15. [标准卡片结构](#15-标准卡片结构)
-16. [飞书适配指南](#16-飞书适配指南)
-17. [Discord 适配指南](#17-discord-适配指南)
-18. [附录 A：内核改造清单](#附录-a内核改造清单)
-19. [附录 B：v1.3 → v1.4 变更记录](#附录-bv13--v14-变更记录)
-20. [附录 C：历史变更摘要](#附录-c历史变更摘要)
+12. [平台配置](#12-平台配置)
+13. [外部服务层（非平台抽象）](#13-外部服务层非平台抽象)
+14. [标准卡片结构](#14-标准卡片结构)
+15. [飞书适配指南](#15-飞书适配指南)
+16. [Discord 适配指南](#16-discord-适配指南)
+17. [附录 A：内核改造清单](#附录-a内核改造清单)
+18. [附录 B：v1.4 → v1.5 变更记录](#附录-bv14--v15-变更记录)
+19. [附录 C：历史变更摘要](#附录-c历史变更摘要)
 
 ---
 
@@ -37,8 +36,8 @@
 - **描述人的行为，不描述 API 的形状**：接口按"一个人在聊天中做什么"来组织，不按平台 API 的技术结构。
 - **最小完备**：每个接口都不可再拆，也不可移除。如果去掉它，Agent 就不再像一个完整的对话参与者。
 - **一个意图，一个抽象**：如果两种机制服务于同一个目的（如飞书 reaction("OnIt") 和 Discord typing 都是"我在处理"），它们是同一个抽象行为的不同实现，不应拆成两个接口。
-- **补偿对内核透明**：平台特有的补偿行为（轮询、身份推断、格式转换）封装在适配器内部。
-- **能力声明制**：适配器声明自身能力，内核据此降级。
+- **补偿对内核透明**：平台特有的补偿行为（轮询、身份推断、格式转换、功能降级）封装在适配器内部。
+- **适配器自治**：适配器是平台的全权代表。内核调方法、看返回值，不查询能力、不做条件分支。做不到的事适配器自己处理（降级、忽略、返回失败）。
 - **异步优先**：所有 I/O 均为 `async def`。
 
 ---
@@ -207,29 +206,21 @@ class OutgoingMessage:
     card: dict | None = None             # 结构化卡片（可选，见 §15）
 ```
 
-**内容分发规则（适配器执行）：**
+**适配器收到 OutgoingMessage 后，自行决定最佳呈现方式：**
 
 ```
 OutgoingMessage 到达适配器
 │
-├─ card 非空？
-│   ├─ 是 + has_rich_cards → 渲染为平台原生卡片（飞书 interactive / Discord Embed）
-│   └─ 是 + !has_rich_cards → 忽略 card，使用 text 作为降级
-│
-├─ card 为空
-│   ├─ has_markdown → 发送 text，保留 Markdown 格式
-│   └─ !has_markdown → strip Markdown 后发纯文本
-│       （飞书补偿：检测到代码块等复杂格式时自动切卡片）
-│
-├─ reply_to 非空？
-│   ├─ has_reply → 引用回复
-│   └─ !has_reply → 降级为普通发送
-│
-└─ mentions 非空？
-    └─ 将 @name 转换为平台原生格式（飞书 <at> / Discord <@id>）
+├─ card 非空 → 尽力渲染为平台原生卡片；做不到就用 text
+├─ text 含 Markdown → 尽力保留格式；做不到就 strip 或转卡片
+├─ reply_to 非空 → 尽力引用回复；做不到就普通发送
+├─ mentions 非空 → 将 @name 转为平台原生格式
+└─ text 超长 → 尽力分条/截断/转卡片；总之信息不丢
 ```
 
-**核心约束：`text` 始终有意义。** 无论是否附带 card，`text` 都应包含完整的文字内容。`card` 是同一信息的**结构化增强呈现**，不是独立于 `text` 的另一条消息。当平台不支持卡片时，`text` 就是全部内容，不会丢失信息。
+**内核不查询"你支持卡片吗"再决定传不传 card。内核永远传完整的 OutgoingMessage，适配器自己知道怎么渲染。**
+
+**核心约束：`text` 始终有意义。** 无论是否附带 card，`text` 都包含完整的文字内容。`card` 是同一信息的**结构化增强呈现**。当平台不支持卡片时，`text` 就是全部内容，不丢失信息。
 
 **与 v1.1 的 5 个方法的对应关系：**
 
@@ -294,16 +285,6 @@ class CardAction:
 
 ```python
 class PlatformAdapter(ABC):
-
-    @property
-    @abstractmethod
-    def capabilities(self) -> PlatformCapabilities:
-        """我能做什么。
-
-        内核通过此属性获取适配器的能力声明，据此决定降级策略。
-        返回值应为常量，不随运行时变化。
-        """
-        ...
 
     @abstractmethod
     async def get_identity(self) -> BotIdentity:
@@ -423,12 +404,10 @@ class PlatformAdapter(ABC):
         统一的消息发送接口。适配器根据 OutgoingMessage 的字段决定最终形式。
         详细的内容分发规则见 §4.4。
 
-        消息超长处理（适配器职责）：
-        - 当 text 超过 max_message_length 时，适配器自行决定策略：
-          a) 自动分条发送（推荐，在段落/换行处分割）
-          b) 截断 + 尾部追加截断提示
-          c) 转为卡片/Embed（如果 has_rich_cards 且卡片容量更大）
-        - 内核不关心具体策略，只要信息不丢失
+        适配器职责：
+        - OutgoingMessage 的所有字段都是"意图"，不是"指令"
+        - 适配器尽力满足每个意图，做不到就用最接近的方式
+        - text 超长时自行分条/截断/转卡片，信息不丢即可
         - 分条发送时返回最后一条的 message_id
 
         Returns:
@@ -569,7 +548,17 @@ finally:
 
 ## 11. 可选行为
 
-以下行为**不在核心 8 个动作中**，但能让 Agent 更像人类。适配器通过能力声明来标识是否支持。
+以下行为**不在核心 8 个动作中**，但能让 Agent 更像人类。
+
+基类提供默认空实现（返回 `None` / `False`）。适配器按平台能力选择性覆写。
+内核直接调用，根据返回值决定后续动作 — 不查询能力，不做预判。
+
+```python
+# 内核代码示例 — 无条件分支，无能力查询
+ok = await adapter.edit(msg_id, new_content)
+if not ok:
+    await adapter.send(OutgoingMessage(chat_id, "更正：" + new_text))
+```
 
 ### 11.1 react — 表情回应
 
@@ -634,53 +623,7 @@ finally:
 
 ---
 
-## 12. 能力声明
-
-```python
-@dataclass
-class PlatformCapabilities:
-    # ── 表达 ──
-    has_reply: bool = True               # 支持引用回复
-    has_markdown: bool = True            # 文本消息渲染 Markdown
-    has_rich_cards: bool = False         # 支持卡片/Embed
-    has_card_actions: bool = False       # 卡片支持交互按钮
-    max_message_length: int = 4000      # 单条消息字符上限
-
-    # ── 感官 ──
-    has_media_download: bool = False     # 支持下载图片/文件
-
-    # ── 认知 ──
-    has_group_members: bool = False      # 支持查询群成员
-    has_mentions: bool = True            # 支持 @提及
-
-    # ── 可选行为 ──
-    has_reactions: bool = False          # 支持 react/unreact
-    has_edit: bool = False               # 支持 edit
-    has_unsend: bool = False             # 支持 unsend
-```
-
-> **注意：`start_thinking`/`stop_thinking` 没有能力标志。**
-> 它们是核心方法，适配器必须实现。但实现可以是空操作 —
-> 如果平台既不支持 reaction 也不支持 typing indicator，
-> `start_thinking` 返回 `None`，`stop_thinking` 为空操作即可。
-> 内核代码无需任何改变。
-
-### 降级逻辑
-
-| 能力缺失 | 内核行为 |
-|---------|---------|
-| `has_reply = False` | `reply_to` 被忽略，降级为普通发送 |
-| `has_rich_cards = False` | `card` 被忽略，使用 `text` 作为降级 |
-| `has_media_download = False` | 图片消息降级为 `[图片]` 文字描述 |
-| `has_group_members = False` | 跳过群成员相关上下文 |
-| `has_card_actions = False` | 审批降级为文字确认 |
-| `has_reactions = False` | 跳过一般性 emoji 回应 |
-| `has_edit = False` | 状态更新改为发新消息 |
-| `has_unsend = False` | 不撤回 |
-
----
-
-## 13. 平台配置
+## 12. 平台配置
 
 ```python
 @dataclass
@@ -696,7 +639,7 @@ class PlatformConfig(ABC):
 
 ---
 
-## 14. 外部服务层（非平台抽象）
+## 13. 外部服务层（非平台抽象）
 
 日历不是聊天平台的本质能力。飞书恰好内建了日历，但 Discord/Telegram 没有。
 日历（以及未来的邮件、TODO、文档等）属于**外部服务层**，与平台适配器平行：
@@ -745,7 +688,7 @@ Discord 接入时，配置一个 `GoogleCalendar` 实现同一接口即可。
 
 ---
 
-## 15. 标准卡片结构
+## 14. 标准卡片结构
 
 `OutgoingMessage.card` 使用以下平台无关结构，适配器负责转换：
 
@@ -771,29 +714,26 @@ Discord 接入时，配置一个 `GoogleCalendar` 实现同一接口即可。
  "callback_data": {"type": "approval", "id": "xxx"}}
 ```
 
-降级：`has_rich_cards = False` 时，适配器提取 title + content 拼为纯文本。
+平台不支持卡片时，适配器提取 title + content 拼为纯文本发送。
 
 ---
 
-## 16. 飞书适配指南
+## 15. 飞书适配指南
 
-### 能力声明
+### 平台特征
 
-```python
-FEISHU_CAPABILITIES = PlatformCapabilities(
-    has_reply=True,
-    has_markdown=False,          # 文本消息不渲染 Markdown
-    has_rich_cards=True,
-    has_card_actions=True,
-    has_media_download=True,
-    has_group_members=True,
-    has_mentions=True,
-    has_reactions=True,          # 支持一般性 emoji 回应
-    has_edit=False,              # 飞书不支持编辑已发消息
-    has_unsend=False,            # 飞书不支持撤回已发消息
-    max_message_length=10000,
-)
-```
+| 特征 | 飞书 |
+|------|------|
+| 引用回复 | 支持 |
+| Markdown 文本消息 | 不支持（需 strip 或切卡片） |
+| 卡片 / Embed | 支持（interactive card） |
+| 卡片按钮交互 | 支持 |
+| 表情回应 | 支持 |
+| 媒体下载 | 支持 |
+| 群成员查询 | 支持（但不含 bot） |
+| 编辑已发消息 | 不支持 → `edit()` 返回 False |
+| 撤回已发消息 | 不支持 → `unsend()` 返回 False |
+| 单条消息上限 | ~10000 字符 |
 
 ### 适配器核心方法映射
 
@@ -821,25 +761,22 @@ FEISHU_CAPABILITIES = PlatformCapabilities(
 
 ---
 
-## 17. Discord 适配指南
+## 16. Discord 适配指南
 
-### 能力声明
+### 平台特征
 
-```python
-DISCORD_CAPABILITIES = PlatformCapabilities(
-    has_reply=True,
-    has_markdown=True,
-    has_rich_cards=True,             # Embed
-    has_card_actions=True,           # Button components
-    has_media_download=True,
-    has_group_members=True,
-    has_mentions=True,
-    has_reactions=True,
-    has_edit=True,                   # message.edit()
-    has_unsend=True,                 # message.delete()
-    max_message_length=2000,
-)
-```
+| 特征 | Discord |
+|------|---------|
+| 引用回复 | 支持 |
+| Markdown 文本消息 | 支持（原生） |
+| 卡片 / Embed | 支持（Embed） |
+| 卡片按钮交互 | 支持（Button components） |
+| 表情回应 | 支持 |
+| 媒体下载 | 支持 |
+| 群成员查询 | 支持（Guild.members 完整） |
+| 编辑已发消息 | 支持 → `edit()` 直接 `message.edit()` |
+| 撤回已发消息 | 支持 → `unsend()` 直接 `message.delete()` |
+| 单条消息上限 | 2000 字符 |
 
 ### 核心映射
 
@@ -906,22 +843,27 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
 
 ---
 
-## 附录 B：v1.3 → v1.4 变更记录
+## 附录 B：v1.4 → v1.5 变更记录
 
-### 修复 6 个设计缺陷
+### 移除 PlatformCapabilities，确立适配器自治
 
-| # | v1.3 问题 | v1.4 修复 | 严重度 |
-|---|----------|----------|--------|
-| 1 | `PlatformAdapter` 缺少 `capabilities` 属性，内核无法获知适配器能力 | §5 新增 `capabilities` 抽象属性 | **结构性** |
-| 2 | `Reaction` 缺少 `chat_id`，内核被迫 O(n) 遍历 buffer 反查群聊 | §4.7 新增 `chat_id` 字段 | 重要 |
-| 3 | `connect()` 未声明重连责任，连接断开后行为未定义 | §6.1 新增连接稳定性契约 | 重要 |
-| 4 | `start_thinking` 的 bot 协作契约用"应"而非"必须"，Telegram typing 不产生 reaction 事件 | §8 强化为 MUST + 解释 reaction vs typing 的区别 | 中等 |
-| 5 | `send()` 对超过 `max_message_length` 的消息无处理规定 | §7 新增消息超长处理策略 | 中等 |
-| 6 | `IncomingMessage` 缺少 `reply_to_id`，不知道消息在回复谁 | §4.3 新增 `reply_to_id` 字段 | 次要 |
+v1.4 引入了 `PlatformCapabilities`（11 个布尔标志 + 8 条降级规则），让内核根据能力声明做条件分支。
+v1.5 发现这违反了"补偿对内核透明"原则 — **降级本身就是补偿**，属于适配器内部事务。
 
-### 核心变更不变
+| # | v1.4 问题 | v1.5 修复 |
+|---|----------|----------|
+| 1 | 内核查询 `adapter.capabilities.has_xxx` 做条件分支 | 删除 `capabilities` 属性，内核直接调方法、看返回值 |
+| 2 | `PlatformCapabilities` 11 个布尔标志 + 8 条降级规则 | 整节删除，降级由适配器自行处理 |
+| 3 | §4.4 内容分发用 `has_rich_cards` / `has_markdown` 判断 | 改为适配器自治：收到 OutgoingMessage 后自行决定最佳呈现 |
+| 4 | 可选行为需要先查能力再调用 | 基类提供默认空实现，内核直接调用，看返回值决定后续 |
 
-v1.4 没有改变核心架构。仍然是 **8 核心 + 4 可选 + 1 事件流**。所有变更都是补全 v1.3 遗漏的细节。
+### 新增设计原则
+
+- **适配器自治**：适配器是平台的全权代表。内核调方法、看返回值，不查询能力、不做条件分支。做不到的事适配器自己处理。
+
+### 核心架构不变
+
+仍然是 **8 核心 + 4 可选 + 1 事件流**。v1.5 不改动任何方法签名，只移除了内核侧的能力查询机制。
 
 ---
 
@@ -934,3 +876,4 @@ v1.4 没有改变核心架构。仍然是 **8 核心 + 4 可选 + 1 事件流**�
 | v1.2 | send 五合一、日历抽离为外部服务层、事件归并、新增 show_typing/edit/unsend |
 | v1.3 | "一个意图一个抽象" — react/typing 统一为 start/stop_thinking；OutgoingMessage 内容分发规则明确化 |
 | v1.4 | 补全结构缺陷 — adapter.capabilities 属性、Reaction.chat_id、connect 重连契约、start_thinking 强制 reaction、send 超长处理、IncomingMessage.reply_to_id |
+| v1.5 | 移除 PlatformCapabilities + 降级规则，确立"适配器自治"原则 — 内核不查询能力、不做条件分支，适配器自行处理降级 |
