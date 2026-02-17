@@ -2,11 +2,12 @@
 
 [中文文档](README_CN.md)
 
-A personal AI assistant framework deeply integrated with [Feishu (Lark)](https://www.feishu.cn/). Supports private/group chat with intelligent replies, calendar management, long-term memory, and runtime self-extension through tool creation.
+A personal AI assistant framework with a platform-agnostic core and pluggable chat platform adapters. Currently supports [Feishu (Lark)](https://www.feishu.cn/) and local terminal mode. Features include private/group chat with intelligent replies, calendar management, long-term memory, and runtime self-extension through tool creation.
 
 ## Features
 
-- **Feishu-native** — WebSocket persistent connection, instant DM replies, three-layer group chat intervention
+- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the core from any specific chat platform; adding a new platform requires only one adapter file
+- **Feishu adapter** — WebSocket persistent connection, instant DM replies, three-layer group chat intervention
 - **Local dev mode** — `lq say @name` launches an interactive terminal conversation with full tool support, no Feishu dependency required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
 - **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
@@ -100,27 +101,31 @@ uv run lq stop @奶油            # stop
 
 ## Architecture
 
-```
-Main thread: asyncio.run(gateway.run())
-├── message_consumer  — asyncio.Queue → router.handle()
-├── heartbeat         — periodic tasks (daily briefing, cost alerts, morning greetings)
-├── group_poller      — polls group chat API to discover other bot messages
-└── auto_save         — periodic session & known groups persistence
+### Platform Abstraction
 
-Feishu thread (daemon): ws_client.start()
-└── on_message() → loop.call_soon_threadsafe(queue.put_nowait, data)
-```
-
-Message flow:
+The codebase is split into a **platform-agnostic core** and **platform-specific adapters**:
 
 ```
-Feishu message → listener (WS thread) → Queue → router (message_id dedup)
-  ├── DM → debounce → session mgmt → LLM (tool use loop) → send reply
-  ├── Group → rule filter → buffer → LLM eval → maybe reply
-  ├── bot.added → self-introduction
-  └── user.added → welcome message
+platform/
+├── types.py     — Standard data types (IncomingMessage, OutgoingMessage, Reaction, etc.)
+└── adapter.py   — PlatformAdapter ABC (9 abstract + 4 optional methods)
 
-Group polling → fetch_chat_messages API → bot identity inference → inject into buffer
+feishu/adapter.py  — FeishuAdapter (wraps sender + listener internally)
+conversation.py    — LocalAdapter (terminal mode)
+```
+
+The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on the Feishu SDK directly.
+
+### Event Flow
+
+```
+Platform WS → adapter (internal conversion) → asyncio.Queue → router.handle(standard_event)
+  standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+  ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+  ├── "interaction"   → CardAction → _handle_card_action
+  ├── "reaction"      → Reaction → _handle_reaction_event
+  ├── "member_change" → _handle_member_change
+  └── "eval_timeout"  → _evaluate_buffer
 ```
 
 ## Built-in Tools
@@ -199,7 +204,7 @@ TOOL_DEFINITION = {
 
 async def execute(input_data: dict, context: dict) -> dict:
     """
-    context includes: sender, memory, calendar
+    context includes: adapter, memory, calendar
     """
     from datetime import datetime
     import zoneinfo
@@ -275,10 +280,10 @@ Edit `~/.lq-{slug}/config.json`:
 src/lq/
 ├── cli.py              # CLI entry point
 ├── config.py           # Config loader (with pinyin slug)
-├── gateway.py          # Main orchestrator (dual-thread + group polling + morning greetings)
+├── gateway.py          # Main orchestrator (creates adapter, runs async tasks)
 ├── router.py           # Message routing + three-layer intervention + 21 built-in tools + multi-bot coordination
 ├── prompts.py          # Centralized prompts, tool descriptions, and constraint blocks
-├── conversation.py     # Local interactive conversation (lq say)
+├── conversation.py     # Local interactive conversation (lq say) + LocalAdapter
 ├── tools.py            # Custom tool plugin system
 ├── buffer.py           # Group chat message buffer
 ├── session.py          # Per-chat session management + compaction
@@ -289,16 +294,21 @@ src/lq/
 ├── stats.py            # API usage statistics
 ├── templates.py        # Template generation
 ├── timeparse.py        # Time expression parsing
+├── platform/
+│   ├── types.py        # Platform-neutral data types (IncomingMessage, OutgoingMessage, etc.)
+│   └── adapter.py      # PlatformAdapter ABC (abstract interface for all adapters)
 ├── executor/
 │   ├── api.py          # Anthropic API (with retry + tool use)
 │   └── claude_code.py  # Claude Code subprocess
 └── feishu/
-    ├── listener.py     # WebSocket event receiver + join/leave events
-    ├── sender.py       # Message sender + bot identity inference + member management
+    ├── adapter.py      # FeishuAdapter (PlatformAdapter impl, wraps sender + listener)
+    ├── listener.py     # WebSocket event receiver (internal to adapter)
+    ├── sender.py       # REST API calls (internal to adapter)
     ├── calendar.py     # Calendar API
     └── cards.py        # Card builder
 
 tests/
+├── test_platform.py        # Platform abstraction unit tests (pytest)
 ├── harness.py              # Test harness (calls lq say, validates responses)
 ├── run_all.py              # Multi-level test runner
 ├── test_infrastructure.py  # Infrastructure & session tests

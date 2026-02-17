@@ -32,7 +32,7 @@ def fail(name: str, detail: str = ""):
 
 async def main():
     from lq.config import LQConfig, load_config
-    from lq.conversation import LocalSender, LOCAL_CHAT_ID
+    from lq.conversation import LocalAdapter, LOCAL_CHAT_ID
     from lq.executor.api import DirectAPIExecutor
     from lq.executor.claude_code import BashExecutor
     from lq.memory import MemoryManager
@@ -44,50 +44,51 @@ async def main():
     config = load_config(HOME)
 
     # ╔════════════════════════════════════════════╗
-    # ║  1. LocalSender 基础测试                    ║
+    # ║  1. LocalAdapter 基础测试                    ║
     # ╚════════════════════════════════════════════╝
-    print("\n\033[1;33m[1] LocalSender 基础测试\033[0m")
+    print("\n\033[1;33m[1] LocalAdapter 基础测试\033[0m")
 
-    sender = LocalSender("测试bot")
-    assert sender.bot_name == "测试bot"
-    assert sender.bot_open_id == "local_bot"
+    from lq.platform import OutgoingMessage
+
+    adapter = LocalAdapter("测试bot")
+    identity = await adapter.get_identity()
+    assert identity.bot_name == "测试bot"
+    assert identity.bot_id == "local_bot"
     ok("初始化")
 
-    # send_text
-    result = await sender.send_text("chat_123", "hello world")
+    # send (text)
+    msg = OutgoingMessage(chat_id="chat_123", text="hello world")
+    result = await adapter.send(msg)
     assert result == "local_msg"
-    ok("send_text")
+    ok("send (text)")
 
-    # reply_text
-    result = await sender.reply_text("msg_456", "回复测试")
-    assert result == "local_msg"
-    ok("reply_text")
-
-    # send_card
+    # send (card)
     card = {"elements": [{"tag": "markdown", "content": "**卡片内容**"}]}
-    result = await sender.send_card("chat_123", card)
+    msg = OutgoingMessage(chat_id="chat_123", card=card)
+    result = await adapter.send(msg)
     assert result == "local_msg"
-    ok("send_card")
+    ok("send (card)")
 
-    # reply_card
-    result = await sender.reply_card("msg_456", card)
-    assert result == "local_msg"
-    ok("reply_card")
-
-    # get_user_name
-    name = await sender.get_user_name("local_cli_user")
+    # resolve_name
+    name = await adapter.resolve_name("local_cli_user")
     assert name == "用户"
-    ok("get_user_name", name)
+    ok("resolve_name", name)
 
-    # fetch_bot_info
-    info = await sender.fetch_bot_info()
-    assert info["open_id"] == "local_bot"
-    ok("fetch_bot_info", str(info))
+    # start_thinking / stop_thinking
+    handle = await adapter.start_thinking("msg_1")
+    assert handle is None
+    await adapter.stop_thinking("msg_1", "")
+    ok("start_thinking / stop_thinking")
 
-    # 其他 stub 方法
-    assert not sender.is_chat_left("any")
-    assert sender.get_bot_members("any") == set()
-    ok("stub 方法 (is_chat_left, get_bot_members)")
+    # fetch_media
+    media = await adapter.fetch_media("msg_1", "key_1")
+    assert media is None
+    ok("fetch_media (None)")
+
+    # list_members
+    members = await adapter.list_members("any")
+    assert members == []
+    ok("list_members (empty)")
 
     # ╔════════════════════════════════════════════╗
     # ║  2. 组件初始化测试                          ║
@@ -119,7 +120,7 @@ async def main():
     # ╚════════════════════════════════════════════╝
     print("\n\033[1;33m[3] Router 初始化 + 工具列表测试\033[0m")
 
-    router = MessageRouter(executor, memory, sender, "local_bot", "测试bot")
+    router = MessageRouter(executor, memory, adapter, "local_bot", "测试bot")
     router.session_mgr = session_mgr
     router.stats = stats
     router.bash_executor = bash_executor
