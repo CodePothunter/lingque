@@ -85,8 +85,14 @@ uv run lq edit @奶油 soul
 ### 启动
 
 ```bash
-# 前台运行（调试用）
+# 飞书模式（默认）
 uv run lq start @奶油
+
+# 纯本地模式（无需飞书凭证）
+uv run lq start @奶油 --adapter local
+
+# 多平台模式（飞书 + 本地同时连接）
+uv run lq start @奶油 --adapter feishu,local
 
 # 后台运行
 nohup uv run lq start @奶油 &
@@ -106,7 +112,8 @@ uv run lq stop @奶油            # 停止
 ```
 platform/
 ├── types.py     — 标准数据类型（IncomingMessage, OutgoingMessage, Reaction 等）
-└── adapter.py   — PlatformAdapter ABC（9 个抽象 + 4 个可选方法）
+├── adapter.py   — PlatformAdapter ABC（9 个抽象 + 4 个可选方法）
+└── multi.py     — MultiAdapter（多平台复合适配器）
 
 feishu/adapter.py  — FeishuAdapter（内部封装 sender + listener）
 conversation.py    — LocalAdapter（终端模式）
@@ -229,9 +236,9 @@ async def execute(input_data: dict, context: dict) -> dict:
 | 命令 | 说明 |
 |------|------|
 | `uv run lq init --name NAME [--from-env .env]` | 初始化实例 |
-| `uv run lq start @NAME` | 启动 |
+| `uv run lq start @NAME [--adapter TYPE]` | 启动（TYPE: `feishu`, `local`, 或逗号分隔如 `feishu,local`） |
 | `uv run lq stop @NAME` | 停止 |
-| `uv run lq restart @NAME` | 重启 |
+| `uv run lq restart @NAME [--adapter TYPE]` | 重启 |
 | `uv run lq list` | 列出所有实例 |
 | `uv run lq status @NAME` | 运行状态 + API 消耗统计 |
 | `uv run lq logs @NAME [--since 1h]` | 查看日志 |
@@ -296,7 +303,8 @@ src/lq/
 ├── timeparse.py        # 时间表达式解析
 ├── platform/
 │   ├── types.py        # 平台无关数据类型（IncomingMessage, OutgoingMessage 等）
-│   └── adapter.py      # PlatformAdapter ABC（所有适配器的抽象接口）
+│   ├── adapter.py      # PlatformAdapter ABC（所有适配器的抽象接口）
+│   └── multi.py        # MultiAdapter（多平台复合适配器）
 ├── executor/
 │   ├── api.py          # Anthropic API（含重试 + tool use）
 │   └── claude_code.py  # Claude Code 子进程

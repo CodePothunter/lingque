@@ -123,10 +123,34 @@ def init(name: str, from_env: str | None, owner: str) -> None:
     click.echo(f"  Systemd:    systemctl --user enable --now lq-{slug}")
 
 
+def _parse_adapters(adapter_str: str) -> list[str]:
+    """解析逗号分隔的适配器列表并校验。"""
+    from lq.gateway import KNOWN_ADAPTERS
+    types = [t.strip() for t in adapter_str.split(",") if t.strip()]
+    unknown = set(types) - KNOWN_ADAPTERS
+    if unknown:
+        raise click.BadParameter(
+            f"未知适配器: {', '.join(unknown)}（可选: {', '.join(sorted(KNOWN_ADAPTERS))}）"
+        )
+    if not types:
+        raise click.BadParameter("至少需要一个适配器")
+    return types
+
+
 @cli.command()
 @click.argument("instance")
-def start(instance: str) -> None:
-    """启动灵雀实例（@name 或 @slug）"""
+@click.option("--adapter", "adapter_str", default="feishu",
+              help="聊天平台适配器，逗号分隔多选（feishu=飞书, local=纯本地）")
+def start(instance: str, adapter_str: str) -> None:
+    """启动灵雀实例（@name 或 @slug）
+
+    \b
+    示例:
+      lq start @name                    # 默认飞书
+      lq start @name --adapter local    # 纯本地（无需飞书凭证）
+      lq start @name --adapter feishu,local  # 同时连接飞书 + 本地
+    """
+    adapter_types = _parse_adapters(adapter_str)
     home, display, cfg = _resolve(instance)
 
     if not home.exists():
@@ -139,10 +163,15 @@ def start(instance: str) -> None:
         raise SystemExit(1)
 
     config = cfg or load_config(home)
-    click.echo(f"启动 @{display} ...")
+    click.echo(f"启动 @{display} (adapter={'+'.join(adapter_types)}) ...")
+
+    if "local" in adapter_types and "feishu" not in adapter_types:
+        click.echo("💡 纯本地模式：通过 inbox.txt 或 lq chat 发送消息，无飞书连接")
+    if len(adapter_types) > 1:
+        click.echo(f"💡 多平台模式：同时连接 {', '.join(adapter_types)}，消息自动路由到来源平台")
 
     from lq.gateway import AssistantGateway
-    gw = AssistantGateway(config, home)
+    gw = AssistantGateway(config, home, adapter_types=adapter_types)
     asyncio.run(gw.run())
 
 
@@ -177,8 +206,11 @@ def stop(instance: str) -> None:
 
 @cli.command()
 @click.argument("instance")
-def restart(instance: str) -> None:
+@click.option("--adapter", "adapter_str", default="feishu",
+              help="聊天平台适配器，逗号分隔多选（feishu=飞书, local=纯本地）")
+def restart(instance: str, adapter_str: str) -> None:
     """重启灵雀实例"""
+    adapter_types = _parse_adapters(adapter_str)
     home, display, _ = _resolve(instance)
     pid = _read_pid(home)
 
@@ -198,9 +230,9 @@ def restart(instance: str) -> None:
             click.echo(f"@{display} 强制终止 (SIGKILL)")
 
     config = load_config(home)
-    click.echo(f"启动 @{display} ...")
+    click.echo(f"启动 @{display} (adapter={'+'.join(adapter_types)}) ...")
     from lq.gateway import AssistantGateway
-    gw = AssistantGateway(config, home)
+    gw = AssistantGateway(config, home, adapter_types=adapter_types)
     asyncio.run(gw.run())
 
 

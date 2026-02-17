@@ -16,10 +16,9 @@ from pathlib import Path
 from lq.config import LQConfig
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
-from lq.feishu.adapter import FeishuAdapter
 from lq.heartbeat import HeartbeatRunner
 from lq.memory import MemoryManager
-from lq.platform import OutgoingMessage, IncomingMessage, ChatType, SenderType, MessageType
+from lq.platform import PlatformAdapter, OutgoingMessage, IncomingMessage, ChatType, SenderType, MessageType
 from lq.router import MessageRouter
 from lq.session import SessionManager
 from lq.stats import StatsTracker
@@ -28,10 +27,14 @@ from lq.tools import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
+KNOWN_ADAPTERS = {"feishu", "local"}
+
+
 class AssistantGateway:
-    def __init__(self, config: LQConfig, home: Path) -> None:
+    def __init__(self, config: LQConfig, home: Path, adapter_types: list[str] | None = None) -> None:
         self.config = config
         self.home = home
+        self.adapter_types = adapter_types or ["feishu"]
         self.shutdown_event = asyncio.Event()
         self.queue: asyncio.Queue = asyncio.Queue()
 
@@ -58,18 +61,59 @@ class AssistantGateway:
                 os.environ.setdefault(var, proxy)
             logger.info("代理已注入环境变量: %s", proxy)
 
-        # 初始化飞书适配器
-        adapter = FeishuAdapter(
-            self.config.feishu.app_id,
-            self.config.feishu.app_secret,
-            self.home,
-        )
-        identity = await adapter.get_identity()
-        bot_open_id = identity.bot_id
-        bot_name = identity.bot_name or self.config.name
-        if bot_open_id:
-            self.config.feishu.bot_open_id = bot_open_id
-        logger.info("Bot open_id: %s app_id: %s name: %s", bot_open_id, self.config.feishu.app_id, bot_name)
+        # 初始化适配器
+        adapters: list[PlatformAdapter] = []
+        primary: PlatformAdapter | None = None
+        bot_open_id = "local_bot"
+        bot_name = self.config.name
+        has_feishu = "feishu" in self.adapter_types
+        has_local = "local" in self.adapter_types
+
+        # 凭证校验 + 提醒
+        if has_feishu:
+            if not self.config.feishu.app_id or not self.config.feishu.app_secret:
+                if len(self.adapter_types) > 1:
+                    logger.warning("飞书凭证未配置，跳过飞书适配器")
+                    self.adapter_types = [t for t in self.adapter_types if t != "feishu"]
+                    has_feishu = False
+                else:
+                    raise RuntimeError("飞书凭证未配置（app_id / app_secret 为空），无法启动飞书适配器")
+
+        if has_feishu:
+            from lq.feishu.adapter import FeishuAdapter
+            feishu_adapter = FeishuAdapter(
+                self.config.feishu.app_id,
+                self.config.feishu.app_secret,
+                self.home,
+            )
+            identity = await feishu_adapter.get_identity()
+            bot_open_id = identity.bot_id
+            bot_name = identity.bot_name or self.config.name
+            if bot_open_id:
+                self.config.feishu.bot_open_id = bot_open_id
+            logger.info("飞书适配器: open_id=%s app_id=%s name=%s",
+                        bot_open_id, self.config.feishu.app_id, bot_name)
+            adapters.append(feishu_adapter)
+            primary = feishu_adapter
+
+        if has_local:
+            from lq.conversation import LocalAdapter
+            local_adapter = LocalAdapter(self.config.name)
+            adapters.append(local_adapter)
+            if primary is None:
+                primary = local_adapter
+            logger.info("本地适配器已加载")
+
+        if not adapters:
+            raise RuntimeError("没有可用的适配器，无法启动")
+
+        # 单适配器直接使用，多适配器用 MultiAdapter 组合
+        if len(adapters) == 1:
+            adapter = adapters[0]
+        else:
+            from lq.platform.multi import MultiAdapter
+            adapter = MultiAdapter(adapters, primary)
+            logger.info("多平台模式: %s", ", ".join(type(a).__name__ for a in adapters))
         self._adapter = adapter
 
         # 初始化核心组件
@@ -106,18 +150,19 @@ class AssistantGateway:
             if router_ref:
                 tool_stats = router_ref._tool_stats
 
-            # 通过飞书群聊发现姐妹实例（访问 FeishuAdapter 内部 sender）
+            # 通过飞书群聊发现姐妹实例（仅飞书适配器可用）
             siblings: list[str] = []
             seen: set[str] = set()
-            try:
-                feishu_sender = adapter._sender
-                for cid in list(feishu_sender._bot_members.keys()):
-                    for bid in feishu_sender.get_bot_members(cid):
-                        if bid not in seen:
-                            seen.add(bid)
-                            siblings.append(feishu_sender.get_member_name(bid))
-            except Exception:
-                pass
+            if hasattr(adapter, '_sender'):
+                try:
+                    feishu_sender = adapter._sender
+                    for cid in list(feishu_sender._bot_members.keys()):
+                        for bid in feishu_sender.get_bot_members(cid):
+                            if bid not in seen:
+                                seen.add(bid)
+                                siblings.append(feishu_sender.get_member_name(bid))
+                except Exception:
+                    pass
 
             # 解析主人身份
             owner_chat_id = self.config.feishu.owner_chat_id
@@ -156,14 +201,17 @@ class AssistantGateway:
         tool_registry.load_all()
         logger.info("自定义工具已加载: %d 个", len(tool_registry.list_tools()))
 
-        # 初始化日历（通过适配器的飞书 client）
+        # 初始化日历（仅飞书适配器支持）
         calendar = None
-        try:
-            from lq.feishu.calendar import FeishuCalendar
-            calendar = FeishuCalendar(adapter.feishu_client)
-            logger.info("日历模块已加载")
-        except Exception:
-            logger.warning("日历模块加载失败", exc_info=True)
+        if hasattr(adapter, 'feishu_client'):
+            try:
+                from lq.feishu.calendar import FeishuCalendar
+                calendar = FeishuCalendar(adapter.feishu_client)
+                logger.info("日历模块已加载")
+            except Exception:
+                logger.warning("日历模块加载失败", exc_info=True)
+        else:
+            logger.info("非飞书适配器，跳过日历模块")
 
         # 初始化 Bash 执行器
         bash_executor = BashExecutor(self.home)
@@ -204,9 +252,9 @@ class AssistantGateway:
             executor, memory, adapter, calendar, stats, router
         )
 
-        # 通过适配器启动连接（WS 线程 + 事件转换 + bot 消息轮询）
+        # 通过适配器启动连接
         await adapter.connect(self.queue)
-        logger.info("飞书适配器已连接")
+        logger.info("适配器已连接: %s", "+".join(self.adapter_types))
 
         # 并发运行消费者、心跳、inbox 轮询、会话自动保存
         tasks = [
@@ -294,8 +342,8 @@ class AssistantGateway:
                 except Exception:
                     logger.exception("晨报生成失败")
 
-            # 每日群聊早安问候
-            if is_daily_first:
+            # 每日群聊早安问候（仅飞书适配器支持）
+            if is_daily_first and hasattr(adapter, 'known_group_ids'):
                 try:
                     known = adapter.known_group_ids
                     if known:

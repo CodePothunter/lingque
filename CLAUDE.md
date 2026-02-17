@@ -11,7 +11,9 @@ LingQue (灵雀) is a personal AI assistant framework with a platform-agnostic c
 ```bash
 uv sync                                    # Install dependencies
 uv run lq init --name NAME --from-env .env # Initialize an instance
-uv run lq start @NAME                      # Start (foreground)
+uv run lq start @NAME                      # Start (foreground, default Feishu)
+uv run lq start @NAME --adapter local     # Start in local-only mode (no Feishu)
+uv run lq start @NAME --adapter feishu,local  # Multi-platform mode
 uv run lq stop @NAME                       # Stop
 uv run lq logs @NAME                       # Tail logs
 uv run lq status @NAME                     # Show status + API usage
@@ -34,6 +36,7 @@ The codebase is split into a platform-agnostic core and platform-specific adapte
 - **`platform/`** — Abstract layer defining the adapter interface and standard data types:
   - `adapter.py`: `PlatformAdapter` ABC — 8 abstract methods (`get_identity`, `connect`, `disconnect`, `send`, `start_thinking`, `stop_thinking`, `fetch_media`, `resolve_name`, `list_members`) + 4 optional (`react`, `unreact`, `edit`, `unsend`)
   - `types.py`: Platform-neutral dataclasses — `IncomingMessage`, `OutgoingMessage`, `BotIdentity`, `ChatMember`, `Reaction`, `CardAction`, plus enums `ChatType`, `SenderType`, `MessageType`
+  - `multi.py`: `MultiAdapter` — composite adapter that wraps multiple adapters for multi-platform mode; routes outgoing messages back to the originating adapter based on chat_id tracking
 - **`feishu/adapter.py`** — `FeishuAdapter` implementing `PlatformAdapter`. Wraps `FeishuSender` + `FeishuListener` internally; handles event conversion, @mention resolution, bot message polling, and standard card → Feishu card conversion.
 - **`conversation.py`** — `LocalAdapter` implementing `PlatformAdapter` for terminal-based local chat mode.
 

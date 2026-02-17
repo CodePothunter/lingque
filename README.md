@@ -87,8 +87,14 @@ uv run lq edit @奶油 soul
 ### Start
 
 ```bash
-# Foreground (for debugging)
+# Feishu mode (default)
 uv run lq start @奶油
+
+# Local-only mode (no Feishu credentials needed)
+uv run lq start @奶油 --adapter local
+
+# Multi-platform mode (Feishu + local simultaneously)
+uv run lq start @奶油 --adapter feishu,local
 
 # Background
 nohup uv run lq start @奶油 &
@@ -108,7 +114,8 @@ The codebase is split into a **platform-agnostic core** and **platform-specific 
 ```
 platform/
 ├── types.py     — Standard data types (IncomingMessage, OutgoingMessage, Reaction, etc.)
-└── adapter.py   — PlatformAdapter ABC (9 abstract + 4 optional methods)
+├── adapter.py   — PlatformAdapter ABC (9 abstract + 4 optional methods)
+└── multi.py     — MultiAdapter (composite adapter for multi-platform mode)
 
 feishu/adapter.py  — FeishuAdapter (wraps sender + listener internally)
 conversation.py    — LocalAdapter (terminal mode)
@@ -231,9 +238,9 @@ The assistant will automatically write the code, validate it, and load it. The n
 | Command | Description |
 |---------|-------------|
 | `uv run lq init --name NAME [--from-env .env]` | Initialize instance |
-| `uv run lq start @NAME` | Start |
+| `uv run lq start @NAME [--adapter TYPE]` | Start (TYPE: `feishu`, `local`, or comma-separated like `feishu,local`) |
 | `uv run lq stop @NAME` | Stop |
-| `uv run lq restart @NAME` | Restart |
+| `uv run lq restart @NAME [--adapter TYPE]` | Restart |
 | `uv run lq list` | List all instances |
 | `uv run lq status @NAME` | Status + API usage stats |
 | `uv run lq logs @NAME [--since 1h]` | View logs |
@@ -298,7 +305,8 @@ src/lq/
 ├── timeparse.py        # Time expression parsing
 ├── platform/
 │   ├── types.py        # Platform-neutral data types (IncomingMessage, OutgoingMessage, etc.)
-│   └── adapter.py      # PlatformAdapter ABC (abstract interface for all adapters)
+│   ├── adapter.py      # PlatformAdapter ABC (abstract interface for all adapters)
+│   └── multi.py        # MultiAdapter (composite adapter for multi-platform mode)
 ├── executor/
 │   ├── api.py          # Anthropic API (with retry + tool use)
 │   └── claude_code.py  # Claude Code subprocess
