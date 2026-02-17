@@ -411,10 +411,7 @@ async def _dispatch_and_wait(
     await router.handle({"event_type": "message", "message": msg})
 
     # 等待 _flush_private 完成（stop_thinking 设置 _turn_done）
-    # 防御：如果 _flush_private 提前退出（无内容），pending 被清空但事件未设置
-    while not adapter._turn_done.is_set():
-        try:
-            await asyncio.wait_for(adapter._turn_done.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            if chat_id not in router._private_pending:
-                break  # flush 已完成但无需回复
+    try:
+        await asyncio.wait_for(adapter._turn_done.wait(), timeout=300.0)
+    except asyncio.TimeoutError:
+        logger.warning("等待回复超时 (chat=%s)", chat_id)
