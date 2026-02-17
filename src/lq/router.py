@@ -839,7 +839,9 @@ class MessageRouter:
         """处理私聊消息（带防抖：短时间连发多条会合并后统一处理）"""
         message = event.message
         text = self._extract_text(message)
-        if not text:
+        has_images = self._has_images(message)
+
+        if not text and not has_images:
             if self._is_non_text_message(message):
                 await self.sender.reply_text(
                     message.message_id,
@@ -849,13 +851,17 @@ class MessageRouter:
 
         chat_id = message.chat_id
         sender_name = await self.sender.get_user_name(event.sender.sender_id.open_id, chat_id=chat_id)
-        logger.info("收到私聊 [%s]: %s", sender_name, text[:80])
+        log_preview = text[:80] if text else "[图片]"
+        logger.info("收到私聊 [%s]: %s", sender_name, log_preview)
 
         # 防抖：收集连续消息，延迟后统一处理
         pending = self._private_pending.get(chat_id)
         if pending:
             # 已有待处理消息，追加文本（保留首条 message_id 用于回复线程）
-            pending["texts"].append(text)
+            if text:
+                pending["texts"].append(text)
+            if has_images:
+                pending.setdefault("image_messages", []).append(message)
             # message_id 保持首条不变，确保回复线程指向正确的消息
             # 重置定时器
             if pending.get("timer"):
@@ -867,12 +873,15 @@ class MessageRouter:
             )
         else:
             # 首条消息，启动防抖定时器
-            self._private_pending[chat_id] = {
-                "texts": [text],
+            entry = {
+                "texts": [text] if text else [],
                 "message_id": message.message_id,
                 "sender_name": sender_name,
                 "timer": None,
             }
+            if has_images:
+                entry["image_messages"] = [message]
+            self._private_pending[chat_id] = entry
             loop = asyncio.get_running_loop()
             self._private_pending[chat_id]["timer"] = loop.call_later(
                 self._private_debounce_seconds,
@@ -886,9 +895,19 @@ class MessageRouter:
             return
 
         # 合并多条消息为一条
-        combined_text = "\n".join(pending["texts"])
+        combined_text = "\n".join(pending["texts"]) if pending["texts"] else ""
         message_id = pending["message_id"]
         sender_name = pending["sender_name"]
+
+        # 构建多模态内容：下载图片并组装 content blocks
+        image_messages = pending.get("image_messages", [])
+        if image_messages:
+            content = await self._build_image_content(image_messages, combined_text)
+        else:
+            content = combined_text
+
+        if not content:
+            return
 
         # 主人身份自动发现
         self._try_discover_owner(chat_id, sender_name)
@@ -908,10 +927,10 @@ class MessageRouter:
         # 使用会话管理器维护上下文
         if self.session_mgr:
             session = self.session_mgr.get_or_create(chat_id)
-            session.add_message("user", combined_text, sender_name=sender_name)
+            session.add_message("user", content, sender_name=sender_name)
             messages = session.get_messages()
         else:
-            messages = [{"role": "user", "content": combined_text}]
+            messages = [{"role": "user", "content": content}]
 
         # 添加 thinking reaction
         reaction_id = await self.sender.add_reaction(message_id, self._thinking_emoji) or ""
@@ -935,7 +954,8 @@ class MessageRouter:
                 await self._compact_session(session)
 
         # 记录日志
-        self.memory.append_daily(f"- 私聊 [{sender_name}]: {combined_text[:50]}... → {'已回复' if reply_text else '回复失败'}\n", chat_id=chat_id)
+        log_preview = combined_text[:50] if combined_text else "[图片]"
+        self.memory.append_daily(f"- 私聊 [{sender_name}]: {log_preview}... → {'已回复' if reply_text else '回复失败'}\n", chat_id=chat_id)
 
         # 异步自我反思（fire-and-forget，不阻塞回复）
         if reply_text:
@@ -2086,17 +2106,20 @@ class MessageRouter:
         """处理群聊 @at 消息 — 必须回复"""
         message = event.message
         text = self._extract_text(message)
-        if not text:
+        has_images = self._has_images(message)
+
+        if not text and not has_images:
             if self._is_non_text_message(message):
                 await self.sender.reply_text(
                     message.message_id,
-                    "目前只能处理文字消息，图片什么的还看不懂。有事打字说就好。",
+                    "目前只能处理文字消息，文件、语音什么的还处理不了。有事打字说就好。",
                 )
             return
 
         sender_id = event.sender.sender_id.open_id
-        text = self._resolve_at_mentions(text, getattr(message, "mentions", None)).strip()
-        if not text:
+        if text:
+            text = self._resolve_at_mentions(text, getattr(message, "mentions", None)).strip()
+        if not text and not has_images:
             # 空 @：从缓冲区取该用户最近的消息作为上下文
             buf = self.group_buffers.get(message.chat_id)
             if buf:
@@ -2112,7 +2135,8 @@ class MessageRouter:
         if self.sender.is_chat_left(message.chat_id):
             logger.info("Bot 已退出群 %s，忽略 @at 消息", message.chat_id[-8:])
             return
-        logger.info("群聊 @at [%s]: %s", sender_name, text[:50])
+        log_preview = text[:50] if text else "[图片]"
+        logger.info("群聊 @at [%s]: %s", sender_name, log_preview)
 
         # 构建群聊上下文（含 API 补充的机器人消息）
         group_context = ""
@@ -2157,12 +2181,18 @@ class MessageRouter:
                 name_to_id[n] = oid
         transform = lambda t: self._replace_at_mentions(t, name_to_id)
 
+        # 构建消息内容（可能包含图片）
+        if has_images:
+            content = await self._build_multimodal_content(message, text or "")
+        else:
+            content = text
+
         if self.session_mgr:
             session = self.session_mgr.get_or_create(message.chat_id)
-            session.add_message("user", text, sender_name=sender_name)
+            session.add_message("user", content, sender_name=sender_name)
             messages = session.get_messages()
         else:
-            messages = [{"role": "user", "content": text}]
+            messages = [{"role": "user", "content": content}]
 
         # 添加 thinking reaction
         reaction_id = await self.sender.add_reaction(message.message_id, self._thinking_emoji) or ""
@@ -2767,8 +2797,8 @@ class MessageRouter:
         except Exception:
             logger.exception("解析卡片回调失败: %s", event)
 
-    # 非文本消息类型映射
-    _NON_TEXT_TYPES = {"image", "file", "audio", "media", "sticker", "share_chat", "share_user"}
+    # 非文本消息类型映射（image 已移至 _IMAGE_TYPES 单独处理）
+    _NON_TEXT_TYPES = {"file", "audio", "media", "sticker", "share_chat", "share_user"}
 
     def _extract_text(self, message: Any) -> str:
         """从消息中提取文本，支持 text 和 post（富文本→Markdown）格式"""
@@ -2816,10 +2846,158 @@ class MessageRouter:
 
         return "\n".join(lines)
 
+    # 支持视觉理解的消息类型
+    _IMAGE_TYPES = {"image"}
+
     def _is_non_text_message(self, message: Any) -> bool:
         """检查是否为非文本消息（图片、文件、语音等）"""
         msg_type = getattr(message, "message_type", None) or ""
         return msg_type in self._NON_TEXT_TYPES
+
+    def _is_image_message(self, message: Any) -> bool:
+        """检查是否为纯图片消息"""
+        msg_type = getattr(message, "message_type", None) or ""
+        return msg_type in self._IMAGE_TYPES
+
+    def _has_images(self, message: Any) -> bool:
+        """检查消息是否包含图片（包括纯图片消息和富文本中的图片）"""
+        return bool(self._extract_image_keys(message))
+
+    def _extract_image_keys(self, message: Any) -> list[str]:
+        """从消息中提取所有图片的 image_key。
+
+        支持：
+        - image 类型消息：content = {"image_key": "img_xxx"}
+        - post 富文本消息：content 中 tag=img 的元素含 image_key
+        """
+        keys: list[str] = []
+        try:
+            content = json.loads(message.content)
+        except (json.JSONDecodeError, TypeError):
+            return keys
+
+        msg_type = getattr(message, "message_type", None) or ""
+
+        # 纯图片消息
+        if msg_type == "image":
+            key = content.get("image_key", "")
+            if key:
+                keys.append(key)
+            return keys
+
+        # post 富文本：遍历段落找 img 标签
+        post = content.get("post") or content
+        if isinstance(post, dict) and not post.get("content"):
+            post = next(iter(post.values()), {}) if post else {}
+        if not isinstance(post, dict):
+            return keys
+
+        for paragraph in post.get("content", []):
+            for elem in paragraph:
+                if elem.get("tag") == "img":
+                    key = elem.get("image_key", "")
+                    if key:
+                        keys.append(key)
+        return keys
+
+    async def _build_multimodal_content(
+        self, message: Any, text: str,
+    ) -> str | list[dict]:
+        """构建多模态内容：如果消息含图片则返回 content blocks 列表，否则返回纯文本。
+
+        返回格式兼容 Anthropic Messages API：
+        - 纯文本: "hello"
+        - 多模态: [{"type": "image", "source": {...}}, {"type": "text", "text": "hello"}]
+
+        图片下载失败时会在文本中附带提示，让 LLM 知道有图片未能加载。
+        """
+        image_keys = self._extract_image_keys(message)
+        if not image_keys:
+            return text
+
+        blocks: list[dict] = []
+        failed_count = 0
+        message_id = getattr(message, "message_id", "")
+
+        for key in image_keys:
+            result = await self.sender.download_image(message_id, key)
+            if result:
+                b64_data, media_type = result
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": b64_data,
+                    },
+                })
+            else:
+                failed_count += 1
+
+        # 构建文本部分，附带下载失败提示
+        text_parts = []
+        if text:
+            text_parts.append(text)
+        if failed_count:
+            text_parts.append(f"（有 {failed_count} 张图片加载失败，无法查看）")
+
+        text_combined = "\n".join(text_parts) if text_parts else ""
+
+        if text_combined:
+            blocks.append({"type": "text", "text": text_combined})
+        elif not blocks:
+            # 无图片也无文本
+            return ""
+        elif not any(b["type"] == "text" for b in blocks):
+            # 有图片但没文本，加个默认提示
+            blocks.append({"type": "text", "text": "（用户发送了图片）"})
+
+        return blocks
+
+    async def _build_image_content(
+        self, image_messages: list[Any], text: str,
+    ) -> str | list[dict]:
+        """从多条图片消息中下载图片，与文本合并为 content blocks。
+
+        用于防抖合并场景：多条消息（可能混合文本和图片）合并后统一处理。
+        图片下载失败时会在文本中附带提示。
+        """
+        blocks: list[dict] = []
+        failed_count = 0
+        for msg in image_messages:
+            keys = self._extract_image_keys(msg)
+            msg_id = getattr(msg, "message_id", "")
+            for key in keys:
+                result = await self.sender.download_image(msg_id, key)
+                if result:
+                    b64_data, media_type = result
+                    blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64_data,
+                        },
+                    })
+                else:
+                    failed_count += 1
+
+        text_parts = []
+        if text:
+            text_parts.append(text)
+        if failed_count:
+            text_parts.append(f"（有 {failed_count} 张图片加载失败，无法查看）")
+
+        text_combined = "\n".join(text_parts) if text_parts else ""
+
+        if text_combined:
+            blocks.append({"type": "text", "text": text_combined})
+        elif not blocks:
+            return ""
+        elif not any(b.get("type") == "text" for b in blocks):
+            blocks.append({"type": "text", "text": "（用户发送了图片）"})
+
+        return blocks
 
     def _resolve_at_mentions(self, text: str, mentions: Any) -> str:
         """将 @占位符替换为真名，仅移除 bot 自己的 @。
