@@ -1,6 +1,6 @@
 # 聊天平台抽象层接口规范
 
-> LingQue 平台无关通信协议 v1.3
+> LingQue 平台无关通信协议 v1.4
 >
 > 本文档定义了一个拟人化 AI Agent 在任意通讯平台上所需的**最小完备动作集**。
 > 任何新平台（Discord、Telegram、Slack、微信等）只需实现本文档定义的接口，即可接入 LingQue。
@@ -27,7 +27,7 @@
 16. [飞书适配指南](#16-飞书适配指南)
 17. [Discord 适配指南](#17-discord-适配指南)
 18. [附录 A：内核改造清单](#附录-a内核改造清单)
-19. [附录 B：v1.2 → v1.3 变更记录](#附录-bv12--v13-变更记录)
+19. [附录 B：v1.3 → v1.4 变更记录](#附录-bv13--v14-变更记录)
 20. [附录 C：历史变更摘要](#附录-c历史变更摘要)
 
 ---
@@ -182,6 +182,7 @@ class IncomingMessage:
     mentions: list[Mention]       # 已解析的 @列表
     is_mention_bot: bool
     image_keys: list[str]         # 媒体资源标识
+    reply_to_id: str = ""         # 此消息引用回复的目标消息 ID（空 = 非回复）
     timestamp: int                # Unix 毫秒
     raw: Any = None               # 内核不访问
 ```
@@ -265,11 +266,16 @@ class ChatMember:
 @dataclass
 class Reaction:
     reaction_id: str
+    chat_id: str              # 所属会话（适配器必须填充，内核不应自行反查）
     message_id: str
     emoji: str
     operator_id: str
     operator_type: SenderType
 ```
+
+> **v1.4 变更**：新增 `chat_id` 字段。内核需要 `chat_id` 来更新 bot 协作的 thinking_signals 映射表。
+> v1.3 中 Reaction 只有 `message_id`，内核被迫遍历消息缓冲区反查所属群聊（O(n)，且消息不在缓冲区时直接丢弃）。
+> 适配器离平台更近，填充 `chat_id` 的成本更低。
 
 ### 4.8 CardAction — 按钮交互
 
@@ -288,6 +294,16 @@ class CardAction:
 
 ```python
 class PlatformAdapter(ABC):
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> PlatformCapabilities:
+        """我能做什么。
+
+        内核通过此属性获取适配器的能力声明，据此决定降级策略。
+        返回值应为常量，不随运行时变化。
+        """
+        ...
 
     @abstractmethod
     async def get_identity(self) -> BotIdentity:
@@ -315,12 +331,19 @@ class PlatformAdapter(ABC):
         - queue 中必须包含会话中**所有参与者的消息**（含其他 bot）
         - 如平台原生不推 bot 消息，适配器内部补偿，对内核透明
         - 消息去重、token 管理等全部在适配器内部完成
+
+        连接稳定性契约：
+        - 适配器负责维护连接的存活性
+        - 连接断开时适配器必须自动重连（指数退避），对内核透明
+        - 重连期间不向 queue 投递任何事件（内核无感知），重连成功后恢复
+        - 如果重连持续失败（达到上限），向 queue 投递一个特殊事件通知内核
+        - 内核只调用一次 connect()，不负责监控或重启连接
         """
         ...
 
     @abstractmethod
     async def disconnect(self) -> None:
-        """停止感知，释放资源。"""
+        """停止感知，释放资源。优雅关闭底层连接。"""
         ...
 ```
 
@@ -400,6 +423,14 @@ class PlatformAdapter(ABC):
         统一的消息发送接口。适配器根据 OutgoingMessage 的字段决定最终形式。
         详细的内容分发规则见 §4.4。
 
+        消息超长处理（适配器职责）：
+        - 当 text 超过 max_message_length 时，适配器自行决定策略：
+          a) 自动分条发送（推荐，在段落/换行处分割）
+          b) 截断 + 尾部追加截断提示
+          c) 转为卡片/Embed（如果 has_rich_cards 且卡片容量更大）
+        - 内核不关心具体策略，只要信息不丢失
+        - 分条发送时返回最后一条的 message_id
+
         Returns:
             发送成功返回 message_id，失败返回 None。
         """
@@ -431,16 +462,22 @@ v1.2 将这些拆成了两个独立概念：核心的 `react/unreact` 和可选�
         收到消息后、开始长时间处理前调用。
         适配器选择平台上最合适的机制来表达这个意图。
 
-        契约：
-        - 信号应对会话中其他参与者可见（含其他 bot）
-        - 其他 bot 的适配器看到此信号后产生 reaction 事件，
-          内核据此判断"有人在处理"，实现 bot 间协作
+        契约（MUST）：
+        - 信号必须对会话中其他参与者可见（含其他 bot）
+        - 如果同一个群聊中部署了多个 bot，信号必须使用能产生
+          `reaction` 事件的机制（如 add_reaction），以便其他 bot
+          的适配器接收到该事件，内核据此判断"已有人在处理"
+
+        为什么必须用 reaction 而非 typing：
+        - typing indicator 是单向的（只有人类能看到），bot 无法监听
+        - reaction 是双向的（产生事件，其他 bot 能通过 WS 收到）
+        - 即使平台支持 typing，也应**同时**添加 reaction 用于 bot 协作
 
         实现参考：
         - 飞书: add_reaction("OnIt") — 无 typing，reaction 是唯一选择
         - Discord: trigger_typing() + add_reaction("⏳") — 双重信号
-        - Telegram: send_chat_action("typing")
-        - 本地终端: 打印 "[思考中...]" 或跳过
+        - Telegram: add_reaction("⏳") + send_chat_action("typing")
+        - 单 bot 场景 / 本地终端: 无需 reaction，空操作即可
 
         Returns:
             handle（传给 stop_thinking 用于清除），失败返回 None。
@@ -869,38 +906,22 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
 
 ---
 
-## 附录 B：v1.2 → v1.3 变更记录
+## 附录 B：v1.3 → v1.4 变更记录
 
-### 核心变更：意图统一
+### 修复 6 个设计缺陷
 
-| v1.2 | v1.3 | 理由 |
-|------|------|------|
-| 核心 `react(msg_id, emoji)` | 核心 `start_thinking(msg_id)` | "我在处理"是一个意图，不是"添加一个 reaction" |
-| 核心 `unreact(msg_id, handle)` | 核心 `stop_thinking(msg_id, handle)` | "我处理完了"是一个意图 |
-| 可选 `show_typing(chat_id)` | **删除** — 合入 `start_thinking` | 飞书 reaction("OnIt") 和 Discord typing 是同一意图的不同实现 |
-| — | 可选 `react(msg_id, emoji)` | 一般性 emoji 回应降为可选 |
-| — | 可选 `unreact(msg_id, handle)` | 配合 react |
+| # | v1.3 问题 | v1.4 修复 | 严重度 |
+|---|----------|----------|--------|
+| 1 | `PlatformAdapter` 缺少 `capabilities` 属性，内核无法获知适配器能力 | §5 新增 `capabilities` 抽象属性 | **结构性** |
+| 2 | `Reaction` 缺少 `chat_id`，内核被迫 O(n) 遍历 buffer 反查群聊 | §4.7 新增 `chat_id` 字段 | 重要 |
+| 3 | `connect()` 未声明重连责任，连接断开后行为未定义 | §6.1 新增连接稳定性契约 | 重要 |
+| 4 | `start_thinking` 的 bot 协作契约用"应"而非"必须"，Telegram typing 不产生 reaction 事件 | §8 强化为 MUST + 解释 reaction vs typing 的区别 | 中等 |
+| 5 | `send()` 对超过 `max_message_length` 的消息无处理规定 | §7 新增消息超长处理策略 | 中等 |
+| 6 | `IncomingMessage` 缺少 `reply_to_id`，不知道消息在回复谁 | §4.3 新增 `reply_to_id` 字段 | 次要 |
 
-### 澄清
+### 核心变更不变
 
-| v1.2 | v1.3 | 理由 |
-|------|------|------|
-| `OutgoingMessage` text/card "二选一" | 显式内容分发规则 + `text` 始终有意义约束 | 用户反馈：send 合一后如何区分内容类型 |
-| `has_typing` 能力标志 | **删除** | `start_thinking` 是核心方法，无需能力标志 |
-| `has_reactions` 代表核心能力 | `has_reactions` 代表可选能力 | reaction 不再是核心 |
-
-### 新增设计原则
-
-> **一个意图，一个抽象**：如果两种机制服务于同一个目的，它们是同一个抽象行为的不同实现，不应拆成两个接口。
-
-### 精简结果
-
-| 版本 | 总数 | 构成 |
-|------|------|------|
-| v1.0 | 25 个 | 含 6 个飞书补偿 |
-| v1.1 | 19 个 | 移除飞书补偿 |
-| v1.2 | 8 核心 + 3 可选 + 1 事件流 | send 合一、日历抽离、事件归并 |
-| v1.3 | **8 核心 + 4 可选 + 1 事件流** | 意图统一，react 降为可选 |
+v1.4 没有改变核心架构。仍然是 **8 核心 + 4 可选 + 1 事件流**。所有变更都是补全 v1.3 遗漏的细节。
 
 ---
 
@@ -912,3 +933,4 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
 | v1.1 | 分离"抽象需求 vs 平台补偿"，移除 6 个飞书补偿行为 |
 | v1.2 | send 五合一、日历抽离为外部服务层、事件归并、新增 show_typing/edit/unsend |
 | v1.3 | "一个意图一个抽象" — react/typing 统一为 start/stop_thinking；OutgoingMessage 内容分发规则明确化 |
+| v1.4 | 补全结构缺陷 — adapter.capabilities 属性、Reaction.chat_id、connect 重连契约、start_thinking 强制 reaction、send 超长处理、IncomingMessage.reply_to_id |
