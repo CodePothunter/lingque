@@ -76,9 +76,12 @@ async def main():
 
     # start_thinking / stop_thinking
     handle = await adapter.start_thinking("msg_1")
-    assert handle is None
-    await adapter.stop_thinking("msg_1", "")
-    ok("start_thinking / stop_thinking")
+    assert handle == "local"
+    assert not adapter._turn_done.is_set()
+    await adapter.stop_thinking("msg_1", handle)
+    assert adapter._turn_done.is_set()
+    adapter._turn_done.clear()
+    ok("start_thinking / stop_thinking (completion signal)")
 
     # fetch_media
     media = await adapter.fetch_media("msg_1", "key_1")

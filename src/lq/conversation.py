@@ -1,4 +1,8 @@
-"""本地交互式对话 — 不依赖飞书，直接在终端与灵雀对话"""
+"""本地交互式对话 — 不依赖飞书，直接在终端与灵雀对话
+
+走标准事件流：stdin → IncomingMessage → router.handle() → adapter.send() → stdout
+与飞书模式使用同一条代码路径，仅适配器不同。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,11 @@ from lq.platform import (
     PlatformAdapter,
     BotIdentity,
     ChatMember,
+    IncomingMessage,
     OutgoingMessage,
+    ChatType,
+    SenderType,
+    MessageType,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,10 +32,18 @@ LOCAL_CHAT_ID = "local_say"
 
 
 class LocalAdapter(PlatformAdapter):
-    """本地终端适配器 — 实现 PlatformAdapter，将消息输出到终端。"""
+    """本地终端适配器 — 实现 PlatformAdapter，将消息输出到终端。
+
+    输入侧：由 run_conversation 构造 IncomingMessage 投入 queue。
+    输出侧：adapter.send() 打印到 stdout。
+    同步机制：start_thinking 返回 truthy handle，使 router 的 finally 块
+    调用 stop_thinking → 设置 _turn_done 事件，通知对话循环本轮结束。
+    """
 
     def __init__(self, bot_name: str) -> None:
         self._bot_name = bot_name
+        # 对话轮次完成信号（stop_thinking 设置，conversation loop 等待）
+        self._turn_done: asyncio.Event = asyncio.Event()
 
     # ── 身份 ──
 
@@ -37,7 +53,7 @@ class LocalAdapter(PlatformAdapter):
     # ── 感知 ──
 
     async def connect(self, queue: asyncio.Queue) -> None:
-        pass  # 本地模式无需连接
+        self._queue = queue
 
     async def disconnect(self) -> None:
         pass
@@ -56,10 +72,12 @@ class LocalAdapter(PlatformAdapter):
     # ── 存在感 ──
 
     async def start_thinking(self, message_id: str) -> str | None:
-        return None  # 终端无需思考指示器
+        # 返回 truthy handle，确保 router finally 块中的 stop_thinking 被调用
+        return "local"
 
     async def stop_thinking(self, message_id: str, handle: str) -> None:
-        pass
+        # 信号：本轮处理（含 LLM 回复和发送）已完成
+        self._turn_done.set()
 
     # ── 感官 ──
 
@@ -101,6 +119,10 @@ def _extract_card_text(card_json: dict) -> str:
 async def run_conversation(home: Path, config: LQConfig, single_message: str = "") -> None:
     """运行本地交互式对话。
 
+    走标准事件流：用户输入 → IncomingMessage → router.handle() → _handle_private
+    → _flush_private → adapter.send() → 终端输出。
+    与 gateway.py 的飞书模式使用同一条代码路径。
+
     Args:
         home: 实例工作目录
         config: 实例配置
@@ -126,9 +148,11 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     from lq.session import SessionManager
     from lq.stats import StatsTracker
     from lq.tools import ToolRegistry
-    from lq.prompts import TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE, wrap_tag
 
     adapter = LocalAdapter(config.name)
+    queue: asyncio.Queue = asyncio.Queue()
+    await adapter.connect(queue)
+
     memory = MemoryManager(home, config=config)
     executor = DirectAPIExecutor(config.api, config.model)
     stats = StatsTracker(home)
@@ -139,19 +163,20 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     cc_executor = ClaudeCodeExecutor(home, config.api)
     bash_executor = BashExecutor(home)
 
-    # 日历模块不可用（本地模式无飞书 client）
-    calendar = None
-
     # 创建路由器并注入依赖
     from lq.router import MessageRouter
 
     router = MessageRouter(executor, memory, adapter, "local_bot", config.name)
+    router.config = config
     router.session_mgr = session_mgr
-    router.calendar = calendar
+    router.calendar = None  # 本地模式无飞书日历
     router.stats = stats
     router.cc_executor = cc_executor
     router.bash_executor = bash_executor
     router.tool_registry = tool_registry
+
+    # CLI 不需要防抖（用户手动输入，每条消息立即处理）
+    router._private_debounce_seconds = 0.01
 
     # 初始化后处理管线
     from lq.intent import IntentDetector
@@ -166,10 +191,11 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     router.post_processor = post_processor
 
     chat_id = LOCAL_CHAT_ID
+    msg_counter = 0
 
     if single_message:
-        # 单条消息模式
-        await _do_one_turn(router, memory, session_mgr, chat_id, single_message)
+        msg_counter += 1
+        await _dispatch_and_wait(adapter, router, chat_id, msg_counter, single_message)
         session_mgr.save()
         return
 
@@ -179,7 +205,10 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
 
     while True:
         try:
-            user_input = input("\033[1;32m你:\033[0m ").strip()
+            user_input = await asyncio.to_thread(
+                input, "\033[1;32m你:\033[0m ",
+            )
+            user_input = user_input.strip()
         except (KeyboardInterrupt, EOFError):
             print("\n再见！")
             break
@@ -208,7 +237,8 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
                         print(f"  [{role}] {content[:120]}")
             continue
 
-        await _do_one_turn(router, memory, session_mgr, chat_id, user_input)
+        msg_counter += 1
+        await _dispatch_and_wait(adapter, router, chat_id, msg_counter, user_input)
 
         # 每轮自动保存
         session_mgr.save()
@@ -217,46 +247,37 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     session_mgr.save()
 
 
-async def _do_one_turn(
+async def _dispatch_and_wait(
+    adapter: LocalAdapter,
     router: Any,
-    memory: Any,
-    session_mgr: Any,
     chat_id: str,
-    user_text: str,
+    msg_counter: int,
+    text: str,
 ) -> None:
-    """执行一轮对话：构建 system prompt → 调用工具循环 → 记录历史"""
-    from lq.prompts import TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE, wrap_tag
+    """构造标准 IncomingMessage → router.handle → 等待回复完成。
 
-    # 构建 system prompt（和 _flush_private 完全一致）
-    system = memory.build_context(chat_id=chat_id)
-    system += (
-        f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
-        "如果用户要求记住什么，使用 write_memory 工具。"
-        "如果涉及日程，使用 calendar 工具。"
-        "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
-        "需要联网查询时（搜索、天气、新闻等），使用 web_search / web_fetch 工具。"
-        "需要计算或处理数据时，使用 run_python 工具。"
-        "需要读写文件时，使用 read_file / write_file 工具。"
-        "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE)
+    利用 LocalAdapter 的 _turn_done 事件：
+    router._flush_private 的 finally 块调用 adapter.stop_thinking → 设置事件。
+    """
+    msg = IncomingMessage(
+        message_id=f"local_{msg_counter}",
+        chat_id=chat_id,
+        chat_type=ChatType.PRIVATE,
+        sender_id="local_cli_user",
+        sender_type=SenderType.USER,
+        sender_name="用户",
+        message_type=MessageType.TEXT,
+        text=text,
     )
+    adapter._turn_done.clear()
 
-    # 会话管理
-    session = session_mgr.get_or_create(chat_id)
-    session.add_message("user", user_text, sender_name="用户")
-    messages = session.get_messages()
+    await router.handle({"event_type": "message", "message": msg})
 
-    # 调用完整工具循环
-    try:
-        reply_text = await router._reply_with_tool_loop(
-            system, messages, chat_id, None,
-        )
-    except Exception:
-        logger.exception("对话失败")
-        print("\n\033[1;31m[错误] 对话处理失败，请重试\033[0m")
-        reply_text = ""
-
-    if reply_text:
-        session = session_mgr.get_or_create(chat_id)
-        session.add_message("assistant", reply_text, sender_name="你")
-        if session.should_compact():
-            await router._compact_session(session)
+    # 等待 _flush_private 完成（stop_thinking 设置 _turn_done）
+    # 防御：如果 _flush_private 提前退出（无内容），pending 被清空但事件未设置
+    while not adapter._turn_done.is_set():
+        try:
+            await asyncio.wait_for(adapter._turn_done.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            if chat_id not in router._private_pending:
+                break  # flush 已完成但无需回复

@@ -255,10 +255,27 @@ class TestLocalAdapter:
         assert result == "local_msg"
 
     async def test_start_stop_thinking(self, adapter):
+        """start_thinking 返回 truthy handle，stop_thinking 设置完成信号"""
         handle = await adapter.start_thinking("msg_1")
-        assert handle is None
-        # stop_thinking 不抛异常
-        await adapter.stop_thinking("msg_1", "")
+        assert handle == "local"
+        assert not adapter._turn_done.is_set()
+        await adapter.stop_thinking("msg_1", handle)
+        assert adapter._turn_done.is_set()
+
+    async def test_turn_done_reset(self, adapter):
+        """_turn_done 可重复使用：clear → stop_thinking → set"""
+        adapter._turn_done.clear()
+        assert not adapter._turn_done.is_set()
+        await adapter.stop_thinking("msg_1", "local")
+        assert adapter._turn_done.is_set()
+        adapter._turn_done.clear()
+        assert not adapter._turn_done.is_set()
+
+    async def test_connect_stores_queue(self, adapter):
+        """connect 保存 queue 引用"""
+        queue = asyncio.Queue()
+        await adapter.connect(queue)
+        assert adapter._queue is queue
 
     async def test_fetch_media(self, adapter):
         result = await adapter.fetch_media("msg_1", "key_1")
