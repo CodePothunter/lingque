@@ -2112,7 +2112,7 @@ class MessageRouter:
             if self._is_non_text_message(message):
                 await self.sender.reply_text(
                     message.message_id,
-                    "目前只能处理文字消息，文件、语音什么的还处理不了。有事打字说就好。",
+                    NON_TEXT_REPLY_GROUP,
                 )
             return
 
