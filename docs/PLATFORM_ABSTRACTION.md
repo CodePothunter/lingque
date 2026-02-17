@@ -1,6 +1,6 @@
 # 聊天平台抽象层接口规范
 
-> LingQue 平台无关通信协议 v1.2
+> LingQue 平台无关通信协议 v1.3
 >
 > 本文档定义了一个拟人化 AI Agent 在任意通讯平台上所需的**最小完备动作集**。
 > 任何新平台（Discord、Telegram、Slack、微信等）只需实现本文档定义的接口，即可接入 LingQue。
@@ -16,7 +16,7 @@
 5. [身份 — 我是谁](#5-身份--我是谁)
 6. [感知 — 我看到了什么](#6-感知--我看到了什么)
 7. [表达 — 我说了什么](#7-表达--我说了什么)
-8. [情绪 — 我的即时反应](#8-情绪--我的即时反应)
+8. [存在感 — 我在处理](#8-存在感--我在处理)
 9. [感官 — 我看到的图片和文件](#9-感官--我看到的图片和文件)
 10. [认知 — 我知道谁是谁](#10-认知--我知道谁是谁)
 11. [可选行为](#11-可选行为)
@@ -27,7 +27,8 @@
 16. [飞书适配指南](#16-飞书适配指南)
 17. [Discord 适配指南](#17-discord-适配指南)
 18. [附录 A：内核改造清单](#附录-a内核改造清单)
-19. [附录 B：v1.1 → v1.2 变更记录](#附录-bv11--v12-变更记录)
+19. [附录 B：v1.2 → v1.3 变更记录](#附录-bv12--v13-变更记录)
+20. [附录 C：历史变更摘要](#附录-c历史变更摘要)
 
 ---
 
@@ -35,6 +36,7 @@
 
 - **描述人的行为，不描述 API 的形状**：接口按"一个人在聊天中做什么"来组织，不按平台 API 的技术结构。
 - **最小完备**：每个接口都不可再拆，也不可移除。如果去掉它，Agent 就不再像一个完整的对话参与者。
+- **一个意图，一个抽象**：如果两种机制服务于同一个目的（如飞书 reaction("OnIt") 和 Discord typing 都是"我在处理"），它们是同一个抽象行为的不同实现，不应拆成两个接口。
 - **补偿对内核透明**：平台特有的补偿行为（轮询、身份推断、格式转换）封装在适配器内部。
 - **能力声明制**：适配器声明自身能力，内核据此降级。
 - **异步优先**：所有 I/O 均为 `async def`。
@@ -51,10 +53,11 @@ Agent 说: "给我所有消息"
   Discord 适配器: Gateway 直接全收 → 投入事件队列
   Agent 看到的: 事件队列里源源不断的 IncomingMessage，一视同仁
 
-Agent 说: "这条消息的发送者叫什么"
-  飞书适配器: 查缓存 → 拉群成员 → 联系人 API → cli_xxx 推断
-  Discord 适配器: message.author.display_name
-  Agent 看到的: IncomingMessage.sender_name = "小明"
+Agent 说: "告诉他们我在想"
+  飞书适配器: add_reaction("OnIt")
+  Discord 适配器: trigger_typing() + add_reaction("⏳")
+  Telegram 适配器: send_chat_action("typing")
+  Agent 看到的: 调了一个方法，拿到 handle，处理完后清掉
 ```
 
 以下行为是飞书补偿，**不在抽象接口中出现**：
@@ -83,7 +86,7 @@ Agent 说: "这条消息的发送者叫什么"
 ├─────────────────────────────────────────────┤
 │  表达 (Expression)   我说了什么               │  1 方法
 ├─────────────────────────────────────────────┤
-│  情绪 (Emotion)      我的即时反应              │  2 方法
+│  存在感 (Presence)   我在处理                 │  2 方法
 ├─────────────────────────────────────────────┤
 │  感官 (Senses)       我看到的图片和文件         │  1 方法
 ├─────────────────────────────────────────────┤
@@ -97,8 +100,8 @@ Agent 说: "这条消息的发送者叫什么"
 | 身份 | 我是谁 | `get_identity() → BotIdentity` | 不知道自己是谁，无法过滤自己的消息 |
 | 感知 | 我看到了什么 | 事件流 → `asyncio.Queue` | 不感知外界就无法存在 |
 | 表达 | 我说了什么 | `send(OutgoingMessage) → str?` | 不能说话的 Agent 没有意义 |
-| 情绪 | 我在想 | `react(message_id, emoji) → handle` | 非语言信号，人类交互的基本组成 |
-| 情绪 | 我想完了 | `unreact(message_id, handle)` | 状态回收（"正在输入"→ 消失） |
+| 存在感 | 我在想 | `start_thinking(message_id) → handle` | 人收到消息后会显示"正在处理" |
+| 存在感 | 我想完了 | `stop_thinking(message_id, handle)` | 处理完成，清除处理中信号 |
 | 感官 | 我看到了图片 | `fetch_media(msg_id, key) → (data, mime)` | 多模态理解能力 |
 | 认知 | 这是谁 | `resolve_name(user_id) → str` | 对话中必须知道对方叫什么 |
 | 认知 | 群里有谁 | `list_members(chat_id) → [Member]` | 群聊需要知道参与者 |
@@ -107,10 +110,22 @@ Agent 说: "这条消息的发送者叫什么"
 
 | 行为 | 方法 | 降级策略 |
 |------|------|---------|
-| 正在输入 | `show_typing(chat_id)` | 跳过 |
-| 改口 | `edit(message_id, new_text) → bool` | 发新消息更正 |
+| 表情回应 | `react(message_id, emoji) → handle` | 跳过 |
+| 撤销表情 | `unreact(message_id, handle)` | 跳过 |
+| 改口 | `edit(message_id, new_content) → bool` | 发新消息更正 |
 | 撤回 | `unsend(message_id) → bool` | 不撤回 |
 | 按钮交互 | `card.action` 事件 | 文字确认 |
+
+### v1.2 → v1.3 关键变更
+
+**react/unreact 为什么从核心降为可选？**
+
+v1.2 将 `react/unreact` 列为核心，同时将 `show_typing` 列为可选，但实际代码中 reaction 的**主要用途**就是"正在处理"指示器（飞书的 `add_reaction("OnIt")`）。这和 Discord 的 `trigger_typing()` 是**同一个意图的不同实现**。
+
+v1.3 的修正：
+- 提取"正在处理"这个**意图**为核心抽象 → `start_thinking` / `stop_thinking`
+- 适配器自行选择实现机制（reaction、typing indicator、chat action...）
+- 一般性的 emoji 表情回应（👍、❤️）降为可选 — 缺少它 Agent 仍能完整对话
 
 ---
 
@@ -179,25 +194,51 @@ class IncomingMessage:
 
 ### 4.4 OutgoingMessage — 要说的话
 
-**v1.2 核心变更：取代 v1.1 的 send_text / reply_text / send_card / reply_card 四个方法。**
-
 一个人说话时不会想"我调哪个 API"。他就是**说了一句话**，可能回复某条，可能带格式。
 
 ```python
 @dataclass
 class OutgoingMessage:
     chat_id: str
-    text: str = ""                       # Markdown 文本
+    text: str = ""                       # Markdown 文本（始终填充，作为内容和降级后备）
     reply_to: str = ""                   # 引用回复的消息 ID（空 = 不引用）
     mentions: list[Mention] = field(default_factory=list)  # 需要 @的人
-    card: dict | None = None             # 富内容卡片（与 text 二选一）
+    card: dict | None = None             # 结构化卡片（可选，见 §15）
 ```
 
-适配器收到 `OutgoingMessage` 后自行决定：
-- `reply_to` 非空 + 平台支持引用 → 引用回复；否则普通发送
-- `card` 非空 + 平台支持卡片 → 发卡片；否则从 card 提取文本发纯文本
-- `mentions` 非空 → 将 `@name` 转换为平台原生格式（飞书 `<at>` / Discord `<@id>`）
-- `text` 含 Markdown → 平台支持则保留，不支持则 strip
+**内容分发规则（适配器执行）：**
+
+```
+OutgoingMessage 到达适配器
+│
+├─ card 非空？
+│   ├─ 是 + has_rich_cards → 渲染为平台原生卡片（飞书 interactive / Discord Embed）
+│   └─ 是 + !has_rich_cards → 忽略 card，使用 text 作为降级
+│
+├─ card 为空
+│   ├─ has_markdown → 发送 text，保留 Markdown 格式
+│   └─ !has_markdown → strip Markdown 后发纯文本
+│       （飞书补偿：检测到代码块等复杂格式时自动切卡片）
+│
+├─ reply_to 非空？
+│   ├─ has_reply → 引用回复
+│   └─ !has_reply → 降级为普通发送
+│
+└─ mentions 非空？
+    └─ 将 @name 转换为平台原生格式（飞书 <at> / Discord <@id>）
+```
+
+**核心约束：`text` 始终有意义。** 无论是否附带 card，`text` 都应包含完整的文字内容。`card` 是同一信息的**结构化增强呈现**，不是独立于 `text` 的另一条消息。当平台不支持卡片时，`text` 就是全部内容，不会丢失信息。
+
+**与 v1.1 的 5 个方法的对应关系：**
+
+| v1.1 方法 | v1.3 等价 |
+|-----------|----------|
+| `send_text(chat_id, text)` | `send(OutgoingMessage(chat_id, text))` |
+| `reply_text(msg_id, text)` | `send(OutgoingMessage(chat_id, text, reply_to=msg_id))` |
+| `send_card(chat_id, card)` | `send(OutgoingMessage(chat_id, text, card=card))` |
+| `reply_card(msg_id, card)` | `send(OutgoingMessage(chat_id, text, reply_to=msg_id, card=card))` |
+| `format_mention(user_id)` | `OutgoingMessage.mentions` 字段 |
 
 ### 4.5 BotIdentity — 我是谁
 
@@ -252,7 +293,7 @@ class PlatformAdapter(ABC):
     async def get_identity(self) -> BotIdentity:
         """我是谁。
 
-        启动时调用。内核用 bot_id 过滤自己发的消息。
+        启动时调用。内核用 bot_id 过滤自己的消息。
         """
         ...
 ```
@@ -300,7 +341,7 @@ class PlatformAdapter(ABC):
     "reaction": Reaction,
 }
 
-# ── 群组成员变动（合并了 v1.1 的 3 个事件）──
+# ── 群组成员变动 ──
 {
     "event_type": "member_change",
     "chat_id": str,
@@ -321,6 +362,10 @@ class PlatformAdapter(ABC):
     "timer_type": str,               # "eval_timeout" / "debounce" / etc.
 }
 ```
+
+**关于 reaction 事件与 bot 协作：**
+
+内核通过监听 `reaction` 事件来感知其他 bot 的处理状态。当适配器的 `start_thinking` 实现使用 reaction 机制时（如飞书），该 reaction 会自然产生 `reaction` 事件，被其他 bot 实例接收。内核据此判断"已有人在处理"，避免重复回答。这是现有 `_thinking_signals` 机制的自然延续，无需额外事件类型。
 
 ### 6.3 消息完整性契约
 
@@ -352,11 +397,8 @@ class PlatformAdapter(ABC):
     async def send(self, message: OutgoingMessage) -> str | None:
         """说话。
 
-        统一的消息发送接口。适配器根据 OutgoingMessage 的字段自行决定：
-        - reply_to 非空 → 引用回复（平台不支持则降级为普通发送）
-        - card 非空 → 富内容（平台不支持则提取文本发纯文本）
-        - mentions 非空 → 将 @name 转为平台原生格式
-        - text 含 Markdown → 平台支持则保留，否则 strip
+        统一的消息发送接口。适配器根据 OutgoingMessage 的字段决定最终形式。
+        详细的内容分发规则见 §4.4。
 
         Returns:
             发送成功返回 message_id，失败返回 None。
@@ -364,44 +406,78 @@ class PlatformAdapter(ABC):
         ...
 ```
 
-**v1.2 变更：取代 v1.1 的 `send_text` / `reply_text` / `send_card` / `reply_card` / `format_mention` 五个方法。**
-
-为什么合并：
-- 人类不会想"我要 reply_card 还是 send_text"。他就是说了一句话。
-- 引用回复 vs 新消息 → `reply_to` 字段
-- 纯文本 vs 卡片 → `text` vs `card` 字段
-- @提及 → `mentions` 字段，适配器内部处理格式转换
-- Markdown 渲染 → 适配器的责任
-
 ---
 
-## 8. 情绪 — 我的即时反应
+## 8. 存在感 — 我在处理
 
-表情回应是**非语言信号**，人类在聊天中大量使用。
+人类在聊天中收到一条需要时间处理的消息时，会发出"我在看了"的信号。
+这个信号的**机制**因平台而异，但**意图**完全相同：
+
+| 平台 | "我在处理"的机制 |
+|------|---------------|
+| 飞书 | `add_reaction("OnIt")` — 没有 typing 指示器，用 reaction 替代 |
+| Discord | `trigger_typing()` + 可选 `add_reaction("⏳")` |
+| Telegram | `send_chat_action("typing")` |
+| Slack | 无原生 typing for bots — 可 reaction 或跳过 |
+
+v1.2 将这些拆成了两个独立概念：核心的 `react/unreact` 和可选的 `show_typing`。
+但它们服务于**同一个意图**。v1.3 将其统一为：
 
 ```python
     @abstractmethod
-    async def react(self, message_id: str, emoji: str) -> str | None:
-        """对一条消息做出表情反应。
+    async def start_thinking(self, message_id: str) -> str | None:
+        """表达"我收到了，正在处理"。
 
-        Args:
-            emoji: 平台无关标识（如 "thinking", "thumbsup", "eyes"）
-                   适配器内部映射到平台原生 emoji
+        收到消息后、开始长时间处理前调用。
+        适配器选择平台上最合适的机制来表达这个意图。
+
+        契约：
+        - 信号应对会话中其他参与者可见（含其他 bot）
+        - 其他 bot 的适配器看到此信号后产生 reaction 事件，
+          内核据此判断"有人在处理"，实现 bot 间协作
+
+        实现参考：
+        - 飞书: add_reaction("OnIt") — 无 typing，reaction 是唯一选择
+        - Discord: trigger_typing() + add_reaction("⏳") — 双重信号
+        - Telegram: send_chat_action("typing")
+        - 本地终端: 打印 "[思考中...]" 或跳过
 
         Returns:
-            reaction_handle（用于 unreact），失败返回 None。
-
-        主要用途：
-        1. 处理中指示 — 收到消息时 react("thinking")，回复后 unreact
-        2. Bot 间协作 — 信号"我在处理这个问题"，避免重复回答
+            handle（传给 stop_thinking 用于清除），失败返回 None。
         """
         ...
 
     @abstractmethod
-    async def unreact(self, message_id: str, handle: str) -> bool:
-        """撤销之前的表情反应。"""
+    async def stop_thinking(self, message_id: str, handle: str) -> None:
+        """清除"正在处理"信号。
+
+        回复完成后调用。如果 start_thinking 使用了 reaction，
+        则此方法移除该 reaction；如果用的是 typing，则自然消失，此方法为空操作。
+        """
         ...
 ```
+
+**典型使用模式（与现有代码完全一致）：**
+
+```python
+# 当前 router.py:
+reaction_id = await self.sender.add_reaction(message_id, self._thinking_emoji)
+try:
+    reply = await self._reply_with_tool_loop(...)
+finally:
+    if reaction_id:
+        await self.sender.remove_reaction(message_id, reaction_id)
+
+# 抽象后:
+handle = await adapter.start_thinking(message_id)
+try:
+    reply = await self._reply_with_tool_loop(...)
+finally:
+    if handle:
+        await adapter.stop_thinking(message_id, handle)
+```
+
+内核代码**零逻辑变更**，只换了方法名。但适配器获得了自由 — 不再被迫使用 reaction 机制。
 
 ---
 
@@ -458,26 +534,33 @@ class PlatformAdapter(ABC):
 
 以下行为**不在核心 8 个动作中**，但能让 Agent 更像人类。适配器通过能力声明来标识是否支持。
 
-### 11.1 show_typing — 正在输入
+### 11.1 react — 表情回应
 
 ```python
-    async def show_typing(self, chat_id: str) -> None:
-        """让对方看到"正在输入..."。
+    async def react(self, message_id: str, emoji: str) -> str | None:
+        """对一条消息做出表情反应。
 
-        比 react("thinking") 更自然的处理中指示。
-        平台不支持时空实现即可。
+        Args:
+            emoji: 平台无关标识（如 "thumbsup", "heart", "eyes"）
+                   适配器内部映射到平台原生 emoji
 
-        - Discord: channel.trigger_typing()
-        - Telegram: send_chat_action("typing")
-        - 飞书: 无原生支持，空实现
+        Returns:
+            reaction_handle（用于 unreact），失败返回 None。
+
+        用途：表达情绪（"我喜欢这条消息"、"收到"等）。
+        注意：处理中指示使用核心的 start_thinking/stop_thinking，不用 react。
         """
+        ...
+
+    async def unreact(self, message_id: str, handle: str) -> bool:
+        """撤销之前的表情反应。"""
         ...
 ```
 
 ### 11.2 edit — 改口
 
 ```python
-    async def edit(self, message_id: str, new_text: str) -> bool:
+    async def edit(self, message_id: str, new_content: OutgoingMessage) -> bool:
         """修改已发的消息。
 
         用途：
@@ -526,9 +609,6 @@ class PlatformCapabilities:
     has_card_actions: bool = False       # 卡片支持交互按钮
     max_message_length: int = 4000      # 单条消息字符上限
 
-    # ── 情绪 ──
-    has_reactions: bool = False          # 支持表情回应
-
     # ── 感官 ──
     has_media_download: bool = False     # 支持下载图片/文件
 
@@ -537,22 +617,27 @@ class PlatformCapabilities:
     has_mentions: bool = True            # 支持 @提及
 
     # ── 可选行为 ──
-    has_typing: bool = False             # 支持 show_typing
+    has_reactions: bool = False          # 支持 react/unreact
     has_edit: bool = False               # 支持 edit
     has_unsend: bool = False             # 支持 unsend
 ```
+
+> **注意：`start_thinking`/`stop_thinking` 没有能力标志。**
+> 它们是核心方法，适配器必须实现。但实现可以是空操作 —
+> 如果平台既不支持 reaction 也不支持 typing indicator，
+> `start_thinking` 返回 `None`，`stop_thinking` 为空操作即可。
+> 内核代码无需任何改变。
 
 ### 降级逻辑
 
 | 能力缺失 | 内核行为 |
 |---------|---------|
 | `has_reply = False` | `reply_to` 被忽略，降级为普通发送 |
-| `has_rich_cards = False` | `card` 被提取文本后发纯文本 |
-| `has_reactions = False` | 跳过处理中指示器、bot 间意图信号 |
+| `has_rich_cards = False` | `card` 被忽略，使用 `text` 作为降级 |
 | `has_media_download = False` | 图片消息降级为 `[图片]` 文字描述 |
 | `has_group_members = False` | 跳过群成员相关上下文 |
 | `has_card_actions = False` | 审批降级为文字确认 |
-| `has_typing = False` | 跳过 typing 指示器 |
+| `has_reactions = False` | 跳过一般性 emoji 回应 |
 | `has_edit = False` | 状态更新改为发新消息 |
 | `has_unsend = False` | 不撤回 |
 
@@ -575,8 +660,6 @@ class PlatformConfig(ABC):
 ---
 
 ## 14. 外部服务层（非平台抽象）
-
-**v1.2 核心变更：日历从平台抽象中抽离。**
 
 日历不是聊天平台的本质能力。飞书恰好内建了日历，但 Discord/Telegram 没有。
 日历（以及未来的邮件、TODO、文档等）属于**外部服务层**，与平台适配器平行：
@@ -665,11 +748,10 @@ FEISHU_CAPABILITIES = PlatformCapabilities(
     has_markdown=False,          # 文本消息不渲染 Markdown
     has_rich_cards=True,
     has_card_actions=True,
-    has_reactions=True,
     has_media_download=True,
     has_group_members=True,
     has_mentions=True,
-    has_typing=False,            # 飞书无 typing 指示器
+    has_reactions=True,          # 支持一般性 emoji 回应
     has_edit=False,              # 飞书不支持编辑已发消息
     has_unsend=False,            # 飞书不支持撤回已发消息
     max_message_length=10000,
@@ -682,9 +764,9 @@ FEISHU_CAPABILITIES = PlatformCapabilities(
 |---------|---------|
 | `get_identity()` | `GET /bot/v3/info` → `BotIdentity` |
 | `connect(queue)` | `lark_oapi.ws.Client` (daemon thread) + `_poll_bot_messages` (后台) |
-| `send(msg)` | `reply_to` 判断 → `CreateMessageRequest` / `ReplyMessageRequest`；`card` 判断 → `msg_type="interactive"` / `"text"`；`mentions` → `<at>` 标签；Markdown → strip 或自动切卡片 |
-| `react(msg_id, emoji)` | `POST /messages/{id}/reactions` |
-| `unreact(msg_id, handle)` | `DELETE /messages/{id}/reactions/{rid}` |
+| `send(msg)` | `reply_to` 判断 → `CreateMessage` / `ReplyMessage`；`card` 判断 → `msg_type="interactive"` / `"text"`；`mentions` → `<at>` 标签；Markdown → strip 或自动切卡片 |
+| `start_thinking(msg_id)` | `POST /messages/{id}/reactions` body=`{"emoji_type":"OnIt"}` → 返回 reaction_id 作为 handle |
+| `stop_thinking(msg_id, handle)` | `DELETE /messages/{id}/reactions/{handle}` |
 | `fetch_media(msg_id, key)` | `GET /messages/{id}/resources/{key}` + 压缩 |
 | `resolve_name(user_id)` | 缓存 → 群成员 API → 联系人 API → bot 推断 |
 | `list_members(chat_id)` | `GET /chats/{id}/members` + bot 信号注册 |
@@ -712,16 +794,31 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
     has_markdown=True,
     has_rich_cards=True,             # Embed
     has_card_actions=True,           # Button components
-    has_reactions=True,
     has_media_download=True,
     has_group_members=True,
     has_mentions=True,
-    has_typing=True,                 # channel.trigger_typing()
+    has_reactions=True,
     has_edit=True,                   # message.edit()
     has_unsend=True,                 # message.delete()
     max_message_length=2000,
 )
 ```
+
+### 核心映射
+
+| 抽象方法 | Discord 实现 |
+|---------|-------------|
+| `get_identity()` | `client.user` |
+| `connect(queue)` | `discord.Client` + on_message / on_raw_reaction_add / etc. |
+| `send(msg)` | `channel.send()` / `message.reply()`；card → `Embed`；mentions → `<@id>` |
+| `start_thinking(msg_id)` | `channel.trigger_typing()` + `message.add_reaction("⏳")` → reaction_id |
+| `stop_thinking(msg_id, handle)` | `reaction.remove()` (typing 自然消失) |
+| `fetch_media` | `attachment.url` 直接 HTTP GET |
+| `resolve_name` | `guild.get_member()` / `client.fetch_user()` |
+| `list_members` | `guild.members` |
+| `react` / `unreact` | `message.add_reaction()` / `reaction.remove()` |
+| `edit` | `message.edit()` |
+| `unsend` | `message.delete()` |
 
 ### 不需要的飞书补偿
 
@@ -734,21 +831,6 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
 | Markdown 降级 | 原生支持 |
 | Token 刷新 | Bot Token 长期有效 |
 
-### 核心映射
-
-| 抽象方法 | Discord 实现 |
-|---------|-------------|
-| `get_identity()` | `client.user` |
-| `connect(queue)` | `discord.Client` + on_message / on_raw_reaction_add / etc. |
-| `send(msg)` | `channel.send()` / `message.reply()`；card → `Embed`；mentions → `<@id>` |
-| `react` / `unreact` | `message.add_reaction()` / `reaction.remove()` |
-| `fetch_media` | `attachment.url` 直接 HTTP GET |
-| `resolve_name` | `guild.get_member()` / `client.fetch_user()` |
-| `list_members` | `guild.members` |
-| `show_typing` | `channel.trigger_typing()` |
-| `edit` | `message.edit()` |
-| `unsend` | `message.delete()` |
-
 ---
 
 ## 附录 A：内核改造清单
@@ -758,6 +840,9 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
 | 当前 | 改为 |
 |------|------|
 | `sender.send_text()` / `reply_text()` / `send_card()` / `reply_card()` | `adapter.send(OutgoingMessage(...))` |
+| `sender.add_reaction(msg_id, self._thinking_emoji)` | `adapter.start_thinking(msg_id)` |
+| `sender.remove_reaction(msg_id, reaction_id)` | `adapter.stop_thinking(msg_id, handle)` |
+| `self._thinking_emoji` 硬编码 | 删除，适配器内部决定机制 |
 | `sender._user_name_cache` 直接访问 | `adapter.resolve_name()` |
 | `self._replace_at_mentions()` 生成飞书 `<at>` 标签 | `OutgoingMessage.mentions` 字段，适配器处理 |
 | `_extract_text()` / `_extract_image_keys()` / `_resolve_at_mentions()` | 移入飞书适配器 |
@@ -784,30 +869,29 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
 
 ---
 
-## 附录 B：v1.1 → v1.2 变更记录
+## 附录 B：v1.2 → v1.3 变更记录
 
-### 合并
+### 核心变更：意图统一
 
-| v1.1 | v1.2 | 理由 |
+| v1.2 | v1.3 | 理由 |
 |------|------|------|
-| `send_text` + `reply_text` + `send_card` + `reply_card` + `format_mention` | `send(OutgoingMessage)` | 人类说话是一个动作，不是五个 |
-| `bot.added_to_group` + `bot.removed_from_group` + `user.joined_group` | `member_change` 事件 | 都是成员变动 |
-| `get_user_name` | `resolve_name` | 统一命名 |
-| `get_group_members` | `list_members` | 统一命名 |
+| 核心 `react(msg_id, emoji)` | 核心 `start_thinking(msg_id)` | "我在处理"是一个意图，不是"添加一个 reaction" |
+| 核心 `unreact(msg_id, handle)` | 核心 `stop_thinking(msg_id, handle)` | "我处理完了"是一个意图 |
+| 可选 `show_typing(chat_id)` | **删除** — 合入 `start_thinking` | 飞书 reaction("OnIt") 和 Discord typing 是同一意图的不同实现 |
+| — | 可选 `react(msg_id, emoji)` | 一般性 emoji 回应降为可选 |
+| — | 可选 `unreact(msg_id, handle)` | 配合 react |
 
-### 抽离
+### 澄清
 
-| v1.1 | v1.2 | 理由 |
+| v1.2 | v1.3 | 理由 |
 |------|------|------|
-| `CalendarService` 在平台抽象中 | 独立为外部服务层 | 日历不是聊天平台的事 |
+| `OutgoingMessage` text/card "二选一" | 显式内容分发规则 + `text` 始终有意义约束 | 用户反馈：send 合一后如何区分内容类型 |
+| `has_typing` 能力标志 | **删除** | `start_thinking` 是核心方法，无需能力标志 |
+| `has_reactions` 代表核心能力 | `has_reactions` 代表可选能力 | reaction 不再是核心 |
 
-### 新增
+### 新增设计原则
 
-| 方法 | 理由 |
-|------|------|
-| `show_typing(chat_id)` | 比 react("thinking") 更自然的处理中指示 |
-| `edit(message_id, text)` | 人类会改口 |
-| `unsend(message_id)` | 人类会撤回 |
+> **一个意图，一个抽象**：如果两种机制服务于同一个目的，它们是同一个抽象行为的不同实现，不应拆成两个接口。
 
 ### 精简结果
 
@@ -815,4 +899,16 @@ DISCORD_CAPABILITIES = PlatformCapabilities(
 |------|------|------|
 | v1.0 | 25 个 | 含 6 个飞书补偿 |
 | v1.1 | 19 个 | 移除飞书补偿 |
-| v1.2 | **8 核心 + 3 可选 + 1 事件流** | send 合一、日历抽离、事件归并 |
+| v1.2 | 8 核心 + 3 可选 + 1 事件流 | send 合一、日历抽离、事件归并 |
+| v1.3 | **8 核心 + 4 可选 + 1 事件流** | 意图统一，react 降为可选 |
+
+---
+
+## 附录 C：历史变更摘要
+
+| 版本 | 核心变更 |
+|------|---------|
+| v1.0 | 初始设计：25 个抽象动作，全量映射飞书交互 |
+| v1.1 | 分离"抽象需求 vs 平台补偿"，移除 6 个飞书补偿行为 |
+| v1.2 | send 五合一、日历抽离为外部服务层、事件归并、新增 show_typing/edit/unsend |
+| v1.3 | "一个意图一个抽象" — react/typing 统一为 start/stop_thinking；OutgoingMessage 内容分发规则明确化 |
