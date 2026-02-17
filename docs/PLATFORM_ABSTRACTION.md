@@ -1,8 +1,8 @@
 # 聊天平台抽象层接口规范
 
-> LingQue 平台无关通信协议 v1.1
+> LingQue 平台无关通信协议 v1.2
 >
-> 本文档定义了 LingQue 内核与外部聊天平台之间的全部交互契约。
+> 本文档定义了一个拟人化 AI Agent 在任意通讯平台上所需的**最小完备动作集**。
 > 任何新平台（Discord、Telegram、Slack、微信等）只需实现本文档定义的接口，即可接入 LingQue。
 
 ---
@@ -10,174 +10,205 @@
 ## 目录
 
 1. [设计原则](#1-设计原则)
-2. [核心哲学：抽象需求 vs 平台补偿](#2-核心哲学抽象需求-vs-平台补偿)
-3. [标准化数据类型](#3-标准化数据类型)
-4. [接口总览](#4-接口总览)
-5. [连接与生命周期](#5-连接与生命周期-platformconnection)
-6. [消息发送](#6-消息发送-messagesender)
-7. [消息与事件接收](#7-消息与事件接收-eventlistener)
-8. [身份与成员查询](#8-身份与成员查询-identityresolver)
-9. [Reaction / 表情回应](#9-reaction--表情回应-reactionmanager)
-10. [多媒体资源](#10-多媒体资源-mediahandler)
-11. [日历集成（可选）](#11-日历集成可选-calendarservice)
-12. [富内容卡片 / Embed](#12-富内容卡片--embed-richcontentbuilder)
-13. [卡片交互回调](#13-卡片交互回调)
-14. [平台能力声明](#14-平台能力声明-platformcapabilities)
-15. [平台配置](#15-平台配置-platformconfig)
+2. [抽象需求 vs 平台补偿](#2-抽象需求-vs-平台补偿)
+3. [最小完备动作集总览](#3-最小完备动作集总览)
+4. [标准化数据类型](#4-标准化数据类型)
+5. [身份 — 我是谁](#5-身份--我是谁)
+6. [感知 — 我看到了什么](#6-感知--我看到了什么)
+7. [表达 — 我说了什么](#7-表达--我说了什么)
+8. [情绪 — 我的即时反应](#8-情绪--我的即时反应)
+9. [感官 — 我看到的图片和文件](#9-感官--我看到的图片和文件)
+10. [认知 — 我知道谁是谁](#10-认知--我知道谁是谁)
+11. [可选行为](#11-可选行为)
+12. [能力声明](#12-能力声明)
+13. [平台配置](#13-平台配置)
+14. [外部服务层（非平台抽象）](#14-外部服务层非平台抽象)
+15. [标准卡片结构](#15-标准卡片结构)
 16. [飞书适配指南](#16-飞书适配指南)
 17. [Discord 适配指南](#17-discord-适配指南)
 18. [附录 A：内核改造清单](#附录-a内核改造清单)
-19. [附录 B：完整动作清单](#附录-b完整动作清单)
+19. [附录 B：v1.1 → v1.2 变更记录](#附录-bv11--v12-变更记录)
 
 ---
 
 ## 1. 设计原则
 
-- **内核零依赖**：LingQue 核心（router、memory、session、executor）不引用任何平台 SDK。所有平台交互通过本文档定义的抽象接口完成。
-- **数据归一化**：不同平台的消息、用户、群组等概念统一为标准数据类型，内核只处理标准类型。
-- **描述需求，不描述补偿**：抽象接口只定义**内核需要什么**，不定义**平台怎么满足**。平台特有的补偿行为（轮询、身份推断、格式转换等）封装在适配器内部，对内核完全透明。
-- **能力声明制**：适配器通过 `PlatformCapabilities` 声明自身能力，内核据此降级或跳过功能。
-- **异步优先**：所有 I/O 接口均为 `async def`。
-- **事件驱动**：适配器将平台原始事件转换为标准事件，投入统一的事件队列，由内核消费。
+- **描述人的行为，不描述 API 的形状**：接口按"一个人在聊天中做什么"来组织，不按平台 API 的技术结构。
+- **最小完备**：每个接口都不可再拆，也不可移除。如果去掉它，Agent 就不再像一个完整的对话参与者。
+- **补偿对内核透明**：平台特有的补偿行为（轮询、身份推断、格式转换）封装在适配器内部。
+- **能力声明制**：适配器声明自身能力，内核据此降级。
+- **异步优先**：所有 I/O 均为 `async def`。
 
 ---
 
-## 2. 核心哲学：抽象需求 vs 平台补偿
+## 2. 抽象需求 vs 平台补偿
 
-设计抽象层时，最关键的区分是：**什么是内核的真实需求，什么是为了应付特定平台限制的补偿行为**。
-
-### 内核的真实需求
-
-内核关心的是：
-
-| 我需要... | 而不是... |
-|-----------|----------|
-| 收到会话中的**所有消息**（含其他 bot 的） | 轮询 REST API 补漏 |
-| 知道消息发送者的**名字** | 批量拉群成员 + 时序推断 bot 身份 |
-| 知道群里**有哪些 bot** | 通过消息信号逐步注册 |
-| 知道 bot 是否**还在群里** | 检测 HTTP 400 错误 |
-| 把一段 Markdown 文本**发出去** | 判断是否含代码块，切换卡片/纯文本 |
-| @一个用户 | 生成 `<at user_id="ou_xxx">名字</at>` 标签 |
-| 给消息加一个**表情** | 管理 reaction_id、处理 token 刷新 |
-
-### 适配器的补偿职责
-
-以下行为是**飞书平台限制**的补偿，属于飞书适配器的内部实现，**绝对不应出现在抽象接口中**：
-
-| 飞书限制 | 补偿行为 | 为什么其他平台不需要 |
-|---------|---------|-------------------|
-| WS 收不到其他 bot 的消息 | REST 轮询 `fetch_chat_messages` 补漏 | Discord/Telegram 的事件流天然包含所有 bot 消息 |
-| 消息 API 对 bot 返回 app_id (cli_xxx) 而非 open_id | 通过时序法/排除法推断 `infer_bot_identities` | Discord/Telegram 的 bot 有统一 ID 体系 |
-| 群成员 API 对 bot 信息不完整 | 通过消息信号逐步 `register_bot_member` | Discord 的 Guild.members 直接返回完整列表 |
-| 无法直接检测 bot 已退群 | 通过 HTTP 400 副作用推断 `is_chat_left` | Discord 有 on_guild_remove 事件，Telegram 有相关 update |
-| 文本消息不支持 Markdown 渲染 | 检测复杂 Markdown → 自动切换卡片发送 | Discord/Telegram 原生支持 Markdown |
-| @提及使用占位符 @_user_N | 解析 mentions 数组替换占位符 | Discord 使用 `<@id>` 原始格式，解析更直接 |
-| receive_id 需根据前缀推断类型 (oc_/ou_/on_) | `_infer_receive_id_type` | Discord/Telegram 用统一的 channel_id/chat_id |
-| Token 有效期 2 小时 | `_get_tenant_token` 自动刷新 | Discord 用长期 Bot Token，无需刷新 |
-
-### 原则：适配器对内核的承诺
-
-适配器向内核承诺的是：**你要的数据和能力我都帮你搞定，你不需要知道我怎么做到的**。
+抽象接口只定义**Agent 需要什么**，不定义**平台怎么满足**。
 
 ```
-内核说: "给我所有消息"
+Agent 说: "给我所有消息"
   飞书适配器: WS 收一半 + REST 轮询补另一半 → 统一投入事件队列
   Discord 适配器: Gateway 直接全收 → 投入事件队列
-  内核看到的: 事件队列里源源不断的 IncomingMessage，一视同仁
+  Agent 看到的: 事件队列里源源不断的 IncomingMessage，一视同仁
 
-内核说: "这条消息的发送者叫什么"
-  飞书适配器: 查缓存 → 没有就拉群成员 → 还没有就调联系人 API → cli_xxx 走推断
+Agent 说: "这条消息的发送者叫什么"
+  飞书适配器: 查缓存 → 拉群成员 → 联系人 API → cli_xxx 推断
   Discord 适配器: message.author.display_name
-  内核看到的: IncomingMessage.sender_name = "小明"
+  Agent 看到的: IncomingMessage.sender_name = "小明"
 ```
+
+以下行为是飞书补偿，**不在抽象接口中出现**：
+
+| 飞书限制 | 补偿行为 | 其他平台不需要的原因 |
+|---------|---------|-------------------|
+| WS 不推 bot 消息 | REST 轮询补漏 | Discord/Telegram 事件流天然包含所有消息 |
+| bot 返回 app_id (cli_xxx) | 时序/排除法推断身份 | 其他平台 bot 有统一 ID |
+| 群成员 API 不含 bot 信息 | 消息信号逐步注册 | Guild.members 直接完整 |
+| 无明确退群事件 | HTTP 400 副作用推断 | on_guild_remove / my_chat_member |
+| 文本消息不渲染 Markdown | 检测 → 自动切卡片 | Discord/Telegram 原生 Markdown |
+| @用 占位符 @_user_N | 查 mentions 数组替换 | `<@id>` 格式更直接 |
+| Token 2 小时过期 | 自动刷新 | Bot Token 长期有效 |
 
 ---
 
-## 3. 标准化数据类型
+## 3. 最小完备动作集总览
 
-### 3.1 ChatType — 会话类型
+一个人在聊天中做的所有事情，归纳为 6 层：
+
+```
+┌─────────────────────────────────────────────┐
+│  身份 (Identity)     我是谁                   │  1 方法
+├─────────────────────────────────────────────┤
+│  感知 (Perception)   我看到了什么              │  1 事件流
+├─────────────────────────────────────────────┤
+│  表达 (Expression)   我说了什么               │  1 方法
+├─────────────────────────────────────────────┤
+│  情绪 (Emotion)      我的即时反应              │  2 方法
+├─────────────────────────────────────────────┤
+│  感官 (Senses)       我看到的图片和文件         │  1 方法
+├─────────────────────────────────────────────┤
+│  认知 (Cognition)    我知道谁是谁              │  2 方法
+└─────────────────────────────────────────────┘
+  核心: 8 个抽象动作 + 1 个事件流
+```
+
+| 层 | 抽象动作 | 方法签名 | 为什么不可去掉 |
+|----|---------|---------|-------------|
+| 身份 | 我是谁 | `get_identity() → BotIdentity` | 不知道自己是谁，无法过滤自己的消息 |
+| 感知 | 我看到了什么 | 事件流 → `asyncio.Queue` | 不感知外界就无法存在 |
+| 表达 | 我说了什么 | `send(OutgoingMessage) → str?` | 不能说话的 Agent 没有意义 |
+| 情绪 | 我在想 | `react(message_id, emoji) → handle` | 非语言信号，人类交互的基本组成 |
+| 情绪 | 我想完了 | `unreact(message_id, handle)` | 状态回收（"正在输入"→ 消失） |
+| 感官 | 我看到了图片 | `fetch_media(msg_id, key) → (data, mime)` | 多模态理解能力 |
+| 认知 | 这是谁 | `resolve_name(user_id) → str` | 对话中必须知道对方叫什么 |
+| 认知 | 群里有谁 | `list_members(chat_id) → [Member]` | 群聊需要知道参与者 |
+
+### 可选行为（有则更好，无则降级）
+
+| 行为 | 方法 | 降级策略 |
+|------|------|---------|
+| 正在输入 | `show_typing(chat_id)` | 跳过 |
+| 改口 | `edit(message_id, new_text) → bool` | 发新消息更正 |
+| 撤回 | `unsend(message_id) → bool` | 不撤回 |
+| 按钮交互 | `card.action` 事件 | 文字确认 |
+
+---
+
+## 4. 标准化数据类型
+
+### 4.1 枚举
 
 ```python
 class ChatType(str, Enum):
-    PRIVATE = "private"   # 一对一私聊
-    GROUP = "group"       # 多人群聊
-```
+    PRIVATE = "private"       # 一对一私聊
+    GROUP = "group"           # 多人群聊
 
-### 3.2 SenderType — 发送者类型
-
-```python
 class SenderType(str, Enum):
-    USER = "user"         # 人类用户
-    BOT = "bot"           # 机器人/应用
-```
+    USER = "user"             # 人类
+    BOT = "bot"               # 机器人
 
-### 3.3 MessageType — 消息内容类型
-
-```python
 class MessageType(str, Enum):
-    TEXT = "text"                # 纯文本
-    IMAGE = "image"             # 单张图片
-    RICH_TEXT = "rich_text"     # 富文本（含格式、链接、图片等混合内容）
-    FILE = "file"               # 文件附件
-    AUDIO = "audio"             # 语音消息
-    VIDEO = "video"             # 视频消息
-    STICKER = "sticker"         # 表情贴纸
-    SHARE_LINK = "share_link"   # 分享链接
-    SHARE_CHAT = "share_chat"   # 分享群聊
-    SHARE_USER = "share_user"   # 分享用户名片
-    CARD = "card"               # 平台富卡片/Embed
-    UNKNOWN = "unknown"         # 未识别类型
+    TEXT = "text"             # 纯文本
+    IMAGE = "image"           # 图片
+    RICH_TEXT = "rich_text"   # 富文本
+    FILE = "file"             # 文件
+    AUDIO = "audio"           # 语音
+    VIDEO = "video"           # 视频
+    STICKER = "sticker"       # 贴纸
+    SHARE = "share"           # 分享（链接/群/名片）
+    UNKNOWN = "unknown"       # 未识别
 ```
 
-### 3.4 Mention — @提及
+### 4.2 Mention — @提及
 
 ```python
 @dataclass
 class Mention:
-    user_id: str            # 被提及用户的 ID
-    name: str               # 显示名
-    is_bot_self: bool       # 是否提及的是本 bot
+    user_id: str
+    name: str
+    is_bot_self: bool         # 是否 @了本 bot
 ```
 
-### 3.5 IncomingMessage — 收到的消息
+### 4.3 IncomingMessage — 感知到的消息
 
-内核唯一接触的消息结构。适配器负责将平台原始事件完整转换为此格式，**所有平台特有的解析、占位符替换、名字解析都在转换阶段完成**。
+适配器必须将平台原始消息**完整转换**为此格式。内核不接触任何平台原始对象。
 
 ```python
 @dataclass
 class IncomingMessage:
-    message_id: str                  # 平台消息唯一 ID
-    chat_id: str                     # 会话 ID
-    chat_type: ChatType              # 会话类型
-    sender_id: str                   # 发送者 ID
-    sender_type: SenderType          # 发送者类型（用户 / bot）
-    sender_name: str                 # 发送者显示名（适配器必须尽力填充）
-    message_type: MessageType        # 消息内容类型
-    text: str                        # 已完成转换的纯文本（Markdown 格式）
-    mentions: list[Mention]          # @提及列表（已解析）
-    is_mention_bot: bool             # 是否 @了本 bot
-    image_keys: list[str]            # 图片资源标识（需通过 MediaHandler 获取内容）
-    timestamp: int                   # 消息时间戳（Unix 毫秒）
-    raw: Any = None                  # 原始平台对象（内核不访问，仅供适配器内部传递）
+    message_id: str
+    chat_id: str
+    chat_type: ChatType
+    sender_id: str
+    sender_type: SenderType
+    sender_name: str              # 适配器必须填充真名
+    message_type: MessageType
+    text: str                     # 已完成占位符替换的最终文本（Markdown）
+    mentions: list[Mention]       # 已解析的 @列表
+    is_mention_bot: bool
+    image_keys: list[str]         # 媒体资源标识
+    timestamp: int                # Unix 毫秒
+    raw: Any = None               # 内核不访问
 ```
 
-**适配器转换时的硬性要求：**
+**适配器硬性要求：**
+1. `text` — 所有占位符已替换为 `@真名`，本 bot 的 @ 已移除
+2. `sender_name` — 真名，不允许返回 `cli_xxx`、`ou_xxx` 等原始 ID
+3. `sender_type` — 正确区分 USER / BOT
+4. 消息去重 — 适配器的责任
 
-1. `text` 必须是**已经完成所有占位符替换**的最终文本。飞书的 `@_user_1` 占位符、Discord 的 `<@123>` 标签，都必须在适配器内部替换为 `@真名`。本 bot 的 @ 应移除。
-2. `sender_name` 必须尽力填充。不允许返回原始 ID（如 `cli_xxx`、`ou_xxx`）给内核。适配器内部无论用什么手段（缓存、API、推断）解决名字问题，内核不关心。
-3. `sender_type` 必须正确区分人类用户和 bot。
-4. 消息去重是**适配器的责任**。飞书 WS 偶尔重复推送同一条消息、Discord 的 message_update 等，适配器自行处理。
+### 4.4 OutgoingMessage — 要说的话
 
-### 3.6 BotIdentity — 机器人身份
+**v1.2 核心变更：取代 v1.1 的 send_text / reply_text / send_card / reply_card 四个方法。**
+
+一个人说话时不会想"我调哪个 API"。他就是**说了一句话**，可能回复某条，可能带格式。
+
+```python
+@dataclass
+class OutgoingMessage:
+    chat_id: str
+    text: str = ""                       # Markdown 文本
+    reply_to: str = ""                   # 引用回复的消息 ID（空 = 不引用）
+    mentions: list[Mention] = field(default_factory=list)  # 需要 @的人
+    card: dict | None = None             # 富内容卡片（与 text 二选一）
+```
+
+适配器收到 `OutgoingMessage` 后自行决定：
+- `reply_to` 非空 + 平台支持引用 → 引用回复；否则普通发送
+- `card` 非空 + 平台支持卡片 → 发卡片；否则从 card 提取文本发纯文本
+- `mentions` 非空 → 将 `@name` 转换为平台原生格式（飞书 `<at>` / Discord `<@id>`）
+- `text` 含 Markdown → 平台支持则保留，不支持则 strip
+
+### 4.5 BotIdentity — 我是谁
 
 ```python
 @dataclass
 class BotIdentity:
-    bot_id: str              # 机器人在平台上的唯一 ID
-    bot_name: str            # 机器人显示名
+    bot_id: str
+    bot_name: str
 ```
 
-### 3.7 ChatMember — 群组成员
+### 4.6 ChatMember — 群里的人
 
 ```python
 @dataclass
@@ -187,590 +218,440 @@ class ChatMember:
     is_bot: bool
 ```
 
-### 3.8 Reaction — 表情回应
+### 4.7 Reaction — 表情回应
 
 ```python
 @dataclass
 class Reaction:
-    reaction_id: str         # 回应 ID（用于移除时引用）
-    message_id: str          # 被回应的消息 ID
-    emoji: str               # 表情标识（如 "thumbsup", "OnIt"）
-    operator_id: str         # 操作者 ID
+    reaction_id: str
+    message_id: str
+    emoji: str
+    operator_id: str
     operator_type: SenderType
 ```
 
-### 3.9 CardAction — 卡片交互
+### 4.8 CardAction — 按钮交互
 
 ```python
 @dataclass
 class CardAction:
-    action_type: str         # 动作类型（如 "confirm", "cancel", "button_click"）
-    value: dict              # 动作携带的数据
-    operator_id: str         # 操作者 ID
-    message_id: str = ""     # 来源卡片的消息 ID
-```
-
-### 3.10 CalendarEvent — 日历事件
-
-```python
-@dataclass
-class CalendarEvent:
-    event_id: str
-    summary: str
-    description: str = ""
-    start_time: str = ""     # ISO 8601 或 "HH:MM" 显示格式
-    end_time: str = ""
+    action_type: str          # "confirm" / "cancel" / "button_click"
+    value: dict
+    operator_id: str
+    message_id: str = ""
 ```
 
 ---
 
-## 4. 接口总览
-
-| 接口模块 | 内核的需求 | 必须实现 |
-|---------|-----------|---------|
-| `PlatformConnection` | 连接平台、获取自身身份、关闭连接 | **是** |
-| `MessageSender` | 发文本、发卡片、引用回复 | **是** |
-| `EventListener` | 收到所有消息和事件（适配器保证完整性） | **是** |
-| `IdentityResolver` | 知道某个 ID 的名字、知道群里有谁 | **是** |
-| `ReactionManager` | 给消息加/移除表情 | 否（能力声明） |
-| `MediaHandler` | 获取消息中的图片/文件 | 否（能力声明） |
-| `CalendarService` | 日历 CRUD | 否（能力声明） |
-| `RichContentBuilder` | 发送结构化富内容 | 否（能力声明） |
-| `PlatformCapabilities` | 声明平台支持的功能 | **是** |
-| `PlatformConfig` | 平台凭证和配置 | **是** |
-
----
-
-## 5. 连接与生命周期 (`PlatformConnection`)
+## 5. 身份 — 我是谁
 
 ```python
-class PlatformConnection(ABC):
+class PlatformAdapter(ABC):
 
     @abstractmethod
-    async def connect(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
-        """建立与平台的连接，开始接收事件。
+    async def get_identity(self) -> BotIdentity:
+        """我是谁。
 
-        适配器负责：
-        1. 使用平台凭证认证
-        2. 建立事件通道（WebSocket / 长轮询 / Webhook）
-        3. 将所有平台事件转换为标准 Event 格式后投入 queue
+        启动时调用。内核用 bot_id 过滤自己发的消息。
+        """
+        ...
+```
 
-        关键契约：
-        - 适配器必须保证 queue 中能收到会话中的**所有消息**，
-          包括其他 bot 发的消息。
-        - 如果平台的原生事件流不包含 bot 消息（如飞书），
-          适配器需要内部补偿（如轮询 REST API），但这对内核透明。
-        - 适配器内部处理事件去重、token 刷新等平台细节。
+---
 
-        Args:
-            queue: 标准事件队列
-            loop:  主 asyncio 事件循环（用于跨线程桥接，如飞书阻塞 WS）
+## 6. 感知 — 我看到了什么
+
+### 6.1 连接
+
+```python
+    @abstractmethod
+    async def connect(self, queue: asyncio.Queue) -> None:
+        """开始感知世界。
+
+        适配器建立与平台的连接，将所有事件转换为标准格式后投入 queue。
+
+        核心契约：
+        - queue 中必须包含会话中**所有参与者的消息**（含其他 bot）
+        - 如平台原生不推 bot 消息，适配器内部补偿，对内核透明
+        - 消息去重、token 管理等全部在适配器内部完成
         """
         ...
 
     @abstractmethod
     async def disconnect(self) -> None:
-        """优雅关闭连接，释放资源。"""
+        """停止感知，释放资源。"""
+        ...
+```
+
+### 6.2 标准事件类型
+
+适配器将一切外部发生的事情归一化为以下事件投入队列：
+
+```python
+# ── 有人说话了 ──
+{
+    "event_type": "message",
+    "message": IncomingMessage,
+}
+
+# ── 有人对消息做出反应 ──
+{
+    "event_type": "reaction",
+    "reaction": Reaction,
+}
+
+# ── 群组成员变动（合并了 v1.1 的 3 个事件）──
+{
+    "event_type": "member_change",
+    "chat_id": str,
+    "change_type": "bot_joined"      # bot_joined / bot_left / user_joined / user_left
+    "users": [{"user_id": str, "name": str}],  # 变动涉及的用户（bot_joined/left 时为空列表）
+}
+
+# ── 有人点了按钮（可选能力）──
+{
+    "event_type": "interaction",
+    "action": CardAction,
+}
+
+# ── 内核内部定时事件（非平台产生）──
+{
+    "event_type": "internal_timer",
+    "chat_id": str,
+    "timer_type": str,               # "eval_timeout" / "debounce" / etc.
+}
+```
+
+### 6.3 消息完整性契约
+
+> **适配器必须保证事件队列中收到会话中的全部消息，无论发送者是人类还是 bot。**
+
+| 平台 | 如何满足 |
+|------|---------|
+| 飞书 | WS 推人类消息 + 后台轮询 REST 补 bot 消息 |
+| Discord | Gateway 直接全推 |
+| Telegram | Bot API 直接全推 |
+| Slack | Events API 直接全推 |
+
+### 6.4 成员变动检测
+
+> **适配器必须在检测到成员变动时投递 `member_change` 事件。**
+
+| 平台 | 如何检测 |
+|------|---------|
+| 飞书 | WS 事件 + HTTP 400 副作用推断退群 |
+| Discord | `on_member_join` / `on_member_remove` / `on_guild_remove` |
+| Telegram | `chat_member_updated` |
+
+---
+
+## 7. 表达 — 我说了什么
+
+```python
+    @abstractmethod
+    async def send(self, message: OutgoingMessage) -> str | None:
+        """说话。
+
+        统一的消息发送接口。适配器根据 OutgoingMessage 的字段自行决定：
+        - reply_to 非空 → 引用回复（平台不支持则降级为普通发送）
+        - card 非空 → 富内容（平台不支持则提取文本发纯文本）
+        - mentions 非空 → 将 @name 转为平台原生格式
+        - text 含 Markdown → 平台支持则保留，否则 strip
+
+        Returns:
+            发送成功返回 message_id，失败返回 None。
+        """
+        ...
+```
+
+**v1.2 变更：取代 v1.1 的 `send_text` / `reply_text` / `send_card` / `reply_card` / `format_mention` 五个方法。**
+
+为什么合并：
+- 人类不会想"我要 reply_card 还是 send_text"。他就是说了一句话。
+- 引用回复 vs 新消息 → `reply_to` 字段
+- 纯文本 vs 卡片 → `text` vs `card` 字段
+- @提及 → `mentions` 字段，适配器内部处理格式转换
+- Markdown 渲染 → 适配器的责任
+
+---
+
+## 8. 情绪 — 我的即时反应
+
+表情回应是**非语言信号**，人类在聊天中大量使用。
+
+```python
+    @abstractmethod
+    async def react(self, message_id: str, emoji: str) -> str | None:
+        """对一条消息做出表情反应。
+
+        Args:
+            emoji: 平台无关标识（如 "thinking", "thumbsup", "eyes"）
+                   适配器内部映射到平台原生 emoji
+
+        Returns:
+            reaction_handle（用于 unreact），失败返回 None。
+
+        主要用途：
+        1. 处理中指示 — 收到消息时 react("thinking")，回复后 unreact
+        2. Bot 间协作 — 信号"我在处理这个问题"，避免重复回答
+        """
         ...
 
     @abstractmethod
-    async def get_bot_identity(self) -> BotIdentity:
-        """获取机器人自身身份信息。
+    async def unreact(self, message_id: str, handle: str) -> bool:
+        """撤销之前的表情反应。"""
+        ...
+```
 
-        connect() 后调用。内核用 bot_id 识别"自己发的消息"并过滤。
+---
+
+## 9. 感官 — 我看到的图片和文件
+
+```python
+    @abstractmethod
+    async def fetch_media(
+        self, message_id: str, resource_key: str,
+    ) -> tuple[str, str] | None:
+        """获取消息中的媒体内容。
+
+        Args:
+            resource_key: 来自 IncomingMessage.image_keys
+
+        Returns:
+            (base64_data, mime_type) 或 None
+
+        适配器职责：
+        - 鉴权下载（飞书需 token，Discord 直接 GET）
+        - 大文件自动压缩（建议阈值 10MB）
+        - 格式归一化为 base64 + MIME type
         """
         ...
 ```
 
 ---
 
-## 6. 消息发送 (`MessageSender`)
-
-### 6.1 send_text — 发送文本消息
+## 10. 认知 — 我知道谁是谁
 
 ```python
-@abstractmethod
-async def send_text(self, chat_id: str, text: str) -> str | None:
-    """向指定会话发送文本消息。
+    @abstractmethod
+    async def resolve_name(self, user_id: str) -> str:
+        """这个 ID 是谁？
 
-    Args:
-        chat_id: 目标会话 ID
-        text:    Markdown 格式文本
+        适配器内部用任何手段解决（缓存、API、推断），
+        内核只关心结果。查不到返回 ID 尾部截断。
+        """
+        ...
 
-    Returns:
-        发送成功返回 message_id，失败返回 None。
+    @abstractmethod
+    async def list_members(self, chat_id: str) -> list[ChatMember]:
+        """这个群里有谁？
 
-    适配器职责：
-    - Markdown → 平台原生格式的转换（适配器全权负责）
-    - 长文本分段（如 Discord 2000 字限制）
-    - 飞书特殊处理（代码块自动切卡片、纯文本 strip Markdown）
-      — 这些是适配器内部逻辑，内核只管传 Markdown 进来
-    """
-    ...
-```
-
-### 6.2 reply_text — 引用回复
-
-```python
-@abstractmethod
-async def reply_text(self, message_id: str, text: str) -> str | None:
-    """引用回复指定消息。
-
-    如平台不支持引用回复，降级为 send_text。
-    适配器内部决定降级策略，内核不感知。
-    """
-    ...
-```
-
-### 6.3 send_card — 发送富内容
-
-```python
-@abstractmethod
-async def send_card(self, chat_id: str, card: dict) -> str | None:
-    """发送结构化富内容（卡片/Embed）。
-
-    Args:
-        card: 标准卡片结构（见 §12）
-
-    适配器职责：
-    - 标准卡片 → 平台原生格式（飞书 Interactive Card / Discord Embed）
-    - 如平台不支持卡片，降级为格式化文本
-    """
-    ...
-```
-
-### 6.4 reply_card — 引用回复卡片
-
-```python
-@abstractmethod
-async def reply_card(self, message_id: str, card: dict) -> str | None:
-    """引用回复富内容。不支持时降级为 send_card 或 reply_text。"""
-    ...
-```
-
-### 6.5 format_mention — 生成 @提及标记
-
-```python
-@abstractmethod
-def format_mention(self, user_id: str, name: str) -> str:
-    """将 @名字 转换为平台原生的提及格式。
-
-    内核在发送消息时，如果回复中包含 @某人，调用此方法获取
-    平台原生格式的提及标记，然后嵌入文本。
-
-    Returns:
-        平台原生格式的 @ 标记
-        - 飞书: '<at user_id="ou_xxx">名字</at>'
-        - Discord: '<@123456>'
-        - Telegram: '[名字](tg://user?id=123)'
-        - 不支持: '@名字'（纯文本 fallback）
-    """
-    ...
+        返回完整成员列表（含 bot），is_bot 正确标记。
+        适配器内部缓存 + 按需刷新。
+        """
+        ...
 ```
 
 ---
 
-## 7. 消息与事件接收 (`EventListener`)
+## 11. 可选行为
 
-适配器负责将平台原始事件转换为标准事件格式后投入队列。
+以下行为**不在核心 8 个动作中**，但能让 Agent 更像人类。适配器通过能力声明来标识是否支持。
 
-### 7.1 标准事件格式
+### 11.1 show_typing — 正在输入
 
 ```python
-# 消息事件 — 包括所有参与者（人类和 bot）的消息
-{
-    "event_type": "message.received",
-    "message": IncomingMessage,
-}
+    async def show_typing(self, chat_id: str) -> None:
+        """让对方看到"正在输入..."。
 
-# Reaction 添加事件
-{
-    "event_type": "reaction.added",
-    "reaction": Reaction,
-}
+        比 react("thinking") 更自然的处理中指示。
+        平台不支持时空实现即可。
 
-# Bot 入群事件
-{
-    "event_type": "bot.added_to_group",
-    "chat_id": str,
-    "operator_id": str,        # 邀请者（可为空）
-}
-
-# Bot 被移出群聊
-{
-    "event_type": "bot.removed_from_group",
-    "chat_id": str,
-}
-
-# 用户入群事件
-{
-    "event_type": "user.joined_group",
-    "chat_id": str,
-    "users": list[dict],       # [{"user_id": str, "name": str}]
-}
-
-# 卡片交互事件
-{
-    "event_type": "card.action",
-    "action": CardAction,
-}
-
-# 内核内部事件（非平台产生）
-{
-    "event_type": "eval_timeout",
-    "chat_id": str,
-}
+        - Discord: channel.trigger_typing()
+        - Telegram: send_chat_action("typing")
+        - 飞书: 无原生支持，空实现
+        """
+        ...
 ```
 
-### 7.2 消息完整性契约
-
-**这是抽象层最核心的契约：**
-
-> 适配器必须保证事件队列中能收到会话中的**全部消息**，无论发送者是人类还是 bot。
-
-内核不关心适配器怎么实现这一点：
-
-| 平台 | 原生能力 | 适配器策略 |
-|------|---------|-----------|
-| 飞书 | WS 只推人类消息，不推 bot 消息 | 适配器内部开轮询线程，REST 拉取 bot 消息，合并后投入队列 |
-| Discord | Gateway 推送所有消息（含 bot） | 直接转换投入队列，无需补偿 |
-| Telegram | Bot API 推送所有消息 | 直接转换投入队列 |
-| Slack | Events API 推送所有消息 | 直接转换投入队列 |
-
-**飞书适配器的补偿逻辑（对内核完全透明）：**
-- 启动一个后台任务，定期调用 `GET /im/v1/messages` 拉取活跃群聊的消息
-- 过滤出 `sender_type=app` 的 bot 消息
-- 去重（与 WS 已收到的消息对比）
-- 解析发送者名字（含 cli_xxx → 真名的推断）
-- 转换为 `IncomingMessage` 投入队列
-- **内核完全不知道这些消息是 WS 推的还是 REST 拉的**
-
-### 7.3 群组离开检测
-
-> 适配器必须在检测到 bot 已不在某群聊时，投递 `bot.removed_from_group` 事件。
-
-内核不关心检测手段：
-
-| 平台 | 检测方式 |
-|------|---------|
-| 飞书 | 调群成员 API 返回 400 → 推断已退群 → 投递事件 |
-| Discord | `on_guild_remove` 事件 → 直接投递 |
-| Telegram | `my_chat_member` update 中 status=left → 投递 |
-
-### 7.4 消息转换规范
-
-适配器将原始消息转换为 `IncomingMessage` 时必须完成：
-
-1. **文本提取与格式化**：
-   - 纯文本 → 直接提取
-   - 富文本（飞书 post / Discord Markdown / Telegram HTML）→ 统一转 Markdown
-   - @提及占位符 → 替换为 `@真名`，本 bot 的 @ 移除
-   - 图片标签 → `[图片]`，key 放入 `image_keys`
-
-2. **发送者解析**（适配器内部完成，内核不参与）：
-   - `sender_name` 必须是已解析的真名
-   - `sender_type` 必须正确区分 USER / BOT
-   - 如何解析是适配器的事（缓存、API、推断、任何手段）
-
-3. **消息去重**（适配器内部完成）：
-   - 飞书 WS 偶尔重复推送 → 适配器 dedup
-   - REST 轮询与 WS 重叠 → 适配器 dedup
-
----
-
-## 8. 身份与成员查询 (`IdentityResolver`)
-
-### 8.1 get_user_name — 查询用户名
+### 11.2 edit — 改口
 
 ```python
-@abstractmethod
-async def get_user_name(self, user_id: str) -> str:
-    """获取任意 ID（用户或 Bot）的显示名。
+    async def edit(self, message_id: str, new_text: str) -> bool:
+        """修改已发的消息。
 
-    Args:
-        user_id: 用户或 bot 的 ID
+        用途：
+        - 更新正在执行的任务状态（"正在搜索..." → "搜索完成，共 3 条结果"）
+        - 修正 LLM 的错误回复
 
-    Returns:
-        显示名。查不到时返回有意义的 fallback（如 ID 尾部截断）。
+        不支持时返回 False，内核降级为发新消息。
 
-    适配器职责：
-    - 内部实现缓存（必须），避免重复查询
-    - 飞书：群成员批量缓存 + 联系人 API + bot 身份推断
-    - Discord：Guild.get_member() 或 client.fetch_user()
-    - 内核不关心实现细节，只要能拿到名字
-    """
-    ...
+        - Discord: message.edit()
+        - Telegram: edit_message_text()
+        - 飞书: 不支持编辑已发消息
+        """
+        ...
 ```
 
-> **注意：v1.0 中的 `get_user_name(user_id, chat_id)` 和 `resolve_name(user_id)` 合并为一个方法。**
->
-> 之前拆成两个方法是因为飞书有两种查找路径（群成员 API vs 联系人 API），
-> 且 bot 的 app_id (cli_xxx) 需要特殊处理。
-> 这些都是飞书内部的实现策略，不应该暴露给内核。
-> 适配器内部自行决定用什么策略查找名字，内核只调一个方法。
-
-### 8.2 get_group_members — 获取群组成员
+### 11.3 unsend — 撤回
 
 ```python
-@abstractmethod
-async def get_group_members(self, chat_id: str) -> list[ChatMember]:
-    """获取群组成员列表，包含人类用户和 bot。
+    async def unsend(self, message_id: str) -> bool:
+        """撤回已发的消息。
 
-    Returns:
-        ChatMember 列表，is_bot 字段正确标记。
+        用途：
+        - 清理临时的处理状态消息
+        - 撤回误发内容
 
-    适配器职责：
-    - 内部缓存结果
-    - 飞书：GET /chats/{id}/members + 通过消息信号补充 bot 信息
-    - Discord：Guild.members（直接包含完整信息）
-    - 内核拿到的是完整列表，不需要自己"注册"bot
-    """
-    ...
-```
+        不支持时返回 False。
 
-> **注意：v1.0 中的 `get_bot_members`、`register_bot_member`、`is_chat_left` 被移除。**
->
-> - `get_bot_members` → 内核从 `get_group_members` 结果中自行过滤 `is_bot=True`
-> - `register_bot_member` → 这是飞书的补偿行为（通过消息信号发现 bot），
->   应封装在飞书适配器的 `get_group_members` 内部实现中
-> - `is_chat_left` → 改为适配器投递 `bot.removed_from_group` 事件，
->   内核监听此事件更新自己的群聊状态
-
----
-
-## 9. Reaction / 表情回应 (`ReactionManager`)
-
-**能力依赖：`capabilities.has_reactions == True`**
-
-### 9.1 add_reaction
-
-```python
-@abstractmethod
-async def add_reaction(self, message_id: str, emoji: str) -> str | None:
-    """给消息添加表情回应。
-
-    Args:
-        emoji: 平台无关的表情标识（如 "thinking", "thumbsup", "eyes"）
-
-    Returns:
-        reaction_id（用于后续移除），失败返回 None。
-
-    适配器职责：
-    - 将标准 emoji 标识映射到平台原生格式
-    - 飞书: "thinking" → API emoji_type "OnIt"
-    - Discord: "thinking" → Unicode 🤔 或自定义 emoji
-    - 适配器维护标准名 → 平台名的映射表
-    """
-    ...
-```
-
-### 9.2 remove_reaction
-
-```python
-@abstractmethod
-async def remove_reaction(self, message_id: str, reaction_id: str) -> bool:
-    """移除之前添加的表情回应。"""
-    ...
+        - Discord: message.delete()
+        - Telegram: delete_message()
+        - 飞书: 不支持撤回自己发的消息
+        """
+        ...
 ```
 
 ---
 
-## 10. 多媒体资源 (`MediaHandler`)
-
-**能力依赖：`capabilities.has_media_download == True`**
-
-### 10.1 download_media
-
-```python
-@abstractmethod
-async def download_media(
-    self, message_id: str, resource_key: str,
-) -> tuple[str, str] | None:
-    """下载消息中的媒体资源。
-
-    Args:
-        message_id:   消息 ID
-        resource_key: 资源标识（来自 IncomingMessage.image_keys）
-
-    Returns:
-        (base64_data, mime_type) 或 None
-
-    适配器职责：
-    - 鉴权下载（飞书需 tenant_token，Discord 直接 HTTP GET）
-    - 超大文件自动压缩（建议阈值 10MB）
-    - 超时处理（建议 30 秒）
-    - 格式归一化（统一返回 base64 + MIME type）
-    """
-    ...
-```
-
----
-
-## 11. 日历集成（可选）(`CalendarService`)
-
-**能力依赖：`capabilities.has_calendar == True`**
-
-日历功能独立于聊天平台。适配器可以对接平台内建日历（飞书）、外部日历（Google Calendar）、或不实现。
-
-### 11.1 create_event
-
-```python
-@abstractmethod
-async def create_event(
-    self, summary: str, start_time: str, end_time: str, description: str = "",
-) -> dict:
-    """创建日历事件。时间为 ISO 8601 格式。
-    Returns: {"success": True, "event_id": "..."} 或 {"success": False, "error": "..."}
-    """
-    ...
-```
-
-### 11.2 list_events
-
-```python
-@abstractmethod
-async def list_events(self, start_time: str, end_time: str) -> list[CalendarEvent]:
-    """查询时间范围内的日历事件。"""
-    ...
-```
-
----
-
-## 12. 富内容卡片 / Embed (`RichContentBuilder`)
-
-**能力依赖：`capabilities.has_rich_cards == True`**
-
-### 标准卡片结构
-
-内核使用以下平台无关的卡片描述，适配器负责转换：
-
-```python
-# 信息卡片
-{
-    "type": "info",
-    "title": "卡片标题",
-    "content": "Markdown 内容",
-    "fields": [{"key": "字段名", "value": "字段值", "short": True}],  # 可选
-    "color": "blue",    # blue/green/orange/red/purple
-}
-
-# 日程卡片
-{
-    "type": "schedule",
-    "events": [{"start_time": "09:00", "end_time": "10:00", "summary": "会议"}],
-}
-
-# 任务卡片
-{
-    "type": "task_list",
-    "tasks": [{"title": "任务名", "done": True}],
-}
-
-# 错误卡片
-{
-    "type": "error",
-    "title": "错误标题",
-    "message": "错误详情",
-}
-
-# 确认卡片（含交互按钮）
-{
-    "type": "confirm",
-    "title": "操作审批",
-    "content": "描述文本",
-    "confirm_text": "确认",
-    "cancel_text": "取消",
-    "callback_data": {"type": "approval", "id": "xxx"},
-}
-```
-
-### 降级策略
-
-如 `has_rich_cards == False`，适配器的 `send_card` / `reply_card` 应：
-1. 从卡片中提取 title + content
-2. 拼为纯文本
-3. 调用 `send_text` / `reply_text`
-
----
-
-## 13. 卡片交互回调
-
-**能力依赖：`capabilities.has_card_actions == True`**
-
-用户点击卡片按钮 → 适配器转换为 `CardAction` → 投入事件队列：
-
-```python
-{
-    "event_type": "card.action",
-    "action": CardAction(
-        action_type="confirm",
-        value={"type": "approval", "id": "xxx"},
-        operator_id="user_123",
-    ),
-}
-```
-
-如 `has_card_actions == False`，审批等功能降级为文字交互。
-
----
-
-## 14. 平台能力声明 (`PlatformCapabilities`)
+## 12. 能力声明
 
 ```python
 @dataclass
 class PlatformCapabilities:
-    # ── 基础消息 ──
+    # ── 表达 ──
     has_reply: bool = True               # 支持引用回复
-    has_markdown: bool = True            # 支持 Markdown 渲染
-    max_message_length: int = 4000       # 单条消息最大字符数
-
-    # ── 富内容 ──
-    has_rich_cards: bool = False         # 支持富卡片/Embed
+    has_markdown: bool = True            # 文本消息渲染 Markdown
+    has_rich_cards: bool = False         # 支持卡片/Embed
     has_card_actions: bool = False       # 卡片支持交互按钮
+    max_message_length: int = 4000      # 单条消息字符上限
 
-    # ── 多媒体 ──
-    has_media_download: bool = False     # 支持下载消息中的图片/文件
+    # ── 情绪 ──
+    has_reactions: bool = False          # 支持表情回应
 
-    # ── 表情回应 ──
-    has_reactions: bool = False          # 支持 Reaction
+    # ── 感官 ──
+    has_media_download: bool = False     # 支持下载图片/文件
 
-    # ── 群组 ──
-    has_group_members: bool = False      # 支持查询群组成员列表
-
-    # ── 日历 ──
-    has_calendar: bool = False           # 支持日历集成
-
-    # ── @提及 ──
+    # ── 认知 ──
+    has_group_members: bool = False      # 支持查询群成员
     has_mentions: bool = True            # 支持 @提及
+
+    # ── 可选行为 ──
+    has_typing: bool = False             # 支持 show_typing
+    has_edit: bool = False               # 支持 edit
+    has_unsend: bool = False             # 支持 unsend
 ```
 
-### 内核降级逻辑
+### 降级逻辑
 
 | 能力缺失 | 内核行为 |
 |---------|---------|
-| `has_reply == False` | `reply_text` → `send_text` |
-| `has_rich_cards == False` | `send_card` → 提取文本后 `send_text` |
-| `has_reactions == False` | 跳过处理中指示器、bot 间意图信号 |
-| `has_media_download == False` | 图片消息降级为 `[图片]` 文本描述 |
-| `has_group_members == False` | 跳过群成员相关功能 |
-| `has_calendar == False` | 日历工具返回 "日历功能未配置" |
-| `has_card_actions == False` | 审批降级为文字确认 |
+| `has_reply = False` | `reply_to` 被忽略，降级为普通发送 |
+| `has_rich_cards = False` | `card` 被提取文本后发纯文本 |
+| `has_reactions = False` | 跳过处理中指示器、bot 间意图信号 |
+| `has_media_download = False` | 图片消息降级为 `[图片]` 文字描述 |
+| `has_group_members = False` | 跳过群成员相关上下文 |
+| `has_card_actions = False` | 审批降级为文字确认 |
+| `has_typing = False` | 跳过 typing 指示器 |
+| `has_edit = False` | 状态更新改为发新消息 |
+| `has_unsend = False` | 不撤回 |
 
 ---
 
-## 15. 平台配置 (`PlatformConfig`)
+## 13. 平台配置
 
 ```python
 @dataclass
 class PlatformConfig(ABC):
-    platform_type: str                   # "feishu", "discord", "telegram", etc.
-    owner_chat_id: str = ""              # 主人的会话 ID（用于主动消息、晨报等）
+    platform_type: str               # "feishu" / "discord" / "telegram"
+    owner_chat_id: str = ""          # 主人的会话 ID（用于主动消息）
 
     @abstractmethod
     def validate(self) -> list[str]:
-        """校验配置完整性，返回错误列表。"""
+        """校验完整性，返回错误列表。"""
         ...
 ```
+
+---
+
+## 14. 外部服务层（非平台抽象）
+
+**v1.2 核心变更：日历从平台抽象中抽离。**
+
+日历不是聊天平台的本质能力。飞书恰好内建了日历，但 Discord/Telegram 没有。
+日历（以及未来的邮件、TODO、文档等）属于**外部服务层**，与平台适配器平行：
+
+```
+┌─────────────┐   ┌──────────────┐   ┌──────────────┐
+│ 飞书适配器    │   │ Discord适配器 │   │ Telegram适配器│   ← 平台层
+└──────┬──────┘   └──────┬───────┘   └──────┬───────┘
+       │                 │                   │
+       └────────────┬────┘───────────────────┘
+                    │
+             ┌──────▼──────┐
+             │  LingQue 内核 │
+             └──────┬──────┘
+                    │
+       ┌────────────┼────────────┐
+       │            │            │
+  ┌────▼────┐  ┌────▼────┐  ┌───▼────┐
+  │飞书日历   │  │Google日历│  │Outlook │     ← 服务层
+  └─────────┘  └─────────┘  └────────┘
+```
+
+### CalendarService 接口（独立于平台）
+
+```python
+class CalendarService(ABC):
+    @abstractmethod
+    async def create_event(
+        self, summary: str, start_time: str, end_time: str, description: str = "",
+    ) -> dict: ...
+
+    @abstractmethod
+    async def list_events(self, start_time: str, end_time: str) -> list[CalendarEvent]: ...
+
+@dataclass
+class CalendarEvent:
+    event_id: str
+    summary: str
+    description: str = ""
+    start_time: str = ""
+    end_time: str = ""
+```
+
+飞书的 `FeishuCalendar` 实现此接口，但不属于平台适配器。
+Discord 接入时，配置一个 `GoogleCalendar` 实现同一接口即可。
+
+---
+
+## 15. 标准卡片结构
+
+`OutgoingMessage.card` 使用以下平台无关结构，适配器负责转换：
+
+```python
+# 信息卡片
+{"type": "info", "title": "标题", "content": "Markdown", "color": "blue",
+ "fields": [{"key": "字段名", "value": "值", "short": True}]}
+
+# 日程卡片
+{"type": "schedule",
+ "events": [{"start_time": "09:00", "end_time": "10:00", "summary": "会议"}]}
+
+# 任务卡片
+{"type": "task_list",
+ "tasks": [{"title": "任务名", "done": True}]}
+
+# 错误卡片
+{"type": "error", "title": "错误标题", "message": "详情"}
+
+# 确认卡片
+{"type": "confirm", "title": "操作审批", "content": "描述",
+ "confirm_text": "确认", "cancel_text": "取消",
+ "callback_data": {"type": "approval", "id": "xxx"}}
+```
+
+降级：`has_rich_cards = False` 时，适配器提取 title + content 拼为纯文本。
 
 ---
 
@@ -781,106 +662,43 @@ class PlatformConfig(ABC):
 ```python
 FEISHU_CAPABILITIES = PlatformCapabilities(
     has_reply=True,
-    has_markdown=False,          # 文本消息不渲染 Markdown，卡片渲染
-    max_message_length=10000,
+    has_markdown=False,          # 文本消息不渲染 Markdown
     has_rich_cards=True,
     has_card_actions=True,
-    has_media_download=True,
     has_reactions=True,
+    has_media_download=True,
     has_group_members=True,
-    has_calendar=True,
     has_mentions=True,
+    has_typing=False,            # 飞书无 typing 指示器
+    has_edit=False,              # 飞书不支持编辑已发消息
+    has_unsend=False,            # 飞书不支持撤回已发消息
+    max_message_length=10000,
 )
 ```
 
-### 适配器内部补偿行为清单
+### 适配器核心方法映射
 
-以下行为全部封装在飞书适配器内部，对内核不可见：
+| 抽象方法 | 飞书实现 |
+|---------|---------|
+| `get_identity()` | `GET /bot/v3/info` → `BotIdentity` |
+| `connect(queue)` | `lark_oapi.ws.Client` (daemon thread) + `_poll_bot_messages` (后台) |
+| `send(msg)` | `reply_to` 判断 → `CreateMessageRequest` / `ReplyMessageRequest`；`card` 判断 → `msg_type="interactive"` / `"text"`；`mentions` → `<at>` 标签；Markdown → strip 或自动切卡片 |
+| `react(msg_id, emoji)` | `POST /messages/{id}/reactions` |
+| `unreact(msg_id, handle)` | `DELETE /messages/{id}/reactions/{rid}` |
+| `fetch_media(msg_id, key)` | `GET /messages/{id}/resources/{key}` + 压缩 |
+| `resolve_name(user_id)` | 缓存 → 群成员 API → 联系人 API → bot 推断 |
+| `list_members(chat_id)` | `GET /chats/{id}/members` + bot 信号注册 |
 
-#### (1) Bot 消息补漏轮询
+### 适配器内部补偿行为（对内核不可见）
 
-**问题**：飞书 WebSocket 只推送人类消息，不推送其他 bot 的消息。
-
-**补偿策略**：
-- 适配器内部启动后台任务 `_poll_bot_messages()`
-- 定期调用 `GET /im/v1/messages` 拉取活跃群聊的近期消息
-- 过滤出 sender_type=app 且非本 bot 的消息
-- 与 WS 已推送的消息去重（按 message_id）
-- 转换为 `IncomingMessage` 后投入事件队列
-- 内核看到的效果：事件队列中源源不断出现所有参与者的消息
-
-**实现细节**：
-- 轮询间隔：3-5 秒
-- 轮询范围：活跃群聊（有近期消息的群 + 已知群）
-- TTL 淘汰：600 秒无消息的非已知群停止轮询
-- 轮询上限：每群最多连续 5 次无新消息后暂停
-- HTTP 400/403：标记群聊为已退出，停止轮询
-
-#### (2) Bot 身份推断
-
-**问题**：飞书消息列表 API 对 bot 返回 app_id (cli_xxx) 而非 open_id (ou_xxx)，无法通过联系人 API 查到名字。
-
-**补偿策略**（全部在适配器内部执行）：
-- 策略 A — 排除法：消息中只有 1 个未知 bot + 1 个未匹配的 @提及名字 → 建立映射
-- 策略 B — 时序法：@提及后紧跟 bot 回复 → 推断该 bot 就是被 @ 的那个
-- 持久化到 `bot_identities.json`，重启后恢复
-
-**效果**：`IncomingMessage.sender_name` 总是填充的真名，内核不感知推断过程。
-
-#### (3) 群组退出检测
-
-**问题**：飞书没有明确的 "bot 被移出群聊" 事件（虽然订阅了 `p2_im_chat_member_bot_deleted_v1`，但实际不可靠）。
-
-**补偿策略**：
-- 调群成员 API 返回 HTTP 400 → 推断已退群
-- 轮询群消息 API 连续 3 次失败 → 推断已退群
-- 检测到退群后投递 `bot.removed_from_group` 事件
-
-#### (4) Token 管理
-
-- `tenant_access_token` 有效期 2 小时，提前 5 分钟自动刷新
-- 完全封装在适配器内部，内核不感知
-
-#### (5) Markdown 发送策略
-
-- 检测文本是否含代码块 → 含则自动切换为卡片消息
-- 纯文本消息 strip Markdown 标记（飞书文本消息不渲染 Markdown）
-- 这些都是 `send_text` 的内部实现
-
-#### (6) receive_id_type 推断
-
-- 根据 ID 前缀 (oc_/ou_/on_) 推断 API 参数中的 receive_id_type
-- 完全封装在适配器内部
-
-#### (7) @提及处理
-
-- 入站：`@_user_N` 占位符 → 查 mentions 数组 → 替换为 `@真名`
-- 出站：`@名字` → `<at user_id="ou_xxx">名字</at>` 标签
-- 文本层兜底：当 SDK 未解析 @时，检查 `@bot名` 是否出现在文本中
-
-#### (8) 消息去重
-
-- WS 偶尔用不同 event_id 重复推送同一 message_id → 维护最近 200 条的滑动窗口去重
-- REST 轮询与 WS 重叠 → 按 message_id 去重
-
-### 飞书实现映射
-
-| 抽象接口 | 飞书实现 | 源文件 |
-|---------|---------|--------|
-| `PlatformConnection.connect` | `FeishuListener.start_blocking` + `_poll_bot_messages` | `feishu/listener.py` |
-| `PlatformConnection.get_bot_identity` | `GET /bot/v3/info` | `feishu/sender.py:191` |
-| `MessageSender.send_text` | Markdown 检测 + strip/卡片切换 + `CreateMessageRequest` | `feishu/sender.py:95` |
-| `MessageSender.reply_text` | `ReplyMessageRequest` | `feishu/sender.py:124` |
-| `MessageSender.send_card` | `msg_type="interactive"` | `feishu/sender.py:151` |
-| `MessageSender.reply_card` | `ReplyMessageRequest(interactive)` | `feishu/sender.py:172` |
-| `MessageSender.format_mention` | `<at user_id="{id}">{name}</at>`（仅 ou_ 格式生效） | `router.py:2520` |
-| `IdentityResolver.get_user_name` | 群成员批量缓存 + 联系人 API + bot 推断 | `feishu/sender.py:209,280,339` |
-| `IdentityResolver.get_group_members` | `GET /chats/{id}/members` + bot 信号注册 | `feishu/sender.py:227` |
-| `ReactionManager.add_reaction` | `POST /messages/{id}/reactions` | `feishu/sender.py:417` |
-| `ReactionManager.remove_reaction` | `DELETE /messages/{id}/reactions/{rid}` | `feishu/sender.py:439` |
-| `MediaHandler.download_media` | `GET /messages/{id}/resources/{key}` + 压缩 | `feishu/sender.py:533` |
-| `CalendarService.*` | `FeishuCalendar` | `feishu/calendar.py` |
-| `RichContentBuilder` | `feishu/cards.py` | `feishu/cards.py` |
+1. **Bot 消息补漏轮询** — 后台 3-5 秒轮询 REST API，补充 WS 收不到的 bot 消息
+2. **Bot 身份推断** — 排除法/时序法将 cli_xxx → 真名，持久化到 bot_identities.json
+3. **群组退出检测** — HTTP 400 / 连续 3 次轮询失败 → 投递 member_change(bot_left)
+4. **Token 自动刷新** — tenant_access_token 2 小时有效，提前 5 分钟刷新
+5. **Markdown 发送策略** — 代码块检测 → 自动切卡片；纯文本 strip Markdown
+6. **receive_id_type 推断** — 根据 oc_/ou_/on_ 前缀推断 API 参数
+7. **@提及处理** — 入站：@_user_N → @真名；出站：@名字 → `<at>` 标签
+8. **消息去重** — WS + REST 双重去重，滑动窗口 200 条
 
 ---
 
@@ -891,140 +709,110 @@ FEISHU_CAPABILITIES = PlatformCapabilities(
 ```python
 DISCORD_CAPABILITIES = PlatformCapabilities(
     has_reply=True,
-    has_markdown=True,               # 原生 Markdown
-    max_message_length=2000,
+    has_markdown=True,
     has_rich_cards=True,             # Embed
     has_card_actions=True,           # Button components
-    has_media_download=True,         # attachment.url
-    has_reactions=True,              # Unicode / 自定义 emoji
-    has_group_members=True,          # Guild.members
-    has_calendar=False,              # 无内建日历
+    has_reactions=True,
+    has_media_download=True,
+    has_group_members=True,
     has_mentions=True,
+    has_typing=True,                 # channel.trigger_typing()
+    has_edit=True,                   # message.edit()
+    has_unsend=True,                 # message.delete()
+    max_message_length=2000,
 )
 ```
 
-### 适配器实现要点
+### 不需要的飞书补偿
 
-#### 不需要补偿的部分
-
-以下飞书补偿行为，Discord **完全不需要**：
-
-| 飞书补偿 | Discord 为什么不需要 |
+| 飞书补偿 | 为什么 Discord 不需要 |
 |---------|-------------------|
-| Bot 消息轮询 | Gateway 推送所有消息，含 bot |
-| Bot 身份推断 | bot.user 直接有 id 和 name |
-| register_bot_member | Guild.members 含完整 bot 列表 |
-| is_chat_left 检测 | on_guild_remove 事件直接通知 |
+| Bot 消息轮询 | Gateway 全推 |
+| Bot 身份推断 | bot.user 有 id 和 name |
+| 群成员补丁注册 | Guild.members 完整 |
+| HTTP 400 退群检测 | on_guild_remove |
 | Markdown 降级 | 原生支持 |
-| receive_id_type 推断 | channel_id 统一 |
 | Token 刷新 | Bot Token 长期有效 |
 
-#### 需要实现的映射
+### 核心映射
 
-| 维度 | 飞书 | Discord |
-|------|------|---------|
-| 连接 | `lark_oapi.ws.Client` (阻塞, 需 daemon thread) | `discord.Client` (asyncio 原生) |
-| 私聊判断 | `chat_type == "p2p"` | `isinstance(channel, DMChannel)` |
-| 群聊判断 | `chat_type == "group"` | `isinstance(channel, TextChannel)` |
-| @提及格式 | `<at user_id="ou_xxx">名字</at>` | `<@user_id>` |
-| 卡片 | Interactive Card JSON | `discord.Embed` + `discord.ui.View` |
-| Reaction emoji | emoji_type 字符串 (`"OnIt"`) | Unicode emoji (`"🤔"`) 或 `<:name:id>` |
-| 消息 ID 前缀 | `om_xxx` | 纯数字 snowflake |
-| 图片下载 | 需 tenant_token 鉴权 | `attachment.url` 直接 GET |
-| bot 消息可见性 | WS 不推 → 需轮询 | Gateway 全推 → 无需额外操作 |
-
-#### 实现清单
-
-- [ ] `DiscordConnection` — `discord.Client` + `on_ready` → `get_bot_identity`
-- [ ] `DiscordSender` — `channel.send()` / `message.reply()` / `Embed` / `format_mention`
-- [ ] `DiscordEventAdapter` — `on_message` → `IncomingMessage`、`on_raw_reaction_add` → `Reaction`
-- [ ] `DiscordIdentityResolver` — `guild.get_member()` / `client.fetch_user()`
-- [ ] `DiscordReactionManager` — `message.add_reaction()` / `reaction.remove()`
-- [ ] `DiscordMediaHandler` — `attachment.url` HTTP 下载
-- [ ] `DiscordConfig` — `bot_token`, `guild_id`
+| 抽象方法 | Discord 实现 |
+|---------|-------------|
+| `get_identity()` | `client.user` |
+| `connect(queue)` | `discord.Client` + on_message / on_raw_reaction_add / etc. |
+| `send(msg)` | `channel.send()` / `message.reply()`；card → `Embed`；mentions → `<@id>` |
+| `react` / `unreact` | `message.add_reaction()` / `reaction.remove()` |
+| `fetch_media` | `attachment.url` 直接 HTTP GET |
+| `resolve_name` | `guild.get_member()` / `client.fetch_user()` |
+| `list_members` | `guild.members` |
+| `show_typing` | `channel.trigger_typing()` |
+| `edit` | `message.edit()` |
+| `unsend` | `message.delete()` |
 
 ---
 
 ## 附录 A：内核改造清单
 
-### A.1 router.py — 最大改动模块
+### router.py
 
-| 当前代码 | 改为 |
-|---------|------|
-| `sender: FeishuSender` 参数 | `sender: MessageSender` 抽象接口 |
-| `_dispatch_message(event)` 访问 `event.message.chat_type` 等飞书 SDK 属性 | 接收 `IncomingMessage`（适配器已完成转换） |
-| `_extract_text()` / `_extract_image_keys()` / `_resolve_at_mentions()` | 全部移入飞书适配器的消息转换逻辑中 |
-| `_replace_at_mentions()` 生成飞书 `<at>` 标签 | 调用 `sender.format_mention(user_id, name)` |
-| `_handle_card_action()` 访问飞书 SDK 对象属性 | 接收标准 `CardAction` |
-| `from lq.feishu.cards import build_info_card` | 使用标准卡片结构 dict |
-| `sender._user_name_cache` 直接访问 | 通过 `sender.get_user_name()` 接口查询 |
-| `sender.is_chat_left()` | 监听 `bot.removed_from_group` 事件维护内部集合 |
-| `sender.register_bot_member()` | 删除，由适配器内部处理 |
-| `sender.fetch_chat_messages()` 在 router 中调用 | 删除，由适配器内部轮询后投入事件队列 |
+| 当前 | 改为 |
+|------|------|
+| `sender.send_text()` / `reply_text()` / `send_card()` / `reply_card()` | `adapter.send(OutgoingMessage(...))` |
+| `sender._user_name_cache` 直接访问 | `adapter.resolve_name()` |
+| `self._replace_at_mentions()` 生成飞书 `<at>` 标签 | `OutgoingMessage.mentions` 字段，适配器处理 |
+| `_extract_text()` / `_extract_image_keys()` / `_resolve_at_mentions()` | 移入飞书适配器 |
+| `_handle_card_action()` 访问飞书 SDK 属性 | 接收标准 `CardAction` |
+| `from lq.feishu.cards import` | 使用标准卡片 dict |
+| `sender.is_chat_left()` / `register_bot_member()` / `fetch_chat_messages()` | 删除，改为监听 `member_change` 事件 |
+| `_dispatch_message(event)` 访问飞书 SDK 属性 | 接收 `IncomingMessage` |
 
-### A.2 gateway.py
+### gateway.py
 
-| 当前代码 | 改为 |
-|---------|------|
-| 硬编码创建 `FeishuSender` + `FeishuListener` | 通过工厂 / 配置创建平台适配器 |
-| `_poll_active_groups()` | 删除 — 轮询职责移入飞书适配器 |
-| `from lq.feishu.cards import build_schedule_card` | 使用标准卡片结构 |
-| 构造飞书 SDK 兼容的 fake event | 构造标准 `IncomingMessage` |
+| 当前 | 改为 |
+|------|------|
+| 硬编码 `FeishuSender` + `FeishuListener` | 通过配置创建 `PlatformAdapter` |
+| `_poll_active_groups()` | 删除，移入飞书适配器 |
+| `from lq.feishu.cards import` | 使用标准卡片 dict |
+| 构造飞书 fake event | 构造 `IncomingMessage` |
 
-### A.3 config.py
+### config.py
 
-| 当前代码 | 改为 |
-|---------|------|
+| 当前 | 改为 |
+|------|------|
 | `LQConfig.feishu: FeishuConfig` | `LQConfig.platform: PlatformConfig` |
-
-### A.4 conversation.py
-
-`LocalSender` 已经是一个很好的适配器参考 — 它实现了消息发送接口的终端模拟版本。
+| 日历耦合在飞书配置中 | `LQConfig.calendar: CalendarConfig`（独立） |
 
 ---
 
-## 附录 B：完整动作清单
+## 附录 B：v1.1 → v1.2 变更记录
 
-以下是 LingQue 内核需要的**全部平台交互能力**。
+### 合并
 
-### 出站动作（Bot → 平台）— 6 个
+| v1.1 | v1.2 | 理由 |
+|------|------|------|
+| `send_text` + `reply_text` + `send_card` + `reply_card` + `format_mention` | `send(OutgoingMessage)` | 人类说话是一个动作，不是五个 |
+| `bot.added_to_group` + `bot.removed_from_group` + `user.joined_group` | `member_change` 事件 | 都是成员变动 |
+| `get_user_name` | `resolve_name` | 统一命名 |
+| `get_group_members` | `list_members` | 统一命名 |
 
-| # | 需求 | 方法 |
-|---|------|------|
-| 1 | 发送文本消息 | `send_text(chat_id, text)` |
-| 2 | 引用回复文本 | `reply_text(message_id, text)` |
-| 3 | 发送富内容 | `send_card(chat_id, card)` |
-| 4 | 引用回复富内容 | `reply_card(message_id, card)` |
-| 5 | 给消息添加表情 | `add_reaction(message_id, emoji)` |
-| 6 | 移除消息表情 | `remove_reaction(message_id, reaction_id)` |
+### 抽离
 
-### 入站事件（平台 → Bot）— 6 个活跃 + 4 个忽略
+| v1.1 | v1.2 | 理由 |
+|------|------|------|
+| `CalendarService` 在平台抽象中 | 独立为外部服务层 | 日历不是聊天平台的事 |
 
-| # | 需求 | 事件类型 |
-|---|------|---------|
-| 7 | 收到消息（含所有参与者的） | `message.received` |
-| 8 | 有人给消息加了表情 | `reaction.added` |
-| 9 | Bot 被加入群聊 | `bot.added_to_group` |
-| 10 | Bot 被移出群聊 | `bot.removed_from_group` |
-| 11 | 新用户加入群聊 | `user.joined_group` |
-| 12 | 用户点击了卡片按钮 | `card.action` |
-| — | 消息已读 / 撤回 / Reaction 移除 / 用户退群 | （忽略） |
+### 新增
 
-### 查询能力（Bot ↔ 平台）— 5 个
+| 方法 | 理由 |
+|------|------|
+| `show_typing(chat_id)` | 比 react("thinking") 更自然的处理中指示 |
+| `edit(message_id, text)` | 人类会改口 |
+| `unsend(message_id)` | 人类会撤回 |
 
-| # | 需求 | 方法 |
-|---|------|------|
-| 13 | 获取自身身份 | `get_bot_identity()` |
-| 14 | 查询某人的名字 | `get_user_name(user_id)` |
-| 15 | 查询群组成员 | `get_group_members(chat_id)` |
-| 16 | 下载消息中的图片/文件 | `download_media(message_id, resource_key)` |
-| 17 | 生成平台原生 @标记 | `format_mention(user_id, name)` |
+### 精简结果
 
-### 日历能力（可选）— 2 个
-
-| # | 需求 | 方法 |
-|---|------|------|
-| 18 | 创建日历事件 | `create_event(...)` |
-| 19 | 查询日历事件 | `list_events(start, end)` |
-
-**合计 19 个抽象动作**（对比 v1.0 的 25 个，去掉了 6 个飞书补偿行为）。
+| 版本 | 总数 | 构成 |
+|------|------|------|
+| v1.0 | 25 个 | 含 6 个飞书补偿 |
+| v1.1 | 19 个 | 移除飞书补偿 |
+| v1.2 | **8 核心 + 3 可选 + 1 事件流** | send 合一、日历抽离、事件归并 |
