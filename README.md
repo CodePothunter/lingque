@@ -8,7 +8,7 @@ A personal AI assistant framework with a platform-agnostic core and pluggable ch
 
 - **Platform-agnostic core** — `PlatformAdapter` ABC decouples the core from any specific chat platform; adding a new platform requires only one adapter file
 - **Feishu adapter** — WebSocket persistent connection, instant DM replies, three-layer group chat intervention
-- **Local dev mode** — `lq say @name` launches an interactive terminal conversation with full tool support, no Feishu dependency required
+- **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no Feishu dependency required (goes through the same standard event path as Feishu mode)
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
 - **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
 - **Calendar integration** — Query/create Feishu calendar events, daily briefings
@@ -238,7 +238,9 @@ The assistant will automatically write the code, validate it, and load it. The n
 | `uv run lq status @NAME` | Status + API usage stats |
 | `uv run lq logs @NAME [--since 1h]` | View logs |
 | `uv run lq edit @NAME soul/memory/heartbeat/config` | Edit config files |
-| `uv run lq say @NAME "message"` | Send a message to instance |
+| `uv run lq chat @NAME` | Interactive local chat (terminal) |
+| `uv run lq chat @NAME "message"` | Single-message mode |
+| `uv run lq say @NAME "message"` | Alias for `chat` |
 | `uv run lq upgrade @NAME` | Upgrade framework |
 
 ## Configuration
@@ -283,7 +285,7 @@ src/lq/
 ├── gateway.py          # Main orchestrator (creates adapter, runs async tasks)
 ├── router.py           # Message routing + three-layer intervention + 21 built-in tools + multi-bot coordination
 ├── prompts.py          # Centralized prompts, tool descriptions, and constraint blocks
-├── conversation.py     # Local interactive conversation (lq say) + LocalAdapter
+├── conversation.py     # Local interactive chat (lq chat / lq say) + LocalAdapter
 ├── tools.py            # Custom tool plugin system
 ├── buffer.py           # Group chat message buffer
 ├── session.py          # Per-chat session management + compaction

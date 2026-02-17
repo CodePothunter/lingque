@@ -6,7 +6,7 @@
 
 - **平台无关内核** — `PlatformAdapter` 抽象基类将内核与具体聊天平台解耦，新增平台只需一个适配器文件
 - **飞书适配器** — WebSocket 长连接，私聊即时回复，群聊三层智能介入
-- **本地开发模式** — `lq say @name` 在终端启动交互式对话，支持完整工具链，无需飞书依赖
+- **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，走与飞书模式相同的标准事件流，支持完整工具链，无需飞书依赖
 - **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
 - **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
 - **日历集成** — 查询/创建飞书日程，每日晨报
@@ -236,7 +236,9 @@ async def execute(input_data: dict, context: dict) -> dict:
 | `uv run lq status @NAME` | 运行状态 + API 消耗统计 |
 | `uv run lq logs @NAME [--since 1h]` | 查看日志 |
 | `uv run lq edit @NAME soul/memory/heartbeat/config` | 编辑配置文件 |
-| `uv run lq say @NAME "消息"` | 给实例发消息 |
+| `uv run lq chat @NAME` | 交互式本地聊天（终端） |
+| `uv run lq chat @NAME "消息"` | 单条消息模式 |
+| `uv run lq say @NAME "消息"` | `chat` 的别名 |
 | `uv run lq upgrade @NAME` | 升级框架 |
 
 ## 配置
@@ -281,7 +283,7 @@ src/lq/
 ├── gateway.py          # 主编排器（创建适配器，运行异步任务）
 ├── router.py           # 消息路由 + 三层介入 + 21 个内置工具 + 多 bot 协作
 ├── prompts.py          # 集中管理所有 prompt、工具描述、约束块
-├── conversation.py     # 本地交互式对话（lq say）+ LocalAdapter
+├── conversation.py     # 本地交互式聊天（lq chat / lq say）+ LocalAdapter
 ├── tools.py            # 自定义工具插件系统
 ├── buffer.py           # 群聊消息缓冲区
 ├── session.py          # per-chat 会话管理 + compaction
