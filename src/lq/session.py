@@ -35,6 +35,37 @@ def estimate_tokens(text: str) -> int:
     return int(cjk_count * 1.5 + ascii_count * 0.3)
 
 
+def _estimate_content_tokens(content: str | list) -> int:
+    """估算 content 的 token 数，支持纯文本和 content blocks 列表。
+
+    图片按 Anthropic 的计费模型估算：大约 1600 tokens / 图片（中等尺寸）。
+    """
+    if isinstance(content, str):
+        return estimate_tokens(content)
+    total = 0
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") == "text":
+                total += estimate_tokens(block.get("text", ""))
+            elif block.get("type") == "image":
+                total += 1600  # 图片 token 估算
+    return total
+
+
+def _content_to_text(content: str | list) -> str:
+    """将 content（可能是 str 或 blocks 列表）转为纯文本用于摘要/格式化。"""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif block.get("type") == "image":
+                parts.append("[图片]")
+    return " ".join(parts)
+
+
 # ── 常量 ──
 
 # token 预算：为对话历史保留的最大 token 数
@@ -62,8 +93,12 @@ class Session:
 
     # ── 消息管理 ──
 
-    def add_message(self, role: str, content: str, sender_name: str = "") -> None:
-        """添加一条消息到历史"""
+    def add_message(self, role: str, content: str | list, sender_name: str = "") -> None:
+        """添加一条消息到历史。
+
+        content 可以是纯文本字符串，也可以是 Anthropic content blocks 列表
+        （如包含 image 和 text 的多模态内容）。
+        """
         msg: dict = {
             "role": role,
             "content": content,
@@ -71,7 +106,7 @@ class Session:
         }
         if sender_name:
             msg["sender_name"] = sender_name
-        tokens = estimate_tokens(content)
+        tokens = _estimate_content_tokens(content)
         msg["_tokens"] = tokens
         self.messages.append(msg)
         self._total_tokens += tokens
@@ -165,25 +200,50 @@ class Session:
                 continue
 
             content = self._format_message(m)
+            # 多模态消息中图片的 base64 数据不存入历史，
+            # 只在当次请求中通过 content blocks 传递。
+            # 历史中的图片会在序列化时降级为 [图片] 占位符。
             result_msgs.append({"role": m["role"], "content": content})
 
         return result_msgs
 
-    def _format_message(self, m: dict) -> str:
-        """格式化单条消息，注入时间和发送者元数据"""
+    def _format_message(self, m: dict) -> str | list:
+        """格式化单条消息，注入时间和发送者元数据。
+
+        对纯文本消息返回 str；对多模态消息返回 content blocks 列表，
+        其中 text block 会被包裹元数据标签。
+        """
         ts = m.get("timestamp")
         name = m.get("sender_name", "")
         content = m.get("content", "")
 
-        parts = []
+        meta_parts = []
         if ts:
             t = datetime.fromtimestamp(ts, tz=CST).strftime("%H:%M")
-            parts.append(f"time={t}")
+            meta_parts.append(f"time={t}")
         if name:
-            parts.append(f"from={name}")
+            meta_parts.append(f"from={name}")
 
-        if parts:
-            meta = " ".join(parts)
+        # 多模态内容：保留 image blocks，仅对 text blocks 包裹元数据
+        if isinstance(content, list):
+            if not meta_parts:
+                return content
+            meta = " ".join(meta_parts)
+            wrapped = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    wrapped.append({
+                        "type": "text",
+                        "text": f"<{TAG_MSG} {meta}>{text}</{TAG_MSG}>",
+                    })
+                else:
+                    wrapped.append(block)
+            return wrapped
+
+        # 纯文本
+        if meta_parts:
+            meta = " ".join(meta_parts)
             return f"<{TAG_MSG} {meta}>{content}</{TAG_MSG}>"
         return content
 
@@ -248,16 +308,25 @@ class Session:
     def _recalc_tokens(self) -> None:
         """重新计算总 token 数"""
         self._total_tokens = sum(
-            m.get("_tokens", estimate_tokens(m.get("content", "")))
+            m.get("_tokens", _estimate_content_tokens(m.get("content", "")))
             for m in self.messages
         )
 
     # ── 序列化 ──
 
     def to_dict(self) -> dict:
+        # 序列化时，将多模态 content 降级为纯文本（不持久化 base64 图片数据）
+        clean_msgs = []
+        for m in self.messages:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                m = dict(m)
+                m["content"] = _content_to_text(content)
+                m["_tokens"] = estimate_tokens(m["content"])
+            clean_msgs.append(m)
         return {
             "chat_id": self.chat_id,
-            "messages": self.messages,
+            "messages": clean_msgs,
             "summary": self._summary,
             "total_tokens": self._total_tokens,
         }
