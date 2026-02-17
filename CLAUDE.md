@@ -16,6 +16,8 @@ uv run lq stop @NAME                       # Stop
 uv run lq logs @NAME                       # Tail logs
 uv run lq status @NAME                     # Show status + API usage
 uv run lq list                             # List all instances
+uv run lq chat @NAME                       # Interactive local chat (no Feishu)
+uv run lq chat @NAME "你好"                # Single-message mode
 uv run lq edit @NAME soul                  # Edit SOUL.md persona
 ```
 

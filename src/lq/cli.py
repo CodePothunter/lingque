@@ -328,16 +328,8 @@ def logs(instance: str, since: str | None) -> None:
         subprocess.run(["tail", "-f", str(log_file)])
 
 
-@cli.command()
-@click.argument("instance")
-@click.argument("message", required=False, default="")
-def say(instance: str, message: str) -> None:
-    """和灵雀对话（不依赖飞书，本地终端交互）
-
-    \b
-    交互模式:  lq say @name
-    单条模式:  lq say @name "你好"
-    """
+def _run_local_chat(instance: str, message: str) -> None:
+    """共用逻辑：本地对话（chat / say 共享）"""
     home, display, cfg = _resolve(instance)
 
     if not home.exists():
@@ -348,6 +340,32 @@ def say(instance: str, message: str) -> None:
 
     from lq.conversation import run_conversation
     asyncio.run(run_conversation(home, config, single_message=message))
+
+
+@cli.command()
+@click.argument("instance")
+@click.argument("message", required=False, default="")
+def chat(instance: str, message: str) -> None:
+    """和灵雀聊天（本地终端，不依赖飞书）
+
+    \b
+    交互模式:  lq chat @name
+    单条模式:  lq chat @name "你好"
+    """
+    _run_local_chat(instance, message)
+
+
+@cli.command()
+@click.argument("instance")
+@click.argument("message", required=False, default="")
+def say(instance: str, message: str) -> None:
+    """chat 的别名 — 和灵雀对话
+
+    \b
+    交互模式:  lq say @name
+    单条模式:  lq say @name "你好"
+    """
+    _run_local_chat(instance, message)
 
 
 @cli.command()
