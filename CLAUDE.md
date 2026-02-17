@@ -38,20 +38,27 @@ The codebase is split into a platform-agnostic core and platform-specific adapte
   - `types.py`: Platform-neutral dataclasses — `IncomingMessage`, `OutgoingMessage`, `BotIdentity`, `ChatMember`, `Reaction`, `CardAction`, plus enums `ChatType`, `SenderType`, `MessageType`
   - `multi.py`: `MultiAdapter` — composite adapter that wraps multiple adapters for multi-platform mode; routes outgoing messages back to the originating adapter based on chat_id tracking
 - **`feishu/adapter.py`** — `FeishuAdapter` implementing `PlatformAdapter`. Wraps `FeishuSender` + `FeishuListener` internally; handles event conversion, @mention resolution, bot message polling, and standard card → Feishu card conversion.
-- **`conversation.py`** — `LocalAdapter` implementing `PlatformAdapter` for terminal-based local chat mode.
+- **`conversation.py`** — `LocalAdapter` implementing `PlatformAdapter` for terminal-based local chat mode. Two modes: **gateway mode** (`home` set) starts `_read_stdin()` and `_watch_inbox()` event sources that push to queue; **chat mode** (`home=None`) uses passive connect with direct `router.handle()` calls.
 
 The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on Feishu SDK directly.
 
 ### Event Flow
 
+All adapters produce standard events through the same unified path:
+
 ```
-Platform WS → adapter (internal conversion) → asyncio.Queue → router.handle(standard_event)
-  standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
-  ├── "message" → IncomingMessage → _dispatch_message → _handle_private / _handle_group
-  ├── "interaction" → CardAction → _handle_card_action
-  ├── "reaction" → Reaction → _handle_reaction_event
-  ├── "member_change" → _handle_member_change
-  └── "eval_timeout" → _evaluate_buffer
+Event sources (per adapter):
+  FeishuAdapter:  Feishu WS → _event_converter → queue.put()
+  LocalAdapter:   stdin → _read_stdin → queue.put()  |  inbox.txt → _watch_inbox → queue.put()
+
+Unified pipeline:
+  asyncio.Queue → _consume_messages → router.handle(standard_event)
+    standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+    ├── "message" → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+    ├── "interaction" → CardAction → _handle_card_action
+    ├── "reaction" → Reaction → _handle_reaction_event
+    ├── "member_change" → _handle_member_change
+    └── "eval_timeout" → _evaluate_buffer
 ```
 
 ### Key Modules (`src/lq/`)

@@ -165,8 +165,8 @@ def start(instance: str, adapter_str: str) -> None:
     config = cfg or load_config(home)
     click.echo(f"启动 @{display} (adapter={'+'.join(adapter_types)}) ...")
 
-    if "local" in adapter_types and "feishu" not in adapter_types:
-        click.echo("💡 纯本地模式：通过 inbox.txt 或 lq chat 发送消息，无飞书连接")
+    if "local" in adapter_types and len(adapter_types) == 1:
+        click.echo("💡 纯本地模式：通过终端 stdin 或 inbox.txt 交互，无远程连接")
     if len(adapter_types) > 1:
         click.echo(f"💡 多平台模式：同时连接 {', '.join(adapter_types)}，消息自动路由到来源平台")
 

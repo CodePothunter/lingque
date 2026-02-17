@@ -1,6 +1,6 @@
 """本地交互式对话 — 不依赖飞书，直接在终端与灵雀对话
 
-走标准事件流：stdin → IncomingMessage → router.handle() → adapter.send() → stdout
+走标准事件流：stdin → IncomingMessage → queue → consumer → router.handle() → adapter.send() → stdout
 与飞书模式使用同一条代码路径，仅适配器不同。
 """
 
@@ -34,16 +34,24 @@ LOCAL_CHAT_ID = "local_say"
 class LocalAdapter(PlatformAdapter):
     """本地终端适配器 — 实现 PlatformAdapter，将消息输出到终端。
 
-    输入侧：由 run_conversation 构造 IncomingMessage 投入 queue。
+    两种模式:
+      - **gateway 模式** (home 非 None): connect() 自动启动 stdin 读取 + inbox 监听，
+        事件推入 queue，走与飞书完全一致的事件流。
+      - **chat 模式** (home 为 None): connect() 被动，由 run_conversation 管理输入循环。
+
     输出侧：adapter.send() 打印到 stdout。
     同步机制：start_thinking 返回 truthy handle，使 router 的 finally 块
     调用 stop_thinking → 设置 _turn_done 事件，通知对话循环本轮结束。
     """
 
-    def __init__(self, bot_name: str) -> None:
+    def __init__(self, bot_name: str, *, home: Path | None = None) -> None:
         self._bot_name = bot_name
+        self._home = home  # 非 None = gateway 模式
         # 对话轮次完成信号（stop_thinking 设置，conversation loop 等待）
         self._turn_done: asyncio.Event = asyncio.Event()
+        self._tasks: list[asyncio.Task] = []
+        self._msg_counter: int = 0
+        self._shutdown: asyncio.Event = asyncio.Event()
 
     # ── 身份 ──
 
@@ -54,17 +62,112 @@ class LocalAdapter(PlatformAdapter):
 
     async def connect(self, queue: asyncio.Queue) -> None:
         self._queue = queue
+        if self._home is not None:
+            # Gateway 模式：启动事件源（类比飞书适配器的 WS + converter）
+            if sys.stdin.isatty():
+                self._tasks.append(
+                    asyncio.create_task(self._read_stdin(), name="local-stdin")
+                )
+                logger.info("本地适配器: stdin 读取已启动")
+            self._tasks.append(
+                asyncio.create_task(self._watch_inbox(), name="local-inbox")
+            )
+            logger.info("本地适配器: inbox 监听已启动")
 
     async def disconnect(self) -> None:
-        pass
+        self._shutdown.set()
+        for t in self._tasks:
+            t.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    # ── 事件源（gateway 模式）──
+
+    async def _read_stdin(self) -> None:
+        """从 stdin 读取用户输入，转换为标准事件推入 queue。
+
+        类比 FeishuAdapter._event_converter：将原始输入转为标准 IncomingMessage。
+        """
+        print(f"\n\033[1;33m=== 灵雀 @{self._bot_name} · 本地模式 ===\033[0m")
+        print("输入消息开始对话，Ctrl+C 退出\n")
+        while not self._shutdown.is_set():
+            try:
+                user_input = await asyncio.to_thread(
+                    input, "\033[1;32m你:\033[0m ",
+                )
+                user_input = user_input.strip()
+            except (KeyboardInterrupt, EOFError):
+                logger.info("stdin 读取结束（用户中断）")
+                return
+            except asyncio.CancelledError:
+                return
+            if not user_input:
+                continue
+            self._msg_counter += 1
+            msg = IncomingMessage(
+                message_id=f"local_{self._msg_counter}",
+                chat_id=LOCAL_CHAT_ID,
+                chat_type=ChatType.PRIVATE,
+                sender_id="local_cli_user",
+                sender_type=SenderType.USER,
+                sender_name="用户",
+                message_type=MessageType.TEXT,
+                text=user_input,
+            )
+            self._turn_done.clear()
+            await self._queue.put({"event_type": "message", "message": msg})
+            # 等待本轮回复完成再提示下一轮输入
+            await self._turn_done.wait()
+
+    async def _watch_inbox(self) -> None:
+        """监听 inbox.txt 文件，转换为标准事件推入 queue。
+
+        类比 FeishuAdapter._poll_bot_messages：定期拉取消息并转换。
+        """
+        if self._home is None:
+            return
+        inbox_path = self._home / "inbox.txt"
+        while not self._shutdown.is_set():
+            try:
+                try:
+                    await asyncio.wait_for(self._shutdown.wait(), timeout=2.0)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                if not inbox_path.exists():
+                    continue
+                text = inbox_path.read_text(encoding="utf-8").strip()
+                if not text:
+                    continue
+                inbox_path.write_text("", encoding="utf-8")
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self._msg_counter += 1
+                    msg = IncomingMessage(
+                        message_id=f"inbox_{self._msg_counter}",
+                        chat_id=LOCAL_CHAT_ID,
+                        chat_type=ChatType.PRIVATE,
+                        sender_id="local_cli_user",
+                        sender_type=SenderType.USER,
+                        sender_name="用户",
+                        message_type=MessageType.TEXT,
+                        text=line,
+                    )
+                    await self._queue.put({"event_type": "message", "message": msg})
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("inbox 监听异常")
 
     # ── 表达 ──
 
     async def send(self, message: OutgoingMessage) -> str | None:
+        self._clear_thinking()
         if message.card:
-            content = _extract_card_text(message.card)
-            if content:
-                _print_bot(self._bot_name, content, prefix="卡片")
+            _print_card(self._bot_name, message.card)
         elif message.text:
             _print_bot(self._bot_name, message.text)
         return "local_msg"
@@ -72,12 +175,20 @@ class LocalAdapter(PlatformAdapter):
     # ── 存在感 ──
 
     async def start_thinking(self, message_id: str) -> str | None:
-        # 返回 truthy handle，确保 router finally 块中的 stop_thinking 被调用
+        # 覆盖式打印思考指示器（与飞书的 OnIt 表情对等）
+        sys.stdout.write(f"\r\033[2m⏳ {self._bot_name} 思考中...\033[0m")
+        sys.stdout.flush()
         return "local"
 
     async def stop_thinking(self, message_id: str, handle: str) -> None:
+        self._clear_thinking()
         # 信号：本轮处理（含 LLM 回复和发送）已完成
         self._turn_done.set()
+
+    def _clear_thinking(self) -> None:
+        """清除思考指示器行"""
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
 
     # ── 感官 ──
 
@@ -97,23 +208,49 @@ class LocalAdapter(PlatformAdapter):
         return []  # 本地模式无群聊
 
 
-def _print_bot(name: str, text: str, prefix: str = "") -> None:
-    """格式化输出 bot 回复"""
-    label = f"{name}"
-    if prefix:
-        label = f"{name} · {prefix}"
-    print(f"\n\033[1;36m{label}:\033[0m {text}")
+def _print_bot(name: str, text: str) -> None:
+    """格式化输出 bot 文本回复"""
+    print(f"\n\033[1;36m{name}:\033[0m {text}")
 
 
-def _extract_card_text(card_json: dict) -> str:
-    """从卡片 JSON 中提取文本内容"""
-    elements = card_json.get("elements", [])
-    parts = []
-    for el in elements:
-        content = el.get("content", "")
-        if content:
-            parts.append(content)
-    return "\n".join(parts)
+# 卡片类型 → (emoji, 颜色 ANSI)
+_CARD_STYLES: dict[str, tuple[str, str]] = {
+    "info":     ("💡", "\033[34m"),   # 蓝
+    "schedule": ("📅", "\033[34m"),   # 蓝
+    "task":     ("📋", "\033[35m"),   # 紫
+    "error":    ("⚠️",  "\033[31m"),   # 红
+    "confirm":  ("❓", "\033[33m"),   # 黄
+}
+
+
+def _print_card(name: str, card_json: dict) -> None:
+    """格式化输出卡片消息（与飞书卡片视觉对等）"""
+    card_type = card_json.get("type", "info")
+    title = card_json.get("title", "")
+    emoji, color = _CARD_STYLES.get(card_type, ("📌", "\033[36m"))
+    reset = "\033[0m"
+
+    # 提取内容
+    content = card_json.get("content", "")
+    if not content:
+        elements = card_json.get("elements", [])
+        parts = []
+        for el in elements:
+            c = el.get("content", "")
+            if c:
+                parts.append(c)
+        content = "\n".join(parts)
+
+    if not content and not title:
+        return
+
+    # 格式: "  💡 标题: 内容" 或 "  💡 内容"
+    if title and content:
+        print(f"  {color}{emoji} {title}:{reset} {content}")
+    elif title:
+        print(f"  {color}{emoji} {title}{reset}")
+    else:
+        print(f"  {color}{emoji} {content}{reset}")
 
 
 async def run_conversation(home: Path, config: LQConfig, single_message: str = "") -> None:

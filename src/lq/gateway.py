@@ -98,11 +98,11 @@ class AssistantGateway:
 
         if has_local:
             from lq.conversation import LocalAdapter
-            local_adapter = LocalAdapter(self.config.name)
+            local_adapter = LocalAdapter(self.config.name, home=self.home)
             adapters.append(local_adapter)
             if primary is None:
                 primary = local_adapter
-            logger.info("本地适配器已加载")
+            logger.info("本地适配器已加载（gateway 模式）")
 
         if not adapters:
             raise RuntimeError("没有可用的适配器，无法启动")
@@ -256,13 +256,15 @@ class AssistantGateway:
         await adapter.connect(self.queue)
         logger.info("适配器已连接: %s", "+".join(self.adapter_types))
 
-        # 并发运行消费者、心跳、inbox 轮询、会话自动保存
+        # 并发运行消费者、心跳、会话自动保存
         tasks = [
             asyncio.create_task(self._consume_messages(router, loop), name="consumer"),
             asyncio.create_task(heartbeat.run_forever(self.shutdown_event), name="heartbeat"),
-            asyncio.create_task(self._poll_inbox(router), name="inbox"),
             asyncio.create_task(self._auto_save_sessions(session_mgr), name="autosave"),
         ]
+        # inbox 轮询：local adapter 已内置 inbox 监听，无需重复；纯飞书模式保留
+        if not has_local:
+            tasks.append(asyncio.create_task(self._poll_inbox(), name="inbox"))
 
         # 等待 shutdown_event 被信号触发
         await self.shutdown_event.wait()
@@ -525,11 +527,8 @@ class AssistantGateway:
         except Exception:
             logger.exception("好奇心探索执行失败")
 
-    async def _poll_inbox(self, router: MessageRouter) -> None:
-        """轮询 inbox.txt，处理 `lq say` 写入的本地消息。
-
-        构造标准 IncomingMessage，走 router.handle 完整路径。
-        """
+    async def _poll_inbox(self) -> None:
+        """轮询 inbox.txt，构造标准事件推入 queue（走完整的适配器路径）。"""
         inbox_path = self.home / "inbox.txt"
         chat_id = self.config.feishu.owner_chat_id or "local_cli"
         msg_counter = 0
@@ -563,10 +562,7 @@ class AssistantGateway:
                         message_type=MessageType.TEXT,
                         text=line,
                     )
-                    try:
-                        await router.handle({"event_type": "message", "message": msg})
-                    except Exception:
-                        logger.exception("处理 inbox 消息失败")
+                    await self.queue.put({"event_type": "message", "message": msg})
             except asyncio.CancelledError:
                 break
             except Exception:

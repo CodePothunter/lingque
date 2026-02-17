@@ -118,21 +118,34 @@ platform/
 └── multi.py     — MultiAdapter (composite adapter for multi-platform mode)
 
 feishu/adapter.py  — FeishuAdapter (wraps sender + listener internally)
-conversation.py    — LocalAdapter (terminal mode)
+conversation.py    — LocalAdapter (terminal mode, two modes: gateway with stdin/inbox event sources, chat with passive connect)
 ```
 
 The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on the Feishu SDK directly.
 
 ### Event Flow
 
+All adapters produce standard events through the same unified path:
+
 ```
-Platform WS → adapter (internal conversion) → asyncio.Queue → router.handle(standard_event)
-  standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
-  ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
-  ├── "interaction"   → CardAction → _handle_card_action
-  ├── "reaction"      → Reaction → _handle_reaction_event
-  ├── "member_change" → _handle_member_change
-  └── "eval_timeout"  → _evaluate_buffer
+Event sources (per adapter):
+  FeishuAdapter:  Feishu WS → _event_converter → queue.put()
+  LocalAdapter:   stdin → _read_stdin → queue.put()
+                  inbox.txt → _watch_inbox → queue.put()
+
+Unified pipeline:
+  asyncio.Queue → _consume_messages → router.handle(standard_event)
+    standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+    ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+    ├── "interaction"   → CardAction → _handle_card_action
+    ├── "reaction"      → Reaction → _handle_reaction_event
+    ├── "member_change" → _handle_member_change
+    └── "eval_timeout"  → _evaluate_buffer
+
+Output:
+  router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
+    FeishuAdapter:  OnIt emoji → REST API → remove emoji
+    LocalAdapter:   ⏳ thinking indicator → terminal card/text → clear indicator
 ```
 
 ## Built-in Tools

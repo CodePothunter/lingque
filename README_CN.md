@@ -116,21 +116,34 @@ platform/
 └── multi.py     — MultiAdapter（多平台复合适配器）
 
 feishu/adapter.py  — FeishuAdapter（内部封装 sender + listener）
-conversation.py    — LocalAdapter（终端模式）
+conversation.py    — LocalAdapter（终端模式，双模式：gateway 模式含 stdin/inbox 事件源，chat 模式被动连接）
 ```
 
 内核（router / gateway / memory）仅依赖 `PlatformAdapter` 和标准类型，不直接引用飞书 SDK。
 
 ### 事件流
 
+所有适配器通过统一路径产生标准事件：
+
 ```
-平台 WS → adapter（内部转换）→ asyncio.Queue → router.handle(标准事件)
-  标准事件 = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
-  ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
-  ├── "interaction"   → CardAction → _handle_card_action
-  ├── "reaction"      → Reaction → _handle_reaction_event
-  ├── "member_change" → _handle_member_change
-  └── "eval_timeout"  → _evaluate_buffer
+事件源（按适配器）：
+  FeishuAdapter:  飞书 WS → _event_converter → queue.put()
+  LocalAdapter:   stdin → _read_stdin → queue.put()
+                  inbox.txt → _watch_inbox → queue.put()
+
+统一管线：
+  asyncio.Queue → _consume_messages → router.handle(标准事件)
+    标准事件 = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+    ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+    ├── "interaction"   → CardAction → _handle_card_action
+    ├── "reaction"      → Reaction → _handle_reaction_event
+    ├── "member_change" → _handle_member_change
+    └── "eval_timeout"  → _evaluate_buffer
+
+输出侧：
+  router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
+    FeishuAdapter:  OnIt 表情 → REST API 发送 → 移除表情
+    LocalAdapter:   ⏳ 思考指示器 → 终端卡片/文本 → 清除指示器
 ```
 
 ## 内置工具
