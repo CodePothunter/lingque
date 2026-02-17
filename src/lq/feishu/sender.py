@@ -673,6 +673,10 @@ class FeishuSender:
             )
             resp.raise_for_status()
             data = resp.json()
+        if data.get("code", 0) != 0 or "tenant_access_token" not in data:
+            raise RuntimeError(
+                f"获取 tenant_access_token 失败: code={data.get('code')}, msg={data.get('msg')}"
+            )
         self._tenant_access_token = data["tenant_access_token"]
         # 飞书 token 有效期 2 小时，提前 5 分钟刷新
         expire_seconds = data.get("expire", 7200)
