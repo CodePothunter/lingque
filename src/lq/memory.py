@@ -241,7 +241,7 @@ class MemoryManager:
         """构建自我认知上下文，让助理了解自己的架构和可修改的文件"""
         ws = self.workspace
         editable_files = []
-        for name in ["SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md"]:
+        for name in ["SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md", "EVOLUTION.md"]:
             p = ws / name
             if p.exists():
                 editable_files.append(EDITABLE_FILE_EXISTS.format(name=name, size=p.stat().st_size))
@@ -406,7 +406,7 @@ class MemoryManager:
 
     # ── 自我修改 API ──
 
-    EDITABLE_FILES = {"SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md"}
+    EDITABLE_FILES = {"SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md", "EVOLUTION.md"}
 
     def read_self_file(self, filename: str) -> str:
         """读取工作区配置文件"""

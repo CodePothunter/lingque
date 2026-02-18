@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from lq.config import LQConfig
+from lq.evolution import EvolutionEngine
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.heartbeat import HeartbeatRunner
@@ -242,6 +243,17 @@ class AssistantGateway:
         router.post_processor = post_processor
         logger.info("后处理管线已加载")
 
+        # 初始化自进化引擎
+        self._evolution = EvolutionEngine(
+            self.home,
+            max_daily=self.config.evolution_max_daily,
+        )
+        if self._evolution.source_root:
+            logger.info("自进化引擎已加载: source=%s, max_daily=%d",
+                        self._evolution.source_root, self.config.evolution_max_daily)
+        else:
+            logger.warning("自进化引擎: 无法定位源代码目录，进化功能受限")
+
         # 配置心跳回调
         heartbeat = HeartbeatRunner(
             self.config.heartbeat_interval,
@@ -361,6 +373,12 @@ class AssistantGateway:
                 await self._run_curiosity_exploration(router, stats)
             except Exception:
                 logger.exception("好奇心探索失败")
+
+            # 自进化周期（好奇心探索之后触发）
+            try:
+                await self._run_evolution_cycle(router, stats)
+            except Exception:
+                logger.exception("自进化周期失败")
 
             # 费用告警
             if stats:
@@ -526,6 +544,115 @@ class AssistantGateway:
                 logger.debug("好奇心探索结果为空或「无」")
         except Exception:
             logger.exception("好奇心探索执行失败")
+
+    async def _run_evolution_cycle(
+        self, router: MessageRouter, stats: StatsTracker,
+    ) -> None:
+        """自进化周期：分析框架 → 选择改进 → Claude Code 实现 → 验证 → 记录。
+
+        在心跳中好奇心探索之后触发，遵循每日次数限制和费用预算。
+        """
+        from lq.prompts import EVOLUTION_PROMPT
+
+        if not self._evolution or not self._evolution.source_root:
+            return
+
+        # 每日次数限制
+        if not self._evolution.can_evolve():
+            logger.debug("今日进化次数已达上限 (%d/%d)，跳过",
+                         self._evolution._today_count, self._evolution.max_daily)
+            return
+
+        # 费用预算检查：只有当总花费低于 (总预算 - 进化预算) 时才进化
+        if stats:
+            daily = stats.get_daily_summary()
+            today_cost = daily.get("total_cost", 0.0)
+            evolution_ceiling = self.config.cost_alert_daily - self.config.evolution_budget
+            if today_cost > evolution_ceiling:
+                logger.debug(
+                    "今日费用 $%.4f 超过进化阈值 $%.2f (总预算 $%.2f - 进化预算 $%.2f)，跳过",
+                    today_cost, evolution_ceiling,
+                    self.config.cost_alert_daily, self.config.evolution_budget,
+                )
+                return
+
+        self._evolution.ensure_evolution_file()
+
+        # 收集上下文
+        evolution_md = self._evolution.read_evolution()
+        source_summary = self._evolution.get_source_summary()
+        git_log = self._evolution.get_recent_git_log()
+        source_root = str(self._evolution.source_root)
+
+        # 收集反思摘要
+        reflections_summary = self._get_reflections_summary()
+
+        # 收集工具统计摘要
+        tool_stats_summary = self._get_tool_stats_summary(router)
+
+        # 构建进化 prompt
+        system = router.memory.build_context()
+        system += "\n\n" + EVOLUTION_PROMPT.format(
+            source_summary=source_summary,
+            evolution_md=evolution_md,
+            remaining_today=self._evolution.remaining_today,
+            reflections_summary=reflections_summary,
+            tool_stats_summary=tool_stats_summary,
+            source_root=source_root,
+            git_log=git_log,
+        )
+
+        chat_id = self.config.feishu.owner_chat_id or "evolution"
+        messages = [{"role": "user", "content": "请执行一个自进化周期。"}]
+
+        try:
+            result = await router._reply_with_tool_loop(
+                system, messages, chat_id, None,
+            )
+            if result and result.strip() and result.strip() != "无":
+                self._evolution.record_attempt()
+                router.memory.append_daily(f"- 自进化: {result[:100]}\n")
+                logger.info("自进化周期完成: %s", result[:80])
+            else:
+                logger.debug("自进化周期: 无需改进或输出「无」")
+        except Exception:
+            logger.exception("自进化周期执行失败")
+
+    def _get_reflections_summary(self) -> str:
+        """收集今日反思日志摘要"""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cst = _tz(_td(hours=8))
+        today = _dt.now(cst).strftime("%Y-%m-%d")
+        ref_path = self.home / "logs" / f"reflections-{today}.jsonl"
+        if not ref_path.exists():
+            return "（今日暂无反思记录）"
+        try:
+            lines = ref_path.read_text(encoding="utf-8").strip().splitlines()
+            if not lines:
+                return "（今日暂无反思记录）"
+            entries = []
+            for line in lines[-15:]:  # 最近 15 条
+                entry = json.loads(line)
+                entries.append(f"- {entry.get('reflection', '')}")
+            return "\n".join(entries)
+        except Exception:
+            return "（反思记录读取失败）"
+
+    def _get_tool_stats_summary(self, router: MessageRouter) -> str:
+        """收集工具使用统计摘要"""
+        if not router._tool_stats:
+            return "（暂无工具使用记录）"
+        lines = []
+        for tname, ts in router._tool_stats.items():
+            total = ts.get("success", 0) + ts.get("fail", 0)
+            if total > 0:
+                rate = round(ts["success"] / total * 100)
+                last_err = ts.get("last_error", "")
+                line = f"- {tname}: {total}次, 成功率{rate}%"
+                if last_err:
+                    line += f" (最近错误: {last_err[:80]})"
+                lines.append(line)
+        return "\n".join(lines) if lines else "（暂无工具使用记录）"
 
     async def _poll_inbox(self) -> None:
         """轮询 inbox.txt，构造标准事件推入 queue（走完整的适配器路径）。"""

@@ -239,7 +239,8 @@ SELF_AWARENESS_TEMPLATE = (
     "- **SOUL.md**: 定义你的身份、性格、沟通风格和介入原则。修改它会改变你的行为方式。\n"
     "- **MEMORY.md**: 长期记忆存储，按分区组织。你已有 write_memory 工具来更新它。\n"
     "- **HEARTBEAT.md**: 定义你的定时任务和主动行为模板。\n"
-    "- **CURIOSITY.md**: 好奇心日志，记录你的探索兴趣、进展和改进建议。\n\n"
+    "- **CURIOSITY.md**: 好奇心日志，记录你的探索兴趣、进展和改进建议。\n"
+    "- **EVOLUTION.md**: 进化日志，记录框架自我改进的历程、待办和已完成的改进。\n\n"
     "### 你的能力（均有对应工具可调用）\n"
     "- 使用 web_search 工具搜索互联网获取实时信息（新闻、天气、百科、技术文档等）\n"
     "- 使用 web_fetch 工具抓取任意网页的文本内容\n"
@@ -294,6 +295,10 @@ SELF_AWARENESS_TEMPLATE = (
     "### 自我修改\n"
     "你可以使用 read_self_file 和 write_self_file 工具来查看和修改上述配置文件。\n"
     "修改 SOUL.md 会改变你的核心人格，请谨慎操作，建议先读取当前内容再修改。\n\n"
+    "### 自进化\n"
+    "你拥有自进化能力：在心跳周期中自动分析自身框架代码，发现改进方向，"
+    "并通过 Claude Code 实现改进。进化日志记录在 EVOLUTION.md 中。\n"
+    "进化流程：诊断 → 规划 → 执行 → 验证 → 记录，每个周期只做一个改进。\n\n"
     "{custom_tools_section}"
 )
 
@@ -366,12 +371,12 @@ TOOL_DESC_SEND_CARD = "发送一张信息卡片给用户。用于展示结构化
 
 TOOL_DESC_READ_SELF_FILE = (
     "读取自己的配置文件。可读文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、"
-    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）。"
+    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）、EVOLUTION.md（进化日志）。"
 )
 
 TOOL_DESC_WRITE_SELF_FILE = (
     "修改自己的配置文件。可写文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、"
-    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）。"
+    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）、EVOLUTION.md（进化日志）。"
     "修改 SOUL.md 会改变核心人格，请谨慎。建议先用 read_self_file 读取当前内容再修改。"
 )
 
@@ -823,6 +828,83 @@ TOOL_DESC_GET_MY_STATS = "查看自己的运行状态和统计信息"
 
 TOOL_FIELD_STATS_CATEGORY = (
     "要查看的统计类别：today（今日统计）、month（本月统计）、capability（工具使用统计）"
+)
+
+
+# =====================================================================
+# Evolution (Self-Improvement) Prompts
+# =====================================================================
+
+# {source_summary}, {evolution_md}, {remaining_today},
+# {reflections_summary}, {tool_stats_summary}, {source_root}, {git_log}
+EVOLUTION_PROMPT = (
+    "你现在进入【自进化模式】。你的目标是分析和改进自己的框架代码，让自己变得更强。\n\n"
+    "## 源代码信息\n{source_summary}\n\n"
+    "## 最近的 git 提交\n{git_log}\n\n"
+    "## 当前进化日志\n{evolution_md}\n\n"
+    "## 今日剩余改进次数: {remaining_today}\n\n"
+    "## 近期反思摘要\n{reflections_summary}\n\n"
+    "## 工具使用统计\n{tool_stats_summary}\n\n"
+    "## 你的进化流程\n"
+    "1. **诊断**：阅读源代码（用 read_file，路径用绝对路径），分析框架有什么可以改进的地方\n"
+    "   - 检查 EVOLUTION.md 中的「待办」列表，是否有之前发现但还没做的改进\n"
+    "   - 分析反思记录和工具统计，找出频繁出错或效率低的地方\n"
+    "   - 阅读源代码，寻找缺陷、缺失功能、代码质量问题\n"
+    "   - 思考用户体验：哪些场景下你的表现不够好？\n"
+    "2. **规划**：选择一个最有价值的改进（每次只做一个）\n"
+    "   - 优先级：修 bug > 补功能缺失 > 优化性能 > 重构代码质量\n"
+    "   - 改进必须是具体的、可实现的，不是笼统的方向\n"
+    "   - 小步快跑：优先选择能快速实现且效果明确的改进\n"
+    "3. **执行**：使用 run_claude_code 工具让 Claude Code 实现这个改进\n"
+    "   - working_dir 设为 {source_root}\n"
+    "   - prompt 要详细描述要改什么、怎么改、在哪个文件\n"
+    "   - 让 Claude Code 在改完后自行验证（import 检查等）\n"
+    "   - 让 Claude Code 用 git commit 提交改动，commit message 格式：\n"
+    "     🧬【进化】：简要描述改动内容\n"
+    "4. **验证**：用 run_bash 检查改动是否正常\n"
+    "   - 运行 `cd {source_root} && python -c 'from lq.gateway import AssistantGateway'`\n"
+    "   - 如果导入失败，用 run_bash 执行 `cd {source_root} && git checkout .` 回滚\n"
+    "5. **记录**：\n"
+    "   - 用 write_self_file 更新 EVOLUTION.md，记录这次改进的内容和结果\n"
+    "   - 将已完成的改进从「待办」移到「已完成」（附带日期）\n"
+    "   - 如果发现了新的改进方向，加入「待办」\n"
+    "   - 如果改进失败了，记录到「失败记录」并分析原因\n"
+    "   - 用 send_message 通知主人你做了什么改进\n\n"
+    "## 重要规则\n"
+    "- 每个进化周期只做一个改进，不要贪多\n"
+    "- 改进必须向后兼容，不能破坏现有功能\n"
+    "- 不要改动 config.json 或用户数据文件（SOUL.md、MEMORY.md 等实例文件）\n"
+    "- 不要删除现有功能，只能增强或修复\n"
+    "- 如果没有值得改进的地方，把新发现的方向记入 EVOLUTION.md 的「待办」，然后输出「无」\n"
+    "- 注意：改动的源代码会在下次重启后生效，当前运行不受影响\n"
+    "- 如果 EVOLUTION.md 的待办列表为空，花时间阅读源代码来发现改进方向\n"
+    "- 你可以阅读 CLAUDE.md 来理解项目的整体架构\n"
+    "- 改进方向举例：\n"
+    "  - 更好的错误处理和错误恢复\n"
+    "  - 新的有用工具或工具增强\n"
+    "  - prompt 优化让 LLM 回复更准确\n"
+    "  - 性能优化（减少不必要的 API 调用）\n"
+    "  - 代码可读性和可维护性改进\n"
+    "  - 安全性增强\n"
+    "  - 边界条件处理\n"
+)
+
+
+EVOLUTION_INIT_TEMPLATE = (
+    "# 进化日志\n\n"
+    "记录框架的自我改进历程。\n\n"
+    "## 方向\n"
+    "持续改进的长期方向：\n"
+    "- 提升回复质量和准确性\n"
+    "- 增强工具调用的鲁棒性\n"
+    "- 优化上下文管理和记忆系统\n"
+    "- 改进错误处理和容错能力\n"
+    "- 增加有价值的新功能\n\n"
+    "## 待办\n"
+    "发现但尚未实施的改进：\n\n"
+    "## 进行中\n\n"
+    "## 已完成\n\n"
+    "## 失败记录\n"
 )
 
 
