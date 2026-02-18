@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+CST = timezone(timedelta(hours=8))
+
 from lq.config import LQConfig
 from lq.evolution import EvolutionEngine
 from lq.executor.api import DirectAPIExecutor
@@ -243,7 +245,7 @@ class AssistantGateway:
         router.post_processor = post_processor
         logger.info("后处理管线已加载")
 
-        # 初始化自进化引擎
+        # 初始化自进化引擎 + 启动守护检查
         self._evolution = EvolutionEngine(
             self.home,
             max_daily=self.config.evolution_max_daily,
@@ -251,8 +253,15 @@ class AssistantGateway:
         if self._evolution.source_root:
             logger.info("自进化引擎已加载: source=%s, max_daily=%d",
                         self._evolution.source_root, self.config.evolution_max_daily)
+            # 进化守护：检查上次进化是否导致崩溃
+            was_clean = self._was_clean_shutdown()
+            if not was_clean:
+                logger.warning("检测到上次非正常退出，检查进化安全性...")
+            self._evolution.startup_check(was_clean)
         else:
             logger.warning("自进化引擎: 无法定位源代码目录，进化功能受限")
+        # 标记本次启动（清除 clean shutdown 标记，在 _cleanup 中重新写入）
+        self._clean_shutdown_path.unlink(missing_ok=True)
 
         # 配置心跳回调
         heartbeat = HeartbeatRunner(
@@ -554,11 +563,18 @@ class AssistantGateway:
         old_curiosity = curiosity_md
         old_evolution = evolution_md
 
+        # 进化守护：如果可能执行进化，先保存 checkpoint
+        if self._evolution and remaining_today > 0 and self._evolution.source_root:
+            self._evolution.save_checkpoint()
+
         try:
             result = await router._reply_with_tool_loop(
                 system, messages, chat_id, None,
             )
             if not result or not result.strip() or result.strip() == "无":
+                # 没有行动，清除 checkpoint
+                if self._evolution:
+                    self._evolution.clear_checkpoint()
                 logger.debug("自主行动周期: 无需行动")
                 return
 
@@ -566,11 +582,18 @@ class AssistantGateway:
             logger.info("自主行动周期完成: %s", result[:80])
 
             # 检测是否执行了进化（EVOLUTION.md 发生了变化）
+            did_evolve = False
             if self._evolution and self._evolution.evolution_path.exists():
                 new_evolution = self._evolution.evolution_path.read_text(encoding="utf-8")
                 if new_evolution != old_evolution:
+                    did_evolve = True
                     self._evolution.record_attempt()
                     logger.info("检测到进化行为，已计数")
+
+            # 进化守护：如果没有执行进化，清除 checkpoint
+            # （如果执行了进化，保留 checkpoint 等下次启动验证）
+            if self._evolution and not did_evolve:
+                self._evolution.clear_checkpoint()
 
             # 检测好奇心日志变化（保持原有的改进建议通知逻辑）
             new_curiosity = curiosity_path.read_text(encoding="utf-8")
@@ -750,6 +773,18 @@ class AssistantGateway:
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("Lark").setLevel(logging.WARNING)
 
+    @property
+    def _clean_shutdown_path(self) -> Path:
+        return self.home / ".clean-shutdown"
+
+    def _was_clean_shutdown(self) -> bool:
+        """检测上次运行是否正常关闭。
+
+        正常关闭时 _cleanup 会写入 .clean-shutdown 标记文件；
+        如果标记不存在，说明上次是崩溃退出。
+        """
+        return self._clean_shutdown_path.exists()
+
     def _write_pid(self) -> None:
         pid_path = self.home / "gateway.pid"
         pid_path.write_text(str(os.getpid()))
@@ -760,6 +795,14 @@ class AssistantGateway:
         if pid_path.exists():
             pid_path.unlink()
             logger.info("PID 文件已清理")
+        # 标记正常关闭，供下次启动时判断是否需要回滚进化
+        try:
+            self._clean_shutdown_path.write_text(
+                datetime.now(CST).isoformat(), encoding="utf-8",
+            )
+            logger.info("clean shutdown 标记已写入")
+        except Exception:
+            logger.warning("clean shutdown 标记写入失败")
 
     def _setup_signals(self) -> None:
         loop = asyncio.get_running_loop()
