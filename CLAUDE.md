@@ -4,18 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LingQue (灵雀) is a personal AI assistant framework deeply integrated with Feishu (Lark). It runs as a long-lived daemon that connects to Feishu via WebSocket, handles private/group chat messages through an LLM, and supports calendar management, long-term memory, and runtime tool creation.
+LingQue (灵雀) is a personal AI assistant framework with a platform-agnostic core and pluggable chat platform adapters. It runs as a long-lived daemon that connects to chat platforms (currently Feishu/Lark) via a `PlatformAdapter` interface, handles private/group chat messages through an LLM, and supports calendar management, long-term memory, and runtime tool creation.
 
 ## Commands
 
 ```bash
 uv sync                                    # Install dependencies
 uv run lq init --name NAME --from-env .env # Initialize an instance
-uv run lq start @NAME                      # Start (foreground)
+uv run lq start @NAME                      # Start (foreground, default Feishu)
+uv run lq start @NAME --adapter local     # Start in local-only mode (no Feishu)
+uv run lq start @NAME --adapter feishu,local  # Multi-platform mode
 uv run lq stop @NAME                       # Stop
 uv run lq logs @NAME                       # Tail logs
 uv run lq status @NAME                     # Show status + API usage
 uv run lq list                             # List all instances
+uv run lq chat @NAME                       # Interactive local chat (no Feishu)
+uv run lq chat @NAME "你好"                # Single-message mode
 uv run lq edit @NAME soul                  # Edit SOUL.md persona
 ```
 
@@ -25,23 +29,42 @@ No automated test suite exists. No linter or formatter is configured.
 
 ## Architecture
 
-### Dual-Thread Model
+### Platform Abstraction
 
-- **Main thread**: `asyncio.run(gateway.run())` — runs message consumer, heartbeat scheduler, and inbox poller as concurrent async tasks
-- **Feishu daemon thread**: Blocking WebSocket client (`listener.start_blocking()`), bridges events to main loop via `loop.call_soon_threadsafe(queue.put_nowait, data)`
+The codebase is split into a platform-agnostic core and platform-specific adapters:
 
-### Message Flow
+- **`platform/`** — Abstract layer defining the adapter interface and standard data types:
+  - `adapter.py`: `PlatformAdapter` ABC — 8 abstract methods (`get_identity`, `connect`, `disconnect`, `send`, `start_thinking`, `stop_thinking`, `fetch_media`, `resolve_name`, `list_members`) + 4 optional (`react`, `unreact`, `edit`, `unsend`)
+  - `types.py`: Platform-neutral dataclasses — `IncomingMessage`, `OutgoingMessage`, `BotIdentity`, `ChatMember`, `Reaction`, `CardAction`, plus enums `ChatType`, `SenderType`, `MessageType`
+  - `multi.py`: `MultiAdapter` — composite adapter that wraps multiple adapters for multi-platform mode; routes outgoing messages back to the originating adapter based on chat_id tracking
+- **`feishu/adapter.py`** — `FeishuAdapter` implementing `PlatformAdapter`. Wraps `FeishuSender` + `FeishuListener` internally; handles event conversion, @mention resolution, bot message polling, and standard card → Feishu card conversion.
+- **`conversation.py`** — `LocalAdapter` implementing `PlatformAdapter` for terminal-based local chat mode. Two modes: **gateway mode** (`home` set) starts `_read_stdin()` and `_watch_inbox()` event sources that push to queue; **chat mode** (`home=None`) uses passive connect with direct `router.handle()` calls.
+
+The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on Feishu SDK directly.
+
+### Event Flow
+
+All adapters produce standard events through the same unified path:
 
 ```
-Feishu WS → listener (daemon thread) → asyncio.Queue → router.handle()
-  ├── Private DM → debounce → session → executor.reply_with_tool_loop() → sender
-  └── Group chat → trivial filter → buffer → LLM evaluation → maybe reply
+Event sources (per adapter):
+  FeishuAdapter:  Feishu WS → _event_converter → queue.put()
+  LocalAdapter:   stdin → _read_stdin → queue.put()  |  inbox.txt → _watch_inbox → queue.put()
+
+Unified pipeline:
+  asyncio.Queue → _consume_messages → router.handle(standard_event)
+    standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+    ├── "message" → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+    ├── "interaction" → CardAction → _handle_card_action
+    ├── "reaction" → Reaction → _handle_reaction_event
+    ├── "member_change" → _handle_member_change
+    └── "eval_timeout" → _evaluate_buffer
 ```
 
 ### Key Modules (`src/lq/`)
 
-- **gateway.py** — Orchestrator. Initializes all components, manages dual-thread lifecycle, handles signals for graceful shutdown.
-- **router.py** — Core routing logic (~1000 lines, largest module). Dispatches by message type (private/group/card), runs the agentic tool-use loop, defines all 11 built-in tools. Three-layer group chat intervention: trivial message filter → message buffering → LLM evaluation.
+- **gateway.py** — Orchestrator. Creates the adapter, initializes all components, runs concurrent async tasks (consumer, heartbeat, inbox, autosave), handles signals for graceful shutdown.
+- **router.py** — Core routing logic (largest module). Receives standard events via `handle()`, dispatches to typed handlers. Runs the agentic tool-use loop, defines all 11 built-in tools. Three-layer group chat intervention: trivial message filter → message buffering → LLM evaluation. Depends on `PlatformAdapter` (not Feishu SDK).
 - **memory.py** — Builds LLM system prompt from SOUL.md (persona), MEMORY.md (long-term memory), current time (CST/UTC+8), and self-awareness capabilities list.
 - **session.py** — Per-chat-id message history with auto-compaction at 50 messages (summarize + keep last 10).
 - **tools.py** — Runtime custom tool plugin system. Loads `.py` files from `tools/` directory, validates via AST (blocks dangerous modules: os, subprocess, shutil, sys, socket, ctypes, signal, multiprocessing, threading).
@@ -49,7 +72,7 @@ Feishu WS → listener (daemon thread) → asyncio.Queue → router.handle()
 - **executor/claude_code.py** — Claude Code subprocess executor (alternative to direct API).
 - **intent.py + subagent.py** — Post-processing pipeline: detects missed tool calls in LLM responses, uses lightweight LLM call to extract parameters, then executes the tool.
 - **buffer.py** — Group chat message accumulator with threshold/timeout triggers.
-- **feishu/** — Feishu integration: `listener.py` (WebSocket events), `sender.py` (text/card messages, Markdown cleanup), `calendar.py` (event CRUD), `cards.py` (card builder).
+- **feishu/** — Feishu integration (internal to FeishuAdapter): `sender.py` (REST API calls), `listener.py` (WebSocket events), `calendar.py` (event CRUD), `cards.py` (card builder).
 
 ### Instance Workspace
 

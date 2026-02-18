@@ -1,4 +1,8 @@
-"""本地交互式对话 — 不依赖飞书，直接在终端与灵雀对话"""
+"""本地交互式对话 — 不依赖飞书，直接在终端与灵雀对话
+
+走标准事件流：stdin → IncomingMessage → queue → consumer → router.handle() → adapter.send() → stdout
+与飞书模式使用同一条代码路径，仅适配器不同。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from lq.config import LQConfig
+from lq.platform import (
+    PlatformAdapter,
+    BotIdentity,
+    ChatMember,
+    IncomingMessage,
+    OutgoingMessage,
+    ChatType,
+    SenderType,
+    MessageType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,97 +31,266 @@ logger = logging.getLogger(__name__)
 LOCAL_CHAT_ID = "local_say"
 
 
-class LocalSender:
-    """替代 FeishuSender 的本地终端发送器。
+class LocalAdapter(PlatformAdapter):
+    """本地终端适配器 — 实现 PlatformAdapter，将消息输出到终端。
 
-    实现 FeishuSender 的关键接口，将消息输出到终端而非飞书。
+    两种模式:
+      - **gateway 模式** (home 非 None): connect() 自动启动 stdin 读取 + inbox 监听，
+        事件推入 queue，走与飞书完全一致的事件流。
+      - **chat 模式** (home 为 None): connect() 被动，由 run_conversation 管理输入循环。
+
+    输出侧：adapter.send() 打印到 stdout。
+    同步机制：start_thinking 返回 truthy handle，使 router 的 finally 块
+    调用 stop_thinking → 设置 _turn_done 事件，通知对话循环本轮结束。
     """
 
-    def __init__(self, bot_name: str) -> None:
-        self.bot_name = bot_name
-        self.bot_open_id = "local_bot"
-        self._user_name_cache: dict[str, str] = {
-            "local_bot": bot_name,
-            "local_cli_user": "用户",
-        }
-        self._left_chats: set[str] = set()
-        self._bot_members: dict[str, set[str]] = {}
+    # 思考动画帧 (braille spinner)
+    _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-    # ── 消息发送 ──
+    def __init__(self, bot_name: str, *, home: Path | None = None) -> None:
+        self._bot_name = bot_name
+        self._home = home  # 非 None = gateway 模式
+        # 对话轮次完成信号（stop_thinking 设置，conversation loop 等待）
+        self._turn_done: asyncio.Event = asyncio.Event()
+        self._tasks: list[asyncio.Task] = []
+        self._msg_counter: int = 0
+        self._shutdown: asyncio.Event = asyncio.Event()
+        self._spinner_task: asyncio.Task | None = None
 
-    async def send_text(self, chat_id: str, text: str) -> str | None:
-        _print_bot(self.bot_name, text)
+    # ── 身份 ──
+
+    async def get_identity(self) -> BotIdentity:
+        return BotIdentity(bot_id="local_bot", bot_name=self._bot_name)
+
+    # ── 感知 ──
+
+    async def connect(self, queue: asyncio.Queue) -> None:
+        self._queue = queue
+        if self._home is not None:
+            # Gateway 模式：启动事件源（类比飞书适配器的 WS + converter）
+            if sys.stdin.isatty():
+                self._tasks.append(
+                    asyncio.create_task(self._read_stdin(), name="local-stdin")
+                )
+                logger.info("本地适配器: stdin 读取已启动")
+            self._tasks.append(
+                asyncio.create_task(self._watch_inbox(), name="local-inbox")
+            )
+            logger.info("本地适配器: inbox 监听已启动")
+
+    async def disconnect(self) -> None:
+        self._shutdown.set()
+        for t in self._tasks:
+            t.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    # ── 事件源（gateway 模式）──
+
+    async def _read_stdin(self) -> None:
+        """从 stdin 读取用户输入，转换为标准事件推入 queue。
+
+        类比 FeishuAdapter._event_converter：将原始输入转为标准 IncomingMessage。
+        """
+        print(f"\n\033[1;33m=== 灵雀 @{self._bot_name} · 本地模式 ===\033[0m")
+        print("输入消息开始对话，Ctrl+C 退出\n")
+        while not self._shutdown.is_set():
+            try:
+                user_input = await asyncio.to_thread(
+                    input, "\033[1;32m你:\033[0m ",
+                )
+                user_input = user_input.strip()
+            except (KeyboardInterrupt, EOFError):
+                logger.info("stdin 读取结束（用户中断）")
+                return
+            except asyncio.CancelledError:
+                return
+            if not user_input:
+                continue
+            self._msg_counter += 1
+            msg = IncomingMessage(
+                message_id=f"local_{self._msg_counter}",
+                chat_id=LOCAL_CHAT_ID,
+                chat_type=ChatType.PRIVATE,
+                sender_id="local_cli_user",
+                sender_type=SenderType.USER,
+                sender_name="用户",
+                message_type=MessageType.TEXT,
+                text=user_input,
+            )
+            self._turn_done.clear()
+            await self._queue.put({"event_type": "message", "message": msg})
+            # 等待本轮回复完成再提示下一轮输入
+            await self._turn_done.wait()
+
+    async def _watch_inbox(self) -> None:
+        """监听 inbox.txt 文件，转换为标准事件推入 queue。
+
+        类比 FeishuAdapter._poll_bot_messages：定期拉取消息并转换。
+        """
+        if self._home is None:
+            return
+        inbox_path = self._home / "inbox.txt"
+        while not self._shutdown.is_set():
+            try:
+                try:
+                    await asyncio.wait_for(self._shutdown.wait(), timeout=2.0)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                if not inbox_path.exists():
+                    continue
+                text = inbox_path.read_text(encoding="utf-8").strip()
+                if not text:
+                    continue
+                inbox_path.write_text("", encoding="utf-8")
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self._msg_counter += 1
+                    msg = IncomingMessage(
+                        message_id=f"inbox_{self._msg_counter}",
+                        chat_id=LOCAL_CHAT_ID,
+                        chat_type=ChatType.PRIVATE,
+                        sender_id="local_cli_user",
+                        sender_type=SenderType.USER,
+                        sender_name="用户",
+                        message_type=MessageType.TEXT,
+                        text=line,
+                    )
+                    await self._queue.put({"event_type": "message", "message": msg})
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("inbox 监听异常")
+
+    # ── 表达 ──
+
+    async def send(self, message: OutgoingMessage) -> str | None:
+        self._stop_spinner()
+        self._clear_line()
+        if message.card:
+            _print_card(self._bot_name, message.card)
+        elif message.text:
+            _print_bot(self._bot_name, message.text)
         return "local_msg"
 
-    async def reply_text(self, message_id: str, text: str) -> str | None:
-        _print_bot(self.bot_name, text)
-        return "local_msg"
+    # ── 存在感 ──
 
-    async def send_card(self, chat_id: str, card_json: dict, **kw: Any) -> str | None:
-        content = _extract_card_text(card_json)
-        if content:
-            _print_bot(self.bot_name, content, prefix="卡片")
-        return "local_msg"
+    async def start_thinking(self, message_id: str) -> str | None:
+        self._stop_spinner()
+        self._spinner_task = asyncio.create_task(self._animate_spinner())
+        return "local"
 
-    async def reply_card(self, message_id: str, card_json: dict, **kw: Any) -> str | None:
-        content = _extract_card_text(card_json)
-        if content:
-            _print_bot(self.bot_name, content, prefix="卡片")
-        return "local_msg"
+    async def stop_thinking(self, message_id: str, handle: str) -> None:
+        self._stop_spinner()
+        self._clear_line()
+        # 信号：本轮处理（含 LLM 回复和发送）已完成
+        self._turn_done.set()
 
-    # ── 用户信息 ──
+    async def notify_queued(self, chat_id: str, count: int) -> None:
+        self._stop_spinner()
+        sys.stdout.write(f"\r\033[K\033[2m📥 已收到 {count} 条消息，等待更多...\033[0m")
+        sys.stdout.flush()
 
-    async def fetch_bot_info(self) -> dict[str, Any]:
-        return {"open_id": self.bot_open_id, "app_name": self.bot_name}
+    async def _animate_spinner(self) -> None:
+        """循环播放 braille spinner 动画，直到被取消。"""
+        frames = self._SPINNER_FRAMES
+        i = 0
+        try:
+            while True:
+                frame = frames[i % len(frames)]
+                sys.stdout.write(
+                    f"\r\033[K\033[2m{frame} {self._bot_name} 思考中...\033[0m"
+                )
+                sys.stdout.flush()
+                i += 1
+                await asyncio.sleep(0.08)
+        except asyncio.CancelledError:
+            return
 
-    async def get_user_name(self, open_id: str, chat_id: str = "") -> str:
-        return self._user_name_cache.get(open_id, "用户")
+    def _stop_spinner(self) -> None:
+        """取消正在运行的 spinner 任务。"""
+        if self._spinner_task is not None:
+            self._spinner_task.cancel()
+            self._spinner_task = None
 
-    async def resolve_name(self, open_id: str) -> str:
-        return self._user_name_cache.get(open_id, "用户")
+    def _clear_line(self) -> None:
+        """清除当前行（spinner / 队列指示器）"""
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
 
-    # ── 群聊/状态相关（本地模式不需要） ──
+    # ── 感官 ──
 
-    def is_chat_left(self, chat_id: str) -> bool:
-        return False
+    async def fetch_media(
+        self, message_id: str, resource_key: str,
+    ) -> tuple[str, str] | None:
+        return None  # 本地模式不支持媒体
 
-    def register_bot_member(self, chat_id: str, bot_open_id: str) -> None:
-        pass
+    # ── 认知 ──
 
-    def load_bot_identities(self, home: Path) -> None:
-        pass
+    async def resolve_name(self, user_id: str) -> str:
+        if user_id == "local_cli_user":
+            return "用户"
+        return user_id[-8:]
 
-    def get_bot_members(self, chat_id: str) -> set[str]:
-        return set()
-
-    def get_member_name(self, open_id: str) -> str:
-        return self._user_name_cache.get(open_id, "")
-
-    async def fetch_chat_messages(self, chat_id: str, count: int = 10) -> list[dict]:
-        return []
-
-
-def _print_bot(name: str, text: str, prefix: str = "") -> None:
-    """格式化输出 bot 回复"""
-    label = f"{name}"
-    if prefix:
-        label = f"{name} · {prefix}"
-    print(f"\n\033[1;36m{label}:\033[0m {text}")
+    async def list_members(self, chat_id: str) -> list[ChatMember]:
+        return []  # 本地模式无群聊
 
 
-def _extract_card_text(card_json: dict) -> str:
-    """从卡片 JSON 中提取文本内容"""
-    elements = card_json.get("elements", [])
-    parts = []
-    for el in elements:
-        content = el.get("content", "")
-        if content:
-            parts.append(content)
-    return "\n".join(parts)
+def _print_bot(name: str, text: str) -> None:
+    """格式化输出 bot 文本回复"""
+    print(f"\n\033[1;36m{name}:\033[0m {text}")
+
+
+# 卡片类型 → (emoji, 颜色 ANSI)
+_CARD_STYLES: dict[str, tuple[str, str]] = {
+    "info":     ("💡", "\033[34m"),   # 蓝
+    "schedule": ("📅", "\033[34m"),   # 蓝
+    "task":     ("📋", "\033[35m"),   # 紫
+    "error":    ("⚠️",  "\033[31m"),   # 红
+    "confirm":  ("❓", "\033[33m"),   # 黄
+}
+
+
+def _print_card(name: str, card_json: dict) -> None:
+    """格式化输出卡片消息（与飞书卡片视觉对等）"""
+    card_type = card_json.get("type", "info")
+    title = card_json.get("title", "")
+    emoji, color = _CARD_STYLES.get(card_type, ("📌", "\033[36m"))
+    reset = "\033[0m"
+
+    # 提取内容
+    content = card_json.get("content", "")
+    if not content:
+        elements = card_json.get("elements", [])
+        parts = []
+        for el in elements:
+            c = el.get("content", "")
+            if c:
+                parts.append(c)
+        content = "\n".join(parts)
+
+    if not content and not title:
+        return
+
+    # 格式: "  💡 标题: 内容" 或 "  💡 内容"
+    if title and content:
+        print(f"  {color}{emoji} {title}:{reset} {content}")
+    elif title:
+        print(f"  {color}{emoji} {title}{reset}")
+    else:
+        print(f"  {color}{emoji} {content}{reset}")
 
 
 async def run_conversation(home: Path, config: LQConfig, single_message: str = "") -> None:
     """运行本地交互式对话。
+
+    走标准事件流：用户输入 → IncomingMessage → router.handle() → _handle_private
+    → _flush_private → adapter.send() → 终端输出。
+    与 gateway.py 的飞书模式使用同一条代码路径。
 
     Args:
         home: 实例工作目录
@@ -134,9 +317,11 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     from lq.session import SessionManager
     from lq.stats import StatsTracker
     from lq.tools import ToolRegistry
-    from lq.prompts import TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE, wrap_tag
 
-    sender = LocalSender(config.name)
+    adapter = LocalAdapter(config.name)
+    queue: asyncio.Queue = asyncio.Queue()
+    await adapter.connect(queue)
+
     memory = MemoryManager(home, config=config)
     executor = DirectAPIExecutor(config.api, config.model)
     stats = StatsTracker(home)
@@ -147,24 +332,20 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     cc_executor = ClaudeCodeExecutor(home, config.api)
     bash_executor = BashExecutor(home)
 
-    # 日历模块（可选，本地模式可能无飞书 client）
-    calendar = None
-    try:
-        from lq.feishu.calendar import FeishuCalendar
-        # FeishuCalendar 需要飞书 client，本地模式下跳过
-    except Exception:
-        pass
-
     # 创建路由器并注入依赖
     from lq.router import MessageRouter
 
-    router = MessageRouter(executor, memory, sender, "local_bot", config.name)
+    router = MessageRouter(executor, memory, adapter, "local_bot", config.name)
+    router.config = config
     router.session_mgr = session_mgr
-    router.calendar = calendar
+    router.calendar = None  # 本地模式无飞书日历
     router.stats = stats
     router.cc_executor = cc_executor
     router.bash_executor = bash_executor
     router.tool_registry = tool_registry
+
+    # CLI 不需要防抖（用户手动输入，每条消息立即处理）
+    router._private_debounce_seconds = 0.01
 
     # 初始化后处理管线
     from lq.intent import IntentDetector
@@ -179,10 +360,11 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     router.post_processor = post_processor
 
     chat_id = LOCAL_CHAT_ID
+    msg_counter = 0
 
     if single_message:
-        # 单条消息模式
-        await _do_one_turn(router, memory, session_mgr, chat_id, single_message)
+        msg_counter += 1
+        await _dispatch_and_wait(adapter, router, chat_id, msg_counter, single_message)
         session_mgr.save()
         return
 
@@ -192,7 +374,10 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
 
     while True:
         try:
-            user_input = input("\033[1;32m你:\033[0m ").strip()
+            user_input = await asyncio.to_thread(
+                input, "\033[1;32m你:\033[0m ",
+            )
+            user_input = user_input.strip()
         except (KeyboardInterrupt, EOFError):
             print("\n再见！")
             break
@@ -221,7 +406,8 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
                         print(f"  [{role}] {content[:120]}")
             continue
 
-        await _do_one_turn(router, memory, session_mgr, chat_id, user_input)
+        msg_counter += 1
+        await _dispatch_and_wait(adapter, router, chat_id, msg_counter, user_input)
 
         # 每轮自动保存
         session_mgr.save()
@@ -230,46 +416,34 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     session_mgr.save()
 
 
-async def _do_one_turn(
+async def _dispatch_and_wait(
+    adapter: LocalAdapter,
     router: Any,
-    memory: Any,
-    session_mgr: Any,
     chat_id: str,
-    user_text: str,
+    msg_counter: int,
+    text: str,
 ) -> None:
-    """执行一轮对话：构建 system prompt → 调用工具循环 → 记录历史"""
-    from lq.prompts import TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE, wrap_tag
+    """构造标准 IncomingMessage → router.handle → 等待回复完成。
 
-    # 构建 system prompt（和 _flush_private 完全一致）
-    system = memory.build_context(chat_id=chat_id)
-    system += (
-        f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
-        "如果用户要求记住什么，使用 write_memory 工具。"
-        "如果涉及日程，使用 calendar 工具。"
-        "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
-        "需要联网查询时（搜索、天气、新闻等），使用 web_search / web_fetch 工具。"
-        "需要计算或处理数据时，使用 run_python 工具。"
-        "需要读写文件时，使用 read_file / write_file 工具。"
-        "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE)
+    利用 LocalAdapter 的 _turn_done 事件：
+    router._flush_private 的 finally 块调用 adapter.stop_thinking → 设置事件。
+    """
+    msg = IncomingMessage(
+        message_id=f"local_{msg_counter}",
+        chat_id=chat_id,
+        chat_type=ChatType.PRIVATE,
+        sender_id="local_cli_user",
+        sender_type=SenderType.USER,
+        sender_name="用户",
+        message_type=MessageType.TEXT,
+        text=text,
     )
+    adapter._turn_done.clear()
 
-    # 会话管理
-    session = session_mgr.get_or_create(chat_id)
-    session.add_message("user", user_text, sender_name="用户")
-    messages = session.get_messages()
+    await router.handle({"event_type": "message", "message": msg})
 
-    # 调用完整工具循环
+    # 等待 _flush_private 完成（stop_thinking 设置 _turn_done）
     try:
-        reply_text = await router._reply_with_tool_loop(
-            system, messages, chat_id, None,
-        )
-    except Exception:
-        logger.exception("对话失败")
-        print("\n\033[1;31m[错误] 对话处理失败，请重试\033[0m")
-        reply_text = ""
-
-    if reply_text:
-        session = session_mgr.get_or_create(chat_id)
-        session.add_message("assistant", reply_text, sender_name="你")
-        if session.should_compact():
-            await router._compact_session(session)
+        await asyncio.wait_for(adapter._turn_done.wait(), timeout=300.0)
+    except asyncio.TimeoutError:
+        logger.warning("等待回复超时 (chat=%s)", chat_id)

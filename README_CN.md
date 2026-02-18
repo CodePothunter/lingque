@@ -1,11 +1,12 @@
 # 灵雀 LingQue
 
-深度集成飞书的个人 AI 助理框架。支持私聊/群聊智能回复、日历管理、长期记忆，并能在运行时自主创建新工具扩展自身能力。
+平台无关的个人 AI 助理框架，支持可插拔聊天平台适配器。目前已适配飞书（Lark）和本地终端模式。支持私聊/群聊智能回复、日历管理、长期记忆，并能在运行时自主创建新工具扩展自身能力。
 
 ## 特性
 
-- **飞书原生** — WebSocket 长连接，私聊即时回复，群聊三层智能介入
-- **本地开发模式** — `lq say @name` 在终端启动交互式对话，支持完整工具链，无需飞书依赖
+- **平台无关内核** — `PlatformAdapter` 抽象基类将内核与具体聊天平台解耦，新增平台只需一个适配器文件
+- **飞书适配器** — WebSocket 长连接，私聊即时回复，群聊三层智能介入
+- **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，走与飞书模式相同的标准事件流，支持完整工具链，无需飞书依赖
 - **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
 - **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
 - **日历集成** — 查询/创建飞书日程，每日晨报
@@ -84,8 +85,14 @@ uv run lq edit @奶油 soul
 ### 启动
 
 ```bash
-# 前台运行（调试用）
+# 飞书模式（默认）
 uv run lq start @奶油
+
+# 纯本地模式（无需飞书凭证）
+uv run lq start @奶油 --adapter local
+
+# 多平台模式（飞书 + 本地同时连接）
+uv run lq start @奶油 --adapter feishu,local
 
 # 后台运行
 nohup uv run lq start @奶油 &
@@ -98,27 +105,45 @@ uv run lq stop @奶油            # 停止
 
 ## 架构
 
-```
-主线程: asyncio.run(gateway.run())
-├── message_consumer  — asyncio.Queue → router.handle()
-├── heartbeat         — 定时心跳（晨报、费用告警、早安问候）
-├── group_poller      — 主动轮询群聊 API，发现其他 bot 消息
-└── auto_save         — 定期保存会话和已知群聊
+### 平台抽象
 
-飞书线程 (daemon): ws_client.start()
-└── on_message() → loop.call_soon_threadsafe(queue.put_nowait, data)
-```
-
-消息处理流程：
+代码分为**平台无关内核**和**平台适配器**两层：
 
 ```
-飞书消息 → listener (WS线程) → Queue → router (message_id 去重)
-  ├── 私聊 → 防抖合并 → 会话管理 → LLM (tool use loop) → 发送回复
-  ├── 群聊 → 规则过滤 → 缓冲区 → LLM判断介入 → 可能回复
-  ├── bot.added → 自我介绍
-  └── user.added → 欢迎消息
+platform/
+├── types.py     — 标准数据类型（IncomingMessage, OutgoingMessage, Reaction 等）
+├── adapter.py   — PlatformAdapter ABC（9 个抽象 + 4 个可选方法）
+└── multi.py     — MultiAdapter（多平台复合适配器）
 
-群聊主动轮询 → fetch_chat_messages API → bot 身份推断 → 注入缓冲区
+feishu/adapter.py  — FeishuAdapter（内部封装 sender + listener）
+conversation.py    — LocalAdapter（终端模式，双模式：gateway 模式含 stdin/inbox 事件源，chat 模式被动连接）
+```
+
+内核（router / gateway / memory）仅依赖 `PlatformAdapter` 和标准类型，不直接引用飞书 SDK。
+
+### 事件流
+
+所有适配器通过统一路径产生标准事件：
+
+```
+事件源（按适配器）：
+  FeishuAdapter:  飞书 WS → _event_converter → queue.put()
+  LocalAdapter:   stdin → _read_stdin → queue.put()
+                  inbox.txt → _watch_inbox → queue.put()
+
+统一管线：
+  asyncio.Queue → _consume_messages → router.handle(标准事件)
+    标准事件 = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+    ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+    ├── "interaction"   → CardAction → _handle_card_action
+    ├── "reaction"      → Reaction → _handle_reaction_event
+    ├── "member_change" → _handle_member_change
+    └── "eval_timeout"  → _evaluate_buffer
+
+输出侧：
+  router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
+    FeishuAdapter:  OnIt 表情 → REST API 发送 → 移除表情
+    LocalAdapter:   ⏳ 思考指示器 → 终端卡片/文本 → 清除指示器
 ```
 
 ## 内置工具
@@ -197,7 +222,7 @@ TOOL_DEFINITION = {
 
 async def execute(input_data: dict, context: dict) -> dict:
     """
-    context 包含: sender, memory, calendar
+    context 包含: adapter, memory, calendar
     """
     from datetime import datetime
     import zoneinfo
@@ -224,14 +249,16 @@ async def execute(input_data: dict, context: dict) -> dict:
 | 命令 | 说明 |
 |------|------|
 | `uv run lq init --name NAME [--from-env .env]` | 初始化实例 |
-| `uv run lq start @NAME` | 启动 |
+| `uv run lq start @NAME [--adapter TYPE]` | 启动（TYPE: `feishu`, `local`, 或逗号分隔如 `feishu,local`） |
 | `uv run lq stop @NAME` | 停止 |
-| `uv run lq restart @NAME` | 重启 |
+| `uv run lq restart @NAME [--adapter TYPE]` | 重启 |
 | `uv run lq list` | 列出所有实例 |
 | `uv run lq status @NAME` | 运行状态 + API 消耗统计 |
 | `uv run lq logs @NAME [--since 1h]` | 查看日志 |
 | `uv run lq edit @NAME soul/memory/heartbeat/config` | 编辑配置文件 |
-| `uv run lq say @NAME "消息"` | 给实例发消息 |
+| `uv run lq chat @NAME` | 交互式本地聊天（终端） |
+| `uv run lq chat @NAME "消息"` | 单条消息模式 |
+| `uv run lq say @NAME "消息"` | `chat` 的别名 |
 | `uv run lq upgrade @NAME` | 升级框架 |
 
 ## 配置
@@ -273,10 +300,10 @@ async def execute(input_data: dict, context: dict) -> dict:
 src/lq/
 ├── cli.py              # CLI 入口
 ├── config.py           # 配置加载（含拼音 slug）
-├── gateway.py          # 主编排器（双线程架构 + 群聊轮询 + 早安问候）
+├── gateway.py          # 主编排器（创建适配器，运行异步任务）
 ├── router.py           # 消息路由 + 三层介入 + 21 个内置工具 + 多 bot 协作
 ├── prompts.py          # 集中管理所有 prompt、工具描述、约束块
-├── conversation.py     # 本地交互式对话（lq say）
+├── conversation.py     # 本地交互式聊天（lq chat / lq say）+ LocalAdapter
 ├── tools.py            # 自定义工具插件系统
 ├── buffer.py           # 群聊消息缓冲区
 ├── session.py          # per-chat 会话管理 + compaction
@@ -287,16 +314,22 @@ src/lq/
 ├── stats.py            # API 消耗统计
 ├── templates.py        # 模板生成
 ├── timeparse.py        # 时间表达式解析
+├── platform/
+│   ├── types.py        # 平台无关数据类型（IncomingMessage, OutgoingMessage 等）
+│   ├── adapter.py      # PlatformAdapter ABC（所有适配器的抽象接口）
+│   └── multi.py        # MultiAdapter（多平台复合适配器）
 ├── executor/
 │   ├── api.py          # Anthropic API（含重试 + tool use）
 │   └── claude_code.py  # Claude Code 子进程
 └── feishu/
-    ├── listener.py     # WebSocket 事件接收 + 入群/退群事件
-    ├── sender.py       # 消息发送 + bot 身份推断 + 成员管理
+    ├── adapter.py      # FeishuAdapter（PlatformAdapter 实现，封装 sender + listener）
+    ├── listener.py     # WebSocket 事件接收（适配器内部）
+    ├── sender.py       # REST API 调用（适配器内部）
     ├── calendar.py     # 日历 API
     └── cards.py        # 卡片构建
 
 tests/
+├── test_platform.py        # 平台抽象层单元测试（pytest）
 ├── harness.py              # 测试基座（调用 lq say，校验响应）
 ├── run_all.py              # 多级测试运行器
 ├── test_infrastructure.py  # 基础设施与会话测试
