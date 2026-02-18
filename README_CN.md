@@ -310,8 +310,9 @@ src/lq/
 │   ├── private.py     # 私聊处理 + 自我反思 + 好奇心信号
 │   ├── group.py       # 群聊三层介入 + 协作记录
 │   ├── tool_loop.py   # Agent 工具调用循环 + 审批机制
-│   ├── tool_exec.py   # 工具执行分发 + 多模态内容
-│   └── web_tools.py   # 联网搜索/抓取 + 代码执行 + 文件操作
+│   ├── tool_exec.py      # 工具执行分发 + 多模态内容
+│   ├── web_tools.py      # 联网搜索/抓取（MCP）
+│   └── runtime_tools.py  # Python 执行 + 文件读写 + 自身统计
 ├── prompts.py          # 集中管理所有 prompt、工具描述、约束块
 ├── conversation.py     # 本地交互式聊天（lq chat / lq say）+ LocalAdapter
 ├── tools.py            # 自定义工具插件系统

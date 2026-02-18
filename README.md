@@ -312,8 +312,9 @@ src/lq/
 │   ├── private.py     # Private chat handling + reflection + curiosity signals
 │   ├── group.py       # Group chat three-layer intervention + collaboration
 │   ├── tool_loop.py   # Agentic tool-call loop + approval system
-│   ├── tool_exec.py   # Tool execution dispatch + multimodal content
-│   └── web_tools.py   # Web search/fetch + code execution + file I/O
+│   ├── tool_exec.py      # Tool execution dispatch + multimodal content
+│   ├── web_tools.py      # Web search/fetch via MCP
+│   └── runtime_tools.py  # Python execution + file I/O + self-stats
 ├── prompts.py          # Centralized prompts, tool descriptions, and constraint blocks
 ├── conversation.py     # Local interactive chat (lq chat / lq say) + LocalAdapter
 ├── tools.py            # Custom tool plugin system
