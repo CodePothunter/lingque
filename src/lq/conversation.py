@@ -44,6 +44,9 @@ class LocalAdapter(PlatformAdapter):
     调用 stop_thinking → 设置 _turn_done 事件，通知对话循环本轮结束。
     """
 
+    # 思考动画帧 (braille spinner)
+    _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
     def __init__(self, bot_name: str, *, home: Path | None = None) -> None:
         self._bot_name = bot_name
         self._home = home  # 非 None = gateway 模式
@@ -52,6 +55,7 @@ class LocalAdapter(PlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._msg_counter: int = 0
         self._shutdown: asyncio.Event = asyncio.Event()
+        self._spinner_task: asyncio.Task | None = None
 
     # ── 身份 ──
 
@@ -165,7 +169,8 @@ class LocalAdapter(PlatformAdapter):
     # ── 表达 ──
 
     async def send(self, message: OutgoingMessage) -> str | None:
-        self._clear_thinking()
+        self._stop_spinner()
+        self._clear_line()
         if message.card:
             _print_card(self._bot_name, message.card)
         elif message.text:
@@ -175,18 +180,45 @@ class LocalAdapter(PlatformAdapter):
     # ── 存在感 ──
 
     async def start_thinking(self, message_id: str) -> str | None:
-        # 覆盖式打印思考指示器（与飞书的 OnIt 表情对等）
-        sys.stdout.write(f"\r\033[2m⏳ {self._bot_name} 思考中...\033[0m")
-        sys.stdout.flush()
+        self._stop_spinner()
+        self._spinner_task = asyncio.create_task(self._animate_spinner())
         return "local"
 
     async def stop_thinking(self, message_id: str, handle: str) -> None:
-        self._clear_thinking()
+        self._stop_spinner()
+        self._clear_line()
         # 信号：本轮处理（含 LLM 回复和发送）已完成
         self._turn_done.set()
 
-    def _clear_thinking(self) -> None:
-        """清除思考指示器行"""
+    async def notify_queued(self, chat_id: str, count: int) -> None:
+        self._stop_spinner()
+        sys.stdout.write(f"\r\033[K\033[2m📥 已收到 {count} 条消息，等待更多...\033[0m")
+        sys.stdout.flush()
+
+    async def _animate_spinner(self) -> None:
+        """循环播放 braille spinner 动画，直到被取消。"""
+        frames = self._SPINNER_FRAMES
+        i = 0
+        try:
+            while True:
+                frame = frames[i % len(frames)]
+                sys.stdout.write(
+                    f"\r\033[K\033[2m{frame} {self._bot_name} 思考中...\033[0m"
+                )
+                sys.stdout.flush()
+                i += 1
+                await asyncio.sleep(0.08)
+        except asyncio.CancelledError:
+            return
+
+    def _stop_spinner(self) -> None:
+        """取消正在运行的 spinner 任务。"""
+        if self._spinner_task is not None:
+            self._spinner_task.cancel()
+            self._spinner_task = None
+
+    def _clear_line(self) -> None:
+        """清除当前行（spinner / 队列指示器）"""
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
 

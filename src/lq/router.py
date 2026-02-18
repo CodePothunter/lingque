@@ -706,6 +706,10 @@ class MessageRouter:
                 pending.setdefault("image_msgs", []).append(msg)
             if pending.get("timer"):
                 pending["timer"].cancel()
+            # 通知适配器：消息正在排队
+            count = len(pending["texts"])
+            if count > 1:
+                await self.adapter.notify_queued(chat_id, count)
             loop = asyncio.get_running_loop()
             pending["timer"] = loop.call_later(
                 self._private_debounce_seconds,

@@ -158,6 +158,10 @@ class MultiAdapter(PlatformAdapter):
         adapter = self._for_msg(message_id)
         return await adapter.unsend(message_id)
 
+    async def notify_queued(self, chat_id: str, count: int) -> None:
+        adapter = self._for_chat(chat_id)
+        await adapter.notify_queued(chat_id, count)
+
     # ── 透传属性（供 gateway 的 hasattr 检查使用）──
 
     def _find_adapter_with_attr(self, attr: str) -> PlatformAdapter | None:

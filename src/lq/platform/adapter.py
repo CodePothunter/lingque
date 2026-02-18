@@ -99,3 +99,7 @@ class PlatformAdapter(ABC):
     async def unsend(self, message_id: str) -> bool:
         """撤回已发的消息。不支持时返回 False。"""
         return False
+
+    async def notify_queued(self, chat_id: str, count: int) -> None:
+        """通知适配器：用户消息已加入防抖队列（共 count 条）。"""
+        pass
