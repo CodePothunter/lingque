@@ -2,17 +2,17 @@
 
 [中文文档](README_CN.md)
 
-A personal AI assistant framework with a platform-agnostic core and pluggable chat platform adapters. Currently supports [Feishu (Lark)](https://www.feishu.cn/) and local terminal mode. Features include private/group chat with intelligent replies, calendar management, long-term memory, and runtime self-extension through tool creation.
+A personal AI assistant framework built on a **platform-agnostic core** with pluggable chat platform adapters. The core engine handles all conversation logic, tool execution, memory, and group chat intelligence without depending on any specific chat platform. Adapters are thin wrappers that translate platform events into standard types. Ships with a [Feishu (Lark)](https://www.feishu.cn/) adapter and a local terminal adapter; adding a new platform requires only one adapter file. Features include private/group chat with intelligent replies, calendar management, long-term memory, and runtime self-extension through tool creation.
 
 ## Features
 
-- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the core from any specific chat platform; adding a new platform requires only one adapter file
-- **Feishu adapter** — WebSocket persistent connection, instant DM replies, three-layer group chat intervention
-- **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no Feishu dependency required (goes through the same standard event path as Feishu mode)
+- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Discord, Telegram, Slack, etc.) requires only one adapter file
+- **Pluggable adapters** — Ships with a Feishu (Lark) adapter (WebSocket persistent connection, instant DM replies, three-layer group chat intervention) and a local terminal adapter; both go through the same unified event pipeline
+- **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
 - **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
-- **Calendar integration** — Query/create Feishu calendar events, daily briefings
-- **Card messages** — Structured information display (schedule cards, task cards, info cards)
+- **Calendar integration** — Query/create calendar events via adapter, daily briefings (Feishu calendar supported out-of-box)
+- **Card messages** — Structured information display (schedule cards, task cards, info cards), rendered natively by each adapter
 - **Self-awareness** — The assistant understands its own architecture, can read/write its config files
 - **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
 - **Generalized agent** — 21 built-in tools covering memory, calendar, messaging, web search, code execution, file I/O, and Claude Code delegation
@@ -30,8 +30,8 @@ A personal AI assistant framework with a platform-agnostic core and pluggable ch
 
 - Python >= 3.11
 - [uv](https://docs.astral.sh/uv/)
-- A Feishu custom app (with IM + Calendar permissions)
 - Any Anthropic-compatible API endpoint (e.g. cloud provider proxies, self-hosted gateways)
+- *(Optional)* A Feishu custom app (with IM + Calendar permissions) — only needed for Feishu adapter mode
 
 ### Install
 
@@ -45,10 +45,13 @@ uv sync
 Create a `.env` file in the project root (for multiple agents, use `.env.agent1`, `.env.agent2`, etc.):
 
 ```
-FEISHU_APP_ID=cli_xxxxx
-FEISHU_APP_SECRET=xxxxx
+# Required — LLM API
 ANTHROPIC_BASE_URL=https://your-provider.com/api/anthropic
 ANTHROPIC_AUTH_TOKEN=xxxxx
+
+# Optional — only needed for Feishu adapter mode
+FEISHU_APP_ID=cli_xxxxx
+FEISHU_APP_SECRET=xxxxx
 ```
 
 ### Initialize an Instance
@@ -165,9 +168,9 @@ The assistant has access to 21 built-in tools during conversations:
 
 | Tool | Description |
 |------|-------------|
-| `calendar_create_event` | Create a Feishu calendar event |
+| `calendar_create_event` | Create a calendar event |
 | `calendar_list_events` | Query calendar events |
-| `send_card` | Send a Feishu card message |
+| `send_card` | Send a structured card message |
 | `send_message` | Send a text message to any chat |
 | `schedule_message` | Schedule a message to be sent at a future time |
 
@@ -240,7 +243,7 @@ Tool code is statically analyzed via AST. The following modules are blocked:
 
 ### Usage
 
-Simply tell the assistant in Feishu:
+Simply tell the assistant in any connected chat platform (or local terminal):
 
 > "Create a tool that translates text to English"
 
@@ -303,7 +306,14 @@ src/lq/
 ├── cli.py              # CLI entry point
 ├── config.py           # Config loader (with pinyin slug)
 ├── gateway.py          # Main orchestrator (creates adapter, runs async tasks)
-├── router.py           # Message routing + three-layer intervention + 21 built-in tools + multi-bot coordination
+├── router/             # Message routing package (split by responsibility)
+│   ├── defs.py        # LLM tool definitions (JSON Schema)
+│   ├── core.py        # MessageRouter class + event dispatch + reply gate
+│   ├── private.py     # Private chat handling + reflection + curiosity signals
+│   ├── group.py       # Group chat three-layer intervention + collaboration
+│   ├── tool_loop.py   # Agentic tool-call loop + approval system
+│   ├── tool_exec.py   # Tool execution dispatch + multimodal content
+│   └── web_tools.py   # Web search/fetch + code execution + file I/O
 ├── prompts.py          # Centralized prompts, tool descriptions, and constraint blocks
 ├── conversation.py     # Local interactive chat (lq chat / lq say) + LocalAdapter
 ├── tools.py            # Custom tool plugin system

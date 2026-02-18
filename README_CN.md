@@ -1,16 +1,16 @@
 # 灵雀 LingQue
 
-平台无关的个人 AI 助理框架，支持可插拔聊天平台适配器。目前已适配飞书（Lark）和本地终端模式。支持私聊/群聊智能回复、日历管理、长期记忆，并能在运行时自主创建新工具扩展自身能力。
+基于**平台无关内核**的个人 AI 助理框架，核心引擎（对话路由、工具执行、记忆管理、群聊智能）不依赖任何特定聊天平台，通过可插拔适配器接入不同平台。已内置飞书（Lark）适配器和本地终端适配器，新增平台（Discord、Telegram、Slack 等）只需编写一个适配器文件。支持私聊/群聊智能回复、日历管理、长期记忆，并能在运行时自主创建新工具扩展自身能力。
 
 ## 特性
 
-- **平台无关内核** — `PlatformAdapter` 抽象基类将内核与具体聊天平台解耦，新增平台只需一个适配器文件
-- **飞书适配器** — WebSocket 长连接，私聊即时回复，群聊三层智能介入
-- **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，走与飞书模式相同的标准事件流，支持完整工具链，无需飞书依赖
+- **平台无关内核** — `PlatformAdapter` 抽象基类将整个引擎与具体聊天平台彻底解耦，路由、记忆、会话、工具系统均无任何平台特定导入。新增平台（Discord、Telegram、Slack 等）只需一个适配器文件
+- **可插拔适配器** — 内置飞书适配器（WebSocket 长连接，私聊即时回复，群聊三层智能介入）和本地终端适配器，两者走完全相同的统一事件管线
+- **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，支持完整工具链，无需任何外部聊天平台凭证
 - **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
 - **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
-- **日历集成** — 查询/创建飞书日程，每日晨报
-- **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡）
+- **日历集成** — 通过适配器查询/创建日程，每日晨报（已内置飞书日历支持）
+- **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡），由各适配器原生渲染
 - **自我认知** — 助理了解自己的架构，可读写自身配置文件
 - **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
 - **通用 Agent 能力** — 21 个内置工具，覆盖记忆、日历、消息、联网搜索、代码执行、文件读写、Claude Code 委托
@@ -28,8 +28,8 @@
 
 - Python >= 3.11
 - [uv](https://docs.astral.sh/uv/)
-- 一个飞书自建应用（需开通 IM + Calendar 权限）
 - 任意 Anthropic 兼容 API（如各大云厂商提供的 Claude API 转发服务）
+- *（可选）* 飞书自建应用（需开通 IM + Calendar 权限）— 仅飞书适配器模式需要
 
 ### 安装
 
@@ -43,10 +43,13 @@ uv sync
 项目根目录需要 `.env` 文件：（有多个 agents 的话准备多个 .env 即可，比如 .env.agent1 .env.agent2）
 
 ```
-FEISHU_APP_ID=cli_xxxxx
-FEISHU_APP_SECRET=xxxxx
+# 必填 — LLM API
 ANTHROPIC_BASE_URL=https://your-provider.com/api/anthropic
 ANTHROPIC_AUTH_TOKEN=xxxxx
+
+# 可选 — 仅飞书适配器模式需要
+FEISHU_APP_ID=cli_xxxxx
+FEISHU_APP_SECRET=xxxxx
 ```
 
 ### 初始化实例
@@ -163,9 +166,9 @@ conversation.py    — LocalAdapter（终端模式，双模式：gateway 模式�
 
 | 工具 | 说明 |
 |------|------|
-| `calendar_create_event` | 在飞书日历创建日程 |
+| `calendar_create_event` | 创建日程 |
 | `calendar_list_events` | 查询日历事件 |
-| `send_card` | 发送飞书卡片消息 |
+| `send_card` | 发送结构化卡片消息 |
 | `send_message` | 向任意会话发送文本消息 |
 | `schedule_message` | 定时发送消息 |
 
@@ -238,7 +241,7 @@ async def execute(input_data: dict, context: dict) -> dict:
 
 ### 使用方式
 
-在飞书中直接对助理说：
+在任意已连接的聊天平台（或本地终端）中对助理说：
 
 > "帮我创建一个工具，可以把文本翻译成英文"
 
@@ -301,7 +304,14 @@ src/lq/
 ├── cli.py              # CLI 入口
 ├── config.py           # 配置加载（含拼音 slug）
 ├── gateway.py          # 主编排器（创建适配器，运行异步任务）
-├── router.py           # 消息路由 + 三层介入 + 21 个内置工具 + 多 bot 协作
+├── router/             # 消息路由包（按职责拆分）
+│   ├── defs.py        # LLM 工具定义（JSON Schema）
+│   ├── core.py        # MessageRouter 类 + 事件分发 + 回复锁
+│   ├── private.py     # 私聊处理 + 自我反思 + 好奇心信号
+│   ├── group.py       # 群聊三层介入 + 协作记录
+│   ├── tool_loop.py   # Agent 工具调用循环 + 审批机制
+│   ├── tool_exec.py   # 工具执行分发 + 多模态内容
+│   └── web_tools.py   # 联网搜索/抓取 + 代码执行 + 文件操作
 ├── prompts.py          # 集中管理所有 prompt、工具描述、约束块
 ├── conversation.py     # 本地交互式聊天（lq chat / lq say）+ LocalAdapter
 ├── tools.py            # 自定义工具插件系统

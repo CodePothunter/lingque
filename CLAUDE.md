@@ -64,7 +64,7 @@ Unified pipeline:
 ### Key Modules (`src/lq/`)
 
 - **gateway.py** — Orchestrator. Creates the adapter, initializes all components, runs concurrent async tasks (consumer, heartbeat, inbox, autosave), handles signals for graceful shutdown.
-- **router.py** — Core routing logic (largest module). Receives standard events via `handle()`, dispatches to typed handlers. Runs the agentic tool-use loop, defines all 11 built-in tools. Three-layer group chat intervention: trivial message filter → message buffering → LLM evaluation. Depends on `PlatformAdapter` (not Feishu SDK).
+- **router/** — Core routing package (split by responsibility into 7 modules). `core.py` defines `MessageRouter` and event dispatch; `defs.py` holds tool definitions; `private.py` handles private chat + reflection; `group.py` implements three-layer group chat intervention; `tool_loop.py` runs the agentic tool-use loop; `tool_exec.py` dispatches tool execution + multimodal; `web_tools.py` covers web search/fetch, code execution, and file I/O. Depends on `PlatformAdapter` (not Feishu SDK).
 - **memory.py** — Builds LLM system prompt from SOUL.md (persona), MEMORY.md (long-term memory), current time (CST/UTC+8), and self-awareness capabilities list.
 - **session.py** — Per-chat-id message history with auto-compaction at 50 messages (summarize + keep last 10).
 - **tools.py** — Runtime custom tool plugin system. Loads `.py` files from `tools/` directory, validates via AST (blocks dangerous modules: os, subprocess, shutil, sys, socket, ctypes, signal, multiprocessing, threading).
