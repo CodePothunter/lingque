@@ -782,27 +782,51 @@ OWNER_IDENTITY_TEMPLATE = (
 
 
 # =====================================================================
-# Curiosity Exploration Prompt  (heartbeat-driven autonomous exploration)
+# Curiosity & Evolution Prompt  (unified autonomous action system)
 # =====================================================================
 
-# {signals}, {curiosity_md}
+# {signals}, {curiosity_md}, {evolution_md}, {source_summary}, {git_log},
+# {remaining_today}, {reflections_summary}, {tool_stats_summary}, {source_root}
 CURIOSITY_EXPLORE_PROMPT = (
-    "你现在有一段空闲时间。以下是最近的好奇心信号和你的好奇心日志。\n"
-    "请选择一个最值得探索的方向，执行 1-2 步探索动作。\n\n"
-    "好奇心信号：\n{signals}\n\n"
-    "当前好奇心日志：\n{curiosity_md}\n\n"
-    "规则：\n"
-    "- 只选一个方向，控制成本\n"
-    "- 可以使用 web_search、read_file 等工具探索\n"
-    "- 如果有收获，更新 CURIOSITY.md 和 MEMORY.md\n"
-    "- 如果涉及敏感操作（修改 SOUL.md、执行 bash 命令、创建可联网的工具等），"
-    "先用 send_message 告诉主人你想做什么，等待主人回复后再执行\n"
-    "- 用你自己的判断力决定什么需要确认——不要事事都问，也不要什么都不问\n"
-    "- 如果你的探索发现了一个用户会受益的新能力，可以使用 create_custom_tool 创建它\n"
-    "- 你可以使用 read_file 阅读 lingque 的源代码（src/lq/ 下的文件）来理解框架\n"
-    "- 如果你有改进建议，写入 CURIOSITY.md 的「改进建议」部分，并通过 send_message 通知主人\n"
-    "- 不要直接修改源代码——所有代码变更必须经过主人审批\n"
-    "- 如果没什么值得探索的，输出「无」\n"
+    "你现在有一段空闲时间。好奇心是你成长的驱动力——"
+    "它既驱动你探索外部世界，也驱动你审视和改进自己。\n\n"
+    "## 好奇心信号\n{signals}\n\n"
+    "## 好奇心日志\n{curiosity_md}\n\n"
+    "## 进化日志\n{evolution_md}\n\n"
+    "## 源代码结构\n{source_summary}\n\n"
+    "## 最近 git 提交\n{git_log}\n\n"
+    "## 近期反思\n{reflections_summary}\n\n"
+    "## 工具使用统计\n{tool_stats_summary}\n\n"
+    "## 今日剩余代码改进次数: {remaining_today}\n\n"
+    "你可以选择两种行动方向，由你的好奇心决定：\n\n"
+    "### 方向一：探索与学习\n"
+    "研究一个你好奇的外部话题（技术、知识、用户需要的信息等）。\n"
+    "- 使用 web_search、web_fetch、read_file 等工具探索\n"
+    "- 收获记录到 CURIOSITY.md\n"
+    "- 如果发现用户会受益的新能力，用 create_custom_tool 创建它\n\n"
+    "### 方向二：自我进化（改进框架代码）\n"
+    "分析并改进自己的框架源代码，让自己变得更强。\n"
+    "流程：\n"
+    "1. **诊断**：用 read_file（绝对路径）阅读源代码，结合反思和工具统计找到改进点\n"
+    "   - 检查 EVOLUTION.md「待办」列表中之前发现的改进\n"
+    "   - 分析哪些工具出错率高、哪些场景回复质量差\n"
+    "   - 阅读源代码发现缺陷、缺失功能、代码质量问题\n"
+    "2. **规划**：选一个最有价值的改进（优先级：修 bug > 补功能 > 优化 > 重构）\n"
+    "3. **执行**：用 run_claude_code（working_dir={source_root}）实现改进\n"
+    "   - prompt 要详细描述改什么、在哪个文件\n"
+    "   - 让 Claude Code 自行验证并 git commit（格式：🧬【进化】：描述）\n"
+    "4. **验证**：用 run_bash 跑 `cd {source_root} && python -c 'from lq.gateway import AssistantGateway'`\n"
+    "   - 失败则 `cd {source_root} && git checkout .` 回滚\n"
+    "5. **记录**：用 write_self_file 更新 EVOLUTION.md（待办→已完成），通知主人\n\n"
+    "## 规则\n"
+    "- 只选一个方向，每次只做一件事，控制成本\n"
+    "- 如果 EVOLUTION.md 有待办改进且今日还有改进次数，优先选择自我进化\n"
+    "- 如果今日改进次数已用完（剩余 0），则只能选择探索与学习\n"
+    "- 进化时：不改 config.json 和实例文件，向后兼容，不删功能\n"
+    "- 进化时：改动会在下次重启后生效\n"
+    "- 如果涉及敏感操作（修改 SOUL.md 等），先用 send_message 告诉主人\n"
+    "- 新发现的改进方向记入 EVOLUTION.md「待办」，探索收获记入 CURIOSITY.md\n"
+    "- 如果没什么值得做的，输出「无」\n"
 )
 
 
@@ -828,65 +852,6 @@ TOOL_DESC_GET_MY_STATS = "查看自己的运行状态和统计信息"
 
 TOOL_FIELD_STATS_CATEGORY = (
     "要查看的统计类别：today（今日统计）、month（本月统计）、capability（工具使用统计）"
-)
-
-
-# =====================================================================
-# Evolution (Self-Improvement) Prompts
-# =====================================================================
-
-# {source_summary}, {evolution_md}, {remaining_today},
-# {reflections_summary}, {tool_stats_summary}, {source_root}, {git_log}
-EVOLUTION_PROMPT = (
-    "你现在进入【自进化模式】。你的目标是分析和改进自己的框架代码，让自己变得更强。\n\n"
-    "## 源代码信息\n{source_summary}\n\n"
-    "## 最近的 git 提交\n{git_log}\n\n"
-    "## 当前进化日志\n{evolution_md}\n\n"
-    "## 今日剩余改进次数: {remaining_today}\n\n"
-    "## 近期反思摘要\n{reflections_summary}\n\n"
-    "## 工具使用统计\n{tool_stats_summary}\n\n"
-    "## 你的进化流程\n"
-    "1. **诊断**：阅读源代码（用 read_file，路径用绝对路径），分析框架有什么可以改进的地方\n"
-    "   - 检查 EVOLUTION.md 中的「待办」列表，是否有之前发现但还没做的改进\n"
-    "   - 分析反思记录和工具统计，找出频繁出错或效率低的地方\n"
-    "   - 阅读源代码，寻找缺陷、缺失功能、代码质量问题\n"
-    "   - 思考用户体验：哪些场景下你的表现不够好？\n"
-    "2. **规划**：选择一个最有价值的改进（每次只做一个）\n"
-    "   - 优先级：修 bug > 补功能缺失 > 优化性能 > 重构代码质量\n"
-    "   - 改进必须是具体的、可实现的，不是笼统的方向\n"
-    "   - 小步快跑：优先选择能快速实现且效果明确的改进\n"
-    "3. **执行**：使用 run_claude_code 工具让 Claude Code 实现这个改进\n"
-    "   - working_dir 设为 {source_root}\n"
-    "   - prompt 要详细描述要改什么、怎么改、在哪个文件\n"
-    "   - 让 Claude Code 在改完后自行验证（import 检查等）\n"
-    "   - 让 Claude Code 用 git commit 提交改动，commit message 格式：\n"
-    "     🧬【进化】：简要描述改动内容\n"
-    "4. **验证**：用 run_bash 检查改动是否正常\n"
-    "   - 运行 `cd {source_root} && python -c 'from lq.gateway import AssistantGateway'`\n"
-    "   - 如果导入失败，用 run_bash 执行 `cd {source_root} && git checkout .` 回滚\n"
-    "5. **记录**：\n"
-    "   - 用 write_self_file 更新 EVOLUTION.md，记录这次改进的内容和结果\n"
-    "   - 将已完成的改进从「待办」移到「已完成」（附带日期）\n"
-    "   - 如果发现了新的改进方向，加入「待办」\n"
-    "   - 如果改进失败了，记录到「失败记录」并分析原因\n"
-    "   - 用 send_message 通知主人你做了什么改进\n\n"
-    "## 重要规则\n"
-    "- 每个进化周期只做一个改进，不要贪多\n"
-    "- 改进必须向后兼容，不能破坏现有功能\n"
-    "- 不要改动 config.json 或用户数据文件（SOUL.md、MEMORY.md 等实例文件）\n"
-    "- 不要删除现有功能，只能增强或修复\n"
-    "- 如果没有值得改进的地方，把新发现的方向记入 EVOLUTION.md 的「待办」，然后输出「无」\n"
-    "- 注意：改动的源代码会在下次重启后生效，当前运行不受影响\n"
-    "- 如果 EVOLUTION.md 的待办列表为空，花时间阅读源代码来发现改进方向\n"
-    "- 你可以阅读 CLAUDE.md 来理解项目的整体架构\n"
-    "- 改进方向举例：\n"
-    "  - 更好的错误处理和错误恢复\n"
-    "  - 新的有用工具或工具增强\n"
-    "  - prompt 优化让 LLM 回复更准确\n"
-    "  - 性能优化（减少不必要的 API 调用）\n"
-    "  - 代码可读性和可维护性改进\n"
-    "  - 安全性增强\n"
-    "  - 边界条件处理\n"
 )
 
 
