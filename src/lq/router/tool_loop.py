@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from lq.platform import OutgoingMessage
-from lq.prompts import ACTION_NUDGE, SCHEDULED_ACTION_PROMPT
+from lq.prompts import ACTION_NUDGE
 
 logger = logging.getLogger(__name__)
 
