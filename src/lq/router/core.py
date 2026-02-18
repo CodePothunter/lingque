@@ -23,6 +23,7 @@ from .group import GroupChatMixin
 from .tool_loop import ToolLoopMixin
 from .tool_exec import ToolExecMixin
 from .web_tools import WebToolsMixin
+from .runtime_tools import RuntimeToolsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +34,17 @@ class MessageRouter(
     ToolLoopMixin,
     ToolExecMixin,
     WebToolsMixin,
+    RuntimeToolsMixin,
 ):
     """消息路由核心：事件分发、回复锁与冷却、thinking 信号。
 
     具体处理逻辑由各 Mixin 提供：
-    - PrivateChatMixin  — 私聊处理与自我反思
-    - GroupChatMixin    — 群聊三层介入与协作
-    - ToolLoopMixin     — LLM 工具调用循环与审批
-    - ToolExecMixin     — 工具执行分发与多模态
-    - WebToolsMixin     — 联网搜索、网页抓取、代码执行、文件操作
+    - PrivateChatMixin   — 私聊处理与自我反思
+    - GroupChatMixin      — 群聊三层介入与协作
+    - ToolLoopMixin       — LLM 工具调用循环与审批
+    - ToolExecMixin       — 工具执行分发与多模态
+    - WebToolsMixin       — 联网搜索、网页抓取
+    - RuntimeToolsMixin   — 代码执行、文件读写、统计查询
     """
 
     REPLY_COOLDOWN: float = 8.0  # 回复后的冷却秒数
