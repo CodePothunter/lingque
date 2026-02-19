@@ -1,5 +1,124 @@
 # Changelog
 
+## 2026-02-19 — Discord 适配器 & 文档整理 (v1.0.0)
+
+### ✨ 新增 Discord 平台适配器 (`feature/discord-adapter`)
+
+灵雀正式支持 Discord 平台，与飞书适配器完全对称，可单独运行或多平台组合使用。
+
+- **`src/lq/discord_/sender.py`** — httpx REST API 封装，包含 429 rate-limit 自动重试
+- **`src/lq/discord_/adapter.py`** — 完整实现 `PlatformAdapter` 全部 8 个抽象方法 + 4 个可选方法
+  - daemon 线程运行 discord.py Client，事件通过 `call_soon_threadsafe` 桥接到主事件循环
+  - Discord mention 解析（用户/角色/频道）→ 可读文本，role mention 检测 bot 身份
+  - 2000 字符自动分片，card → Embed 转换
+  - typing indicator 8 秒刷新循环，发送前自动取消
+- **`src/lq/platform/multi.py`** — 新增 `_guess_adapter()` 格式推断路由（`oc_` → 飞书，纯数字 → Discord），避免跨平台误路由
+- **`src/lq/config.py`** — 新增 `DiscordConfig` dataclass
+- **`src/lq/gateway.py`** — Discord 适配器注册，proxy 透传
+- **`pyproject.toml`** — 新增 `discord = ["discord.py>=2.3"]` 可选依赖
+
+### 📝 文档整理
+
+- **PR #17** — 合并 `DOCS/` 到 `docs/`，统一文档目录为小写
+- **README.md / README_CN.md** — 全面更新：新增平台适配器配置指南（Local/Feishu/Discord），更新架构图、CLI 参考、配置示例
+
+---
+
+## 2026-02-19 — 自我提升框架 (PR #16)
+
+### 🧬 自进化框架
+
+- 实现自进化框架 — 让灵雀能持续改进自己的代码
+- 统一好奇心探索与自进化为单一自主行动系统
+- 进化守护机制：checkpoint / 健康检查 / 自动回滚
+- `EVOLUTION.md` 自动压缩 — 旧记录摘要归档
+- 在进化 prompt 中提示 `git show` 查看 commit 详情
+
+---
+
+## 2026-02-18 — 平台抽象层 & 路由重构 (PR #14, #15)
+
+### ♻️ 平台抽象层 (PR #14)
+
+从飞书耦合架构重构为平台无关设计，这是支持 Discord 等多平台的基础：
+
+- **`src/lq/platform/adapter.py`** — 定义 `PlatformAdapter` ABC（8 抽象 + 4 可选方法）
+- **`src/lq/platform/types.py`** — 平台无关数据类型（`IncomingMessage`, `OutgoingMessage`, `BotIdentity` 等）
+- **`src/lq/platform/multi.py`** — `MultiAdapter` 复合适配器，支持多平台同时运行
+- **`src/lq/feishu/adapter.py`** — 飞书适配器实现 `PlatformAdapter`
+- **`src/lq/conversation.py`** — `LocalAdapter` 本地适配器，支持 gateway 模式与 chat 模式
+- **`lq chat`** 命令 — 新增交互式本地对话，支持动态思考动画 + 消息排队指示
+- **`--adapter`** CLI 参数 — 支持 `feishu`, `local`, `discord` 及逗号组合
+
+### ♻️ 路由重构 & 文档去飞书化 (PR #15)
+
+- `router.py` 拆分为 `router/` 包（`core.py`, `defs.py`, `private.py`, `group.py`, `tool_loop.py`, `tool_exec.py`, `web_tools.py`, `runtime_tools.py`）
+- 路由层解耦飞书依赖，仅依赖 `PlatformAdapter`
+
+---
+
+## 2026-02-17 — 代码审查与分支合并 (PR #13)
+
+### ✨ 飞书图片视觉理解
+
+- 支持飞书图片消息的视觉理解（多模态）
+- 图片处理增加错误处理与大小限制
+- 群聊非文本回复使用常量替代硬编码字符串
+
+---
+
+## 2026-02-16 — 群聊轮询修复 & 功能增强
+
+### ✨ 功能
+
+- `schedule_message` 从定时发文本升级为定时执行 LLM 任务
+- `CHAT_MEMORY_BUDGET` 从硬编码改为可配置项
+- `chat_memory` token 预算控制
+
+### 🐛 修复
+
+- bot 轮询消息在冷却期被静默丢弃，改为延迟重试
+- 群聊 WS 消息未注册活跃群导致 bot 轮询失效
+- 心跳 `_last_daily` / `_last_weekly` 持久化，重启不再重复发晨报
+- `known_group_ids` 群聊永不过期，bot 消息不再因 TTL 丢失轮询
+- 轮询注入 bot 消息时刷新群活跃时间戳
+- 轮询 400/403 连续失败 3 次自动移出已知群
+- `fetch_chat_messages` 不再吞掉 HTTP 状态码错误
+
+---
+
+## 2026-02-15 — 网络搜索、同伴感知与多项修复
+
+### ✨ 功能
+
+- **PR #12** — MCP 网络搜索集成（`web_search` / `web_fetch`），增加代理支持与搜索引擎回退
+- **PR #9** — Agent 泛化（`add-agent-generalization`）
+- **PR #10** — README 更新，反映新功能
+- 同伴感知改为飞书群聊发现
+- 自驱好奇心探索功能
+- 支持飞书 `post` 富文本消息解析
+
+### 🐛 修复
+
+- 代理配置持久化 — `.env` 中的 `HTTPS_PROXY` 写入 `config.json` 并在启动时注入环境变量
+- 群聊约束补充工具调用指令，解决群聊中不执行搜索的问题
+- MCP 搜索失败修复 + 切换默认模型为 `glm-5`
+- 群聊评估 JSON 解析兼容 GLM-5 额外输出
+- reaction 状态指示 + 群聊重复回复问题
+- `send_message` 工具导致重复回复
+
+---
+
+## 2026-02-14 — 会话与消息排序 (PR #5, #6, #8)
+
+### ♻️ 重构
+
+- **PR #8** — 会话记忆审查与优化（`review-session-memory`）
+- **PR #5** — 消息排序修复（`fix-message-ordering`）
+- **PR #6** — 回滚 PR #5（部分改动引入问题）
+
+---
+
 ## 2026-02-13 — 代码审计修复与能力增强
 
 ### 1. 飞书消息 Markdown 智能处理 (`src/lq/feishu/sender.py`)

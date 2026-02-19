@@ -1,11 +1,11 @@
 # 灵雀 LingQue
 
-基于**平台无关内核**的个人 AI 助理框架，核心引擎（对话路由、工具执行、记忆管理、群聊智能）不依赖任何特定聊天平台，通过可插拔适配器接入不同平台。已内置飞书（Lark）适配器和本地终端适配器，新增平台（Discord、Telegram、Slack 等）只需编写一个适配器文件。支持私聊/群聊智能回复、日历管理、长期记忆，并能在运行时自主创建新工具扩展自身能力。
+基于**平台无关内核**的个人 AI 助理框架，核心引擎（对话路由、工具执行、记忆管理、群聊智能）不依赖任何特定聊天平台，通过可插拔适配器接入不同平台。已内置[飞书（Lark）](https://www.feishu.cn/)、[Discord](https://discord.com/) 和本地终端适配器，新增平台（Telegram、Slack 等）只需编写一个适配器文件。支持私聊/群聊智能回复、日历管理、长期记忆，并能在运行时自主创建新工具扩展自身能力。
 
 ## 特性
 
-- **平台无关内核** — `PlatformAdapter` 抽象基类将整个引擎与具体聊天平台彻底解耦，路由、记忆、会话、工具系统均无任何平台特定导入。新增平台（Discord、Telegram、Slack 等）只需一个适配器文件
-- **可插拔适配器** — 内置飞书适配器（WebSocket 长连接，私聊即时回复，群聊三层智能介入）和本地终端适配器，两者走完全相同的统一事件管线
+- **平台无关内核** — `PlatformAdapter` 抽象基类将整个引擎与具体聊天平台彻底解耦，路由、记忆、会话、工具系统均无任何平台特定导入。新增平台（Telegram、Slack 等）只需一个适配器文件
+- **可插拔适配器** — 内置飞书、Discord 和本地终端适配器，全部走相同的统一事件管线。可在单一平台运行，也可多平台同时连接
 - **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，支持完整工具链，无需任何外部聊天平台凭证
 - **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
 - **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
@@ -29,13 +29,18 @@
 - Python >= 3.11
 - [uv](https://docs.astral.sh/uv/)
 - 任意 Anthropic 兼容 API（如各大云厂商提供的 Claude API 转发服务）
-- *（可选）* 飞书自建应用（需开通 IM + Calendar 权限）— 仅飞书适配器模式需要
+- *（可选）* 平台凭证 — 仅需要使用的适配器：
+  - **飞书**：飞书自建应用（需开通 IM + Calendar 权限）
+  - **Discord**：Discord Bot 应用（需开启 Message Content Intent）
 
 ### 安装
 
 ```bash
 cd <your-path>/lingque
 uv sync
+
+# 如使用 Discord 适配器，需额外安装可选依赖：
+uv pip install -e '.[discord]'
 ```
 
 ### 准备 `.env`
@@ -47,9 +52,10 @@ uv sync
 ANTHROPIC_BASE_URL=https://your-provider.com/api/anthropic
 ANTHROPIC_AUTH_TOKEN=xxxxx
 
-# 可选 — 仅飞书适配器模式需要
+# 可选 — 仅需要使用的适配器
 FEISHU_APP_ID=cli_xxxxx
 FEISHU_APP_SECRET=xxxxx
+DISCORD_BOT_TOKEN=xxxxx
 ```
 
 ### 初始化实例
@@ -91,11 +97,16 @@ uv run lq edit @奶油 soul
 # 飞书模式（默认）
 uv run lq start @奶油
 
-# 纯本地模式（无需飞书凭证）
+# Discord 模式
+uv run lq start @奶油 --adapter discord
+
+# 纯本地模式（无需平台凭证）
 uv run lq start @奶油 --adapter local
 
-# 多平台模式（飞书 + 本地同时连接）
+# 多平台模式（任意组合）
 uv run lq start @奶油 --adapter feishu,local
+uv run lq start @奶油 --adapter discord,local
+uv run lq start @奶油 --adapter feishu,discord,local
 
 # 后台运行
 nohup uv run lq start @奶油 &
@@ -105,6 +116,49 @@ uv run lq stop @奶油            # 停止
 ```
 
 > 实例名支持中文或拼音：`@奶油` 和 `@naiyou` 等价。
+
+## 平台适配器配置
+
+灵雀支持三个平台适配器，可通过 `--adapter` 任意组合使用。
+
+### 本地终端
+
+无需配置。使用 `--adapter local` 或 `lq chat @NAME` 即可在终端交互式聊天。
+
+### 飞书
+
+1. 前往[飞书开放平台](https://open.feishu.cn/)创建自建应用
+2. 开通 **IM** 和 **Calendar** 权限
+3. 在**事件订阅**中添加所需 IM 事件，开启 WebSocket 模式
+4. 将 `App ID` 和 `App Secret` 写入 `.env`：
+   ```
+   FEISHU_APP_ID=cli_xxxxx
+   FEISHU_APP_SECRET=xxxxx
+   ```
+5. 使用 `--adapter feishu`（默认）启动
+
+### Discord
+
+1. 前往 [Discord 开发者门户](https://discord.com/developers/applications)创建 New Application
+2. 进入 **Bot** 页面：
+   - 点击 **Reset Token** 获取 bot token（仅显示一次）
+   - 在 Privileged Gateway Intents 下开启 **Message Content Intent**
+   - 在 Privileged Gateway Intents 下开启 **Server Members Intent**
+3. 进入 **OAuth2 → URL Generator**：
+   - Scopes：勾选 `bot`
+   - Bot Permissions：勾选 `Send Messages`、`Read Message History`、`Add Reactions`、`Manage Messages`、`View Channels`
+   - 在浏览器打开生成的 URL，将 bot 邀请到服务器
+4. 将 token 写入 `.env`：
+   ```
+   DISCORD_BOT_TOKEN=xxxxx
+   ```
+5. 安装可选依赖并启动：
+   ```bash
+   uv pip install -e '.[discord]'
+   uv run lq start @NAME --adapter discord
+   ```
+
+在 Discord 中私聊 bot 或在频道中 @bot 即可对话。
 
 ## 架构
 
@@ -118,11 +172,12 @@ platform/
 ├── adapter.py   — PlatformAdapter ABC（9 个抽象 + 4 个可选方法）
 └── multi.py     — MultiAdapter（多平台复合适配器）
 
-feishu/adapter.py  — FeishuAdapter（内部封装 sender + listener）
-conversation.py    — LocalAdapter（终端模式，双模式：gateway 模式含 stdin/inbox 事件源，chat 模式被动连接）
+feishu/adapter.py    — FeishuAdapter（内部封装 sender + listener）
+discord_/adapter.py  — DiscordAdapter（封装 sender + discord.py client daemon 线程）
+conversation.py      — LocalAdapter（终端模式，双模式：gateway 模式含 stdin/inbox 事件源，chat 模式被动连接）
 ```
 
-内核（router / gateway / memory）仅依赖 `PlatformAdapter` 和标准类型，不直接引用飞书 SDK。
+内核（router / gateway / memory）仅依赖 `PlatformAdapter` 和标准类型，不直接引用平台 SDK。
 
 ### 事件流
 
@@ -130,9 +185,10 @@ conversation.py    — LocalAdapter（终端模式，双模式：gateway 模式�
 
 ```
 事件源（按适配器）：
-  FeishuAdapter:  飞书 WS → _event_converter → queue.put()
-  LocalAdapter:   stdin → _read_stdin → queue.put()
-                  inbox.txt → _watch_inbox → queue.put()
+  FeishuAdapter:   飞书 WS → _event_converter → queue.put()
+  DiscordAdapter:  discord.py WS（daemon 线程）→ _event_converter → queue.put()
+  LocalAdapter:    stdin → _read_stdin → queue.put()
+                   inbox.txt → _watch_inbox → queue.put()
 
 统一管线：
   asyncio.Queue → _consume_messages → router.handle(标准事件)
@@ -145,8 +201,9 @@ conversation.py    — LocalAdapter（终端模式，双模式：gateway 模式�
 
 输出侧：
   router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
-    FeishuAdapter:  OnIt 表情 → REST API 发送 → 移除表情
-    LocalAdapter:   ⏳ 思考指示器 → 终端卡片/文本 → 清除指示器
+    FeishuAdapter:   OnIt 表情 → REST API 发送 → 移除表情
+    DiscordAdapter:  typing indicator（8s 刷新）→ REST API（自动分片 2000 字符）→ 取消 typing
+    LocalAdapter:    ⏳ 思考指示器 → 终端卡片/文本 → 清除指示器
 ```
 
 ## 内置工具
@@ -252,7 +309,7 @@ async def execute(input_data: dict, context: dict) -> dict:
 | 命令 | 说明 |
 |------|------|
 | `uv run lq init --name NAME [--from-env .env]` | 初始化实例 |
-| `uv run lq start @NAME [--adapter TYPE]` | 启动（TYPE: `feishu`, `local`, 或逗号分隔如 `feishu,local`） |
+| `uv run lq start @NAME [--adapter TYPE]` | 启动（TYPE: `feishu`, `discord`, `local`, 或逗号分隔如 `discord,local`） |
 | `uv run lq stop @NAME` | 停止 |
 | `uv run lq restart @NAME [--adapter TYPE]` | 重启 |
 | `uv run lq list` | 列出所有实例 |
@@ -273,6 +330,19 @@ async def execute(input_data: dict, context: dict) -> dict:
   "name": "奶油",
   "slug": "naiyou",
   "model": "claude-opus-4-6",
+  "api": {
+    "base_url": "https://your-provider.com/api/anthropic",
+    "api_key": "xxxxx",
+    "proxy": "http://127.0.0.1:7890"
+  },
+  "feishu": {
+    "app_id": "cli_xxxxx",
+    "app_secret": "xxxxx"
+  },
+  "discord": {
+    "bot_token": "xxxxx",
+    "bot_id": ""
+  },
   "heartbeat_interval": 3600,
   "active_hours": [8, 23],
   "cost_alert_daily": 5.0,
@@ -291,6 +361,10 @@ async def execute(input_data: dict, context: dict) -> dict:
 | `name` | 显示名（可中文） |
 | `slug` | 目录名（自动生成的拼音） |
 | `model` | LLM 模型名 |
+| `api.base_url` | Anthropic 兼容 API 地址 |
+| `api.proxy` | HTTP 代理（httpx 和 discord.py 均使用） |
+| `feishu.app_id` / `app_secret` | 飞书应用凭证 |
+| `discord.bot_token` | Discord bot token（`bot_id` 首次启动时自动填充） |
 | `heartbeat_interval` | 心跳间隔（秒） |
 | `active_hours` | 活跃时段 `[开始小时, 结束小时)` |
 | `cost_alert_daily` | 日消耗告警阈值（USD） |
@@ -332,12 +406,15 @@ src/lq/
 ├── executor/
 │   ├── api.py          # Anthropic API（含重试 + tool use）
 │   └── claude_code.py  # Claude Code 子进程
-└── feishu/
-    ├── adapter.py      # FeishuAdapter（PlatformAdapter 实现，封装 sender + listener）
-    ├── listener.py     # WebSocket 事件接收（适配器内部）
-    ├── sender.py       # REST API 调用（适配器内部）
-    ├── calendar.py     # 日历 API
-    └── cards.py        # 卡片构建
+├── feishu/
+│   ├── adapter.py      # FeishuAdapter（PlatformAdapter 实现，封装 sender + listener）
+│   ├── listener.py     # WebSocket 事件接收（适配器内部）
+│   ├── sender.py       # REST API 调用（适配器内部）
+│   ├── calendar.py     # 日历 API
+│   └── cards.py        # 卡片构建
+└── discord_/
+    ├── adapter.py      # DiscordAdapter（PlatformAdapter 实现，封装 sender + discord.py client）
+    └── sender.py       # Discord REST API 调用（httpx，适配器内部）
 
 tests/
 ├── test_platform.py        # 平台抽象层单元测试（pytest）
