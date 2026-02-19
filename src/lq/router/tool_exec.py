@@ -22,6 +22,19 @@ from lq.prompts import (
 logger = logging.getLogger(__name__)
 
 
+def _is_valid_chat_id(chat_id: str) -> bool:
+    """检查 chat_id 是否为有效的平台 ID（飞书或 Discord）"""
+    if not chat_id:
+        return False
+    # 飞书: oc_/ou_/on_ 开头且长度 >= 20
+    if chat_id.startswith(("oc_", "ou_", "on_")) and len(chat_id) >= 20:
+        return True
+    # Discord: 纯数字 snowflake ID，通常 17-20 位
+    if chat_id.isdigit() and len(chat_id) >= 10:
+        return True
+    return False
+
+
 class ToolExecMixin:
     """工具执行分发与多模态内容构建。"""
 
@@ -124,7 +137,7 @@ class ToolExecMixin:
 
             elif name == "send_message":
                 target = input_data.get("chat_id", "")
-                if not target.startswith(("oc_", "ou_", "on_")) or len(target) < 20:
+                if not _is_valid_chat_id(target):
                     target = chat_id  # LLM 给了无效或截断的 ID，回退到当前会话
                 text_to_send = input_data["text"]
                 msg_id = await self.adapter.send(
@@ -152,7 +165,7 @@ class ToolExecMixin:
                     return {"success": False, "error": ERR_TIME_PAST}
 
                 target_chat_id = input_data.get("chat_id", "")
-                if not target_chat_id.startswith(("oc_", "ou_", "on_")) or len(target_chat_id) < 20:
+                if not _is_valid_chat_id(target_chat_id):
                     target_chat_id = chat_id  # LLM 给了无效或截断的 ID，回退到当前会话
                 instruction = input_data["text"]
                 router_ref = self
