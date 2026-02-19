@@ -10,6 +10,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "httpx[socks]>=0.27",
     "pypinyin>=0.55.0",
+    "json-repair>=0.58.0",
 ]
 
 [project.optional-dependencies]

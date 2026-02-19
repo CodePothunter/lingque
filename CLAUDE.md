@@ -99,3 +99,4 @@ Each assistant instance stores its state at `~/.lq-{slug}/` (slug = pinyin of Ch
 | `python-dotenv` | `.env` file loading |
 | `httpx[socks]` | Async HTTP with proxy support |
 | `pypinyin` | Chinese → pinyin conversion for slugs |
+| `json-repair` | Robust JSON parsing from LLM outputs |

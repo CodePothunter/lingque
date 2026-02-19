@@ -152,13 +152,13 @@ class PrivateChatMixin:
         try:
             prompt = REFLECTION_WITH_CURIOSITY_PROMPT.format(reply=reply_text[:500])
             reflection = await self.executor.reply_with_history(
-                "", [{"role": "user", "content": prompt}], max_tokens=150,
+                "", [{"role": "user", "content": prompt}], max_tokens=200,
             )
             reflection = reflection.strip()
             if reflection:
                 logger.info("自我评估 [%s]: %s", chat_id[-8:], reflection)
                 self._append_reflection(chat_id, reflection)
-                # 提取好奇心信号
+                # 从 JSON 提取好奇心信号
                 self._extract_curiosity_from_reflection(reflection, "私聊反思", chat_id)
         except Exception:
             logger.debug("自我反思失败", exc_info=True)
@@ -187,13 +187,19 @@ class PrivateChatMixin:
     def _extract_curiosity_from_reflection(
         self, reflection: str, source: str, chat_id: str,
     ) -> None:
-        """从反思结果中提取 [好奇:...] 标记并写入好奇心信号日志"""
-        import re as _re
-        match = _re.search(r"\[好奇[:：]\s*(.+?)\]", reflection)
-        if match:
-            topic = match.group(1).strip()
-            if topic and topic != "无":
-                self._append_curiosity_signal(topic, source, chat_id)
+        """从反思 JSON 中提取 curiosity 字段并写入好奇心信号日志"""
+        from json_repair import repair_json
+
+        try:
+            data = repair_json(reflection, return_objects=True)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+
+        topic = data.get("curiosity")
+        if topic and isinstance(topic, str) and topic not in ("null", "无", "None"):
+            self._append_curiosity_signal(topic, source, chat_id)
 
     def _append_curiosity_signal(
         self, topic: str, source: str, chat_id: str,
