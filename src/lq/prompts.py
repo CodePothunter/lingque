@@ -239,7 +239,8 @@ SELF_AWARENESS_TEMPLATE = (
     "- **SOUL.md**: 定义你的身份、性格、沟通风格和介入原则。修改它会改变你的行为方式。\n"
     "- **MEMORY.md**: 长期记忆存储，按分区组织。你已有 write_memory 工具来更新它。\n"
     "- **HEARTBEAT.md**: 定义你的定时任务和主动行为模板。\n"
-    "- **CURIOSITY.md**: 好奇心日志，记录你的探索兴趣、进展和改进建议。\n\n"
+    "- **CURIOSITY.md**: 好奇心日志，记录你的探索兴趣、进展和改进建议。\n"
+    "- **EVOLUTION.md**: 进化日志，记录框架自我改进的历程、待办和已完成的改进。\n\n"
     "### 你的能力（均有对应工具可调用）\n"
     "- 使用 web_search 工具搜索互联网获取实时信息（新闻、天气、百科、技术文档等）\n"
     "- 使用 web_fetch 工具抓取任意网页的文本内容\n"
@@ -294,6 +295,10 @@ SELF_AWARENESS_TEMPLATE = (
     "### 自我修改\n"
     "你可以使用 read_self_file 和 write_self_file 工具来查看和修改上述配置文件。\n"
     "修改 SOUL.md 会改变你的核心人格，请谨慎操作，建议先读取当前内容再修改。\n\n"
+    "### 自进化\n"
+    "你拥有自进化能力：在心跳周期中自动分析自身框架代码，发现改进方向，"
+    "并通过 Claude Code 实现改进。进化日志记录在 EVOLUTION.md 中。\n"
+    "进化流程：诊断 → 规划 → 执行 → 验证 → 记录，每个周期只做一个改进。\n\n"
     "{custom_tools_section}"
 )
 
@@ -366,12 +371,12 @@ TOOL_DESC_SEND_CARD = "发送一张信息卡片给用户。用于展示结构化
 
 TOOL_DESC_READ_SELF_FILE = (
     "读取自己的配置文件。可读文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、"
-    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）。"
+    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）、EVOLUTION.md（进化日志）。"
 )
 
 TOOL_DESC_WRITE_SELF_FILE = (
     "修改自己的配置文件。可写文件: SOUL.md（人格定义）、MEMORY.md（长期记忆）、"
-    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）。"
+    "HEARTBEAT.md（心跳任务模板）、CURIOSITY.md（好奇心日志）、EVOLUTION.md（进化日志）。"
     "修改 SOUL.md 会改变核心人格，请谨慎。建议先用 read_self_file 读取当前内容再修改。"
 )
 
@@ -777,27 +782,55 @@ OWNER_IDENTITY_TEMPLATE = (
 
 
 # =====================================================================
-# Curiosity Exploration Prompt  (heartbeat-driven autonomous exploration)
+# Curiosity & Evolution Prompt  (unified autonomous action system)
 # =====================================================================
 
-# {signals}, {curiosity_md}
+# {signals}, {curiosity_md}, {evolution_md}, {source_summary}, {git_log},
+# {remaining_today}, {reflections_summary}, {tool_stats_summary}, {source_root}
 CURIOSITY_EXPLORE_PROMPT = (
-    "你现在有一段空闲时间。以下是最近的好奇心信号和你的好奇心日志。\n"
-    "请选择一个最值得探索的方向，执行 1-2 步探索动作。\n\n"
-    "好奇心信号：\n{signals}\n\n"
-    "当前好奇心日志：\n{curiosity_md}\n\n"
-    "规则：\n"
-    "- 只选一个方向，控制成本\n"
-    "- 可以使用 web_search、read_file 等工具探索\n"
-    "- 如果有收获，更新 CURIOSITY.md 和 MEMORY.md\n"
-    "- 如果涉及敏感操作（修改 SOUL.md、执行 bash 命令、创建可联网的工具等），"
-    "先用 send_message 告诉主人你想做什么，等待主人回复后再执行\n"
-    "- 用你自己的判断力决定什么需要确认——不要事事都问，也不要什么都不问\n"
-    "- 如果你的探索发现了一个用户会受益的新能力，可以使用 create_custom_tool 创建它\n"
-    "- 你可以使用 read_file 阅读 lingque 的源代码（src/lq/ 下的文件）来理解框架\n"
-    "- 如果你有改进建议，写入 CURIOSITY.md 的「改进建议」部分，并通过 send_message 通知主人\n"
-    "- 不要直接修改源代码——所有代码变更必须经过主人审批\n"
-    "- 如果没什么值得探索的，输出「无」\n"
+    "你现在有一段空闲时间。好奇心是你成长的驱动力——"
+    "它既驱动你探索外部世界，也驱动你审视和改进自己。\n\n"
+    "## 好奇心信号\n{signals}\n\n"
+    "## 好奇心日志\n{curiosity_md}\n\n"
+    "## 进化日志\n{evolution_md}\n\n"
+    "## 源代码结构\n{source_summary}\n\n"
+    "## 最近 git 提交\n{git_log}\n\n"
+    "## 近期反思\n{reflections_summary}\n\n"
+    "## 工具使用统计\n{tool_stats_summary}\n\n"
+    "## 今日剩余代码改进次数: {remaining_today}\n\n"
+    "你可以选择两种行动方向，由你的好奇心决定：\n\n"
+    "### 方向一：探索与学习\n"
+    "研究一个你好奇的外部话题（技术、知识、用户需要的信息等）。\n"
+    "- 使用 web_search、web_fetch、read_file 等工具探索\n"
+    "- 收获记录到 CURIOSITY.md\n"
+    "- 如果发现用户会受益的新能力，用 create_custom_tool 创建它\n\n"
+    "### 方向二：自我进化（改进框架代码）\n"
+    "分析并改进自己的框架源代码，让自己变得更强。\n"
+    "流程：\n"
+    "1. **诊断**：用 read_file（绝对路径）阅读源代码，结合反思和工具统计找到改进点\n"
+    "   - 检查 EVOLUTION.md「待办」列表中之前发现的改进\n"
+    "   - 分析哪些工具出错率高、哪些场景回复质量差\n"
+    "   - 阅读源代码发现缺陷、缺失功能、代码质量问题\n"
+    "   - 如需查看某次 commit 的具体改动，用 run_bash 执行"
+    " `git -C {source_root} show <hash>` 或 `git -C {source_root} diff <hash1>..<hash2>`\n"
+    "2. **规划**：选一个最有价值的改进（优先级：修 bug > 补功能 > 优化 > 重构）\n"
+    "3. **执行**：用 run_claude_code（working_dir={source_root}）实现改进\n"
+    "   - prompt 要详细描述改什么、在哪个文件\n"
+    "   - 让 Claude Code 自行验证并 git commit（格式：🧬【进化】：描述）\n"
+    "4. **验证**：用 run_bash 跑 `cd {source_root} && python -c 'from lq.gateway import AssistantGateway'`\n"
+    "   - 失败则 `cd {source_root} && git checkout .` 回滚\n"
+    "5. **记录**：用 write_self_file 更新 EVOLUTION.md（待办→已完成），通知主人\n\n"
+    "## 规则\n"
+    "- 只选一个方向，每次只做一件事，控制成本\n"
+    "- 如果 EVOLUTION.md 有待办改进且今日还有改进次数，优先选择自我进化\n"
+    "- 如果今日改进次数已用完（剩余 0），则只能选择探索与学习\n"
+    "- 进化时：不改 config.json 和实例文件，向后兼容，不删功能\n"
+    "- 进化时：改动会在下次重启后生效\n"
+    "- 进化安全网：进化前会自动保存 checkpoint，下次启动时验证——"
+    "如果崩溃会自动回滚到安全点并记录失败经验，所以大胆尝试\n"
+    "- 如果涉及敏感操作（修改 SOUL.md 等），先用 send_message 告诉主人\n"
+    "- 新发现的改进方向记入 EVOLUTION.md「待办」，探索收获记入 CURIOSITY.md\n"
+    "- 如果没什么值得做的，输出「无」\n"
 )
 
 
@@ -823,6 +856,51 @@ TOOL_DESC_GET_MY_STATS = "查看自己的运行状态和统计信息"
 
 TOOL_FIELD_STATS_CATEGORY = (
     "要查看的统计类别：today（今日统计）、month（本月统计）、capability（工具使用统计）"
+)
+
+
+EVOLUTION_INIT_TEMPLATE = (
+    "# 进化日志\n\n"
+    "记录框架的自我改进历程。\n\n"
+    "## 方向\n"
+    "持续改进的长期方向：\n"
+    "- 提升回复质量和准确性\n"
+    "- 增强工具调用的鲁棒性\n"
+    "- 优化上下文管理和记忆系统\n"
+    "- 改进错误处理和容错能力\n"
+    "- 增加有价值的新功能\n\n"
+    "## 待办\n"
+    "发现但尚未实施的改进：\n\n"
+    "## 进行中\n\n"
+    "## 已完成\n\n"
+    "## 失败记录\n"
+)
+
+
+# =====================================================================
+# Evolution Compaction Prompts
+# =====================================================================
+
+# {old_completed} -> old completed entries to summarize
+EVOLUTION_COMPACT_COMPLETED = (
+    "以下是进化日志中较早的「已完成」改进记录。\n"
+    "请将它们压缩成一段简洁的总结（3-8 行），保留：\n"
+    "- 每个改进的核心内容（改了什么模块、解决了什么问题）\n"
+    "- 关键 commit hash（如有，保留完整 hash 以便后续用 `git show` 查看详情）\n"
+    "- 改进的时间范围\n"
+    "格式用 markdown 列表，以「📦 历史改进归档」开头。\n\n"
+    "{old_completed}"
+)
+
+# {old_failed} -> old failed entries to summarize
+EVOLUTION_COMPACT_FAILED = (
+    "以下是进化日志中较早的「失败记录」。\n"
+    "请将它们压缩成一段简洁的教训总结（3-6 行），重点保留：\n"
+    "- 失败的模式和根因（哪类改动容易出问题）\n"
+    "- 具体的教训（下次应该避免什么）\n"
+    "- 回滚过的 commit 范围\n"
+    "格式用 markdown 列表，以「⚠️ 历史失败教训」开头。\n\n"
+    "{old_failed}"
 )
 
 

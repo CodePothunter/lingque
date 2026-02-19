@@ -13,7 +13,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+CST = timezone(timedelta(hours=8))
+
 from lq.config import LQConfig
+from lq.evolution import EvolutionEngine
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.heartbeat import HeartbeatRunner
@@ -242,6 +245,24 @@ class AssistantGateway:
         router.post_processor = post_processor
         logger.info("后处理管线已加载")
 
+        # 初始化自进化引擎 + 启动守护检查
+        self._evolution = EvolutionEngine(
+            self.home,
+            max_daily=self.config.evolution_max_daily,
+        )
+        if self._evolution.source_root:
+            logger.info("自进化引擎已加载: source=%s, max_daily=%d",
+                        self._evolution.source_root, self.config.evolution_max_daily)
+            # 进化守护：检查上次进化是否导致崩溃
+            was_clean = self._was_clean_shutdown()
+            if not was_clean:
+                logger.warning("检测到上次非正常退出，检查进化安全性...")
+            self._evolution.startup_check(was_clean)
+        else:
+            logger.warning("自进化引擎: 无法定位源代码目录，进化功能受限")
+        # 标记本次启动（清除 clean shutdown 标记，在 _cleanup 中重新写入）
+        self._clean_shutdown_path.unlink(missing_ok=True)
+
         # 配置心跳回调
         heartbeat = HeartbeatRunner(
             self.config.heartbeat_interval,
@@ -356,11 +377,11 @@ class AssistantGateway:
                 except Exception:
                     logger.exception("群聊早安问候调度失败")
 
-            # 好奇心探索（心跳后触发）
+            # 自主行动：好奇心探索 + 自我进化（统一系统）
             try:
-                await self._run_curiosity_exploration(router, stats)
+                await self._run_autonomous_cycle(router, stats)
             except Exception:
-                logger.exception("好奇心探索失败")
+                logger.exception("自主行动周期失败")
 
             # 费用告警
             if stats:
@@ -439,28 +460,40 @@ class AssistantGateway:
             return "\n" + "\n".join(parts) + "\n请对比 SOUL.md 中的行为准则，判断是否存在行为漂移。"
         return ""
 
-    async def _run_curiosity_exploration(
+    async def _run_autonomous_cycle(
         self, router: MessageRouter, stats: StatsTracker,
     ) -> None:
-        """心跳后的好奇心探索：读取信号、决定是否探索、执行探索。"""
+        """统一的自主行动周期：好奇心驱动探索与自我进化。
+
+        好奇心是驱动力，它决定每个周期做什么：
+        - 探索外部世界（学习新知识、创建新工具）
+        - 审视并改进自身框架代码（自我进化）
+
+        由 LLM 在统一的 prompt 下自主决策行动方向。
+        """
         from lq.prompts import CURIOSITY_EXPLORE_PROMPT, CURIOSITY_INIT_TEMPLATE
 
-        # 每日预算检查：只有当总花费仍低于 (总预算 - 好奇心预算) 时才探索
-        # 这样确保总是为好奇心探索保留 curiosity_budget 额度的空间
+        # 预算检查：好奇心预算 + 进化预算 = 自主行动总预算
+        autonomous_budget = self.config.curiosity_budget + self.config.evolution_budget
         if stats:
             daily = stats.get_daily_summary()
             today_cost = daily.get("total_cost", 0.0)
-            exploration_ceiling = self.config.cost_alert_daily - self.config.curiosity_budget
-            if today_cost > exploration_ceiling:
-                logger.debug("今日费用 $%.4f 超过探索阈值 $%.2f (总预算 $%.2f - 好奇心预算 $%.2f)，跳过",
-                             today_cost, exploration_ceiling,
-                             self.config.cost_alert_daily, self.config.curiosity_budget)
+            ceiling = self.config.cost_alert_daily - autonomous_budget
+            if today_cost > ceiling:
+                logger.debug(
+                    "今日费用 $%.4f 超过自主行动阈值 $%.2f "
+                    "(总预算 $%.2f - 自主预算 $%.2f)，跳过",
+                    today_cost, ceiling,
+                    self.config.cost_alert_daily, autonomous_budget,
+                )
                 return
 
-        # 读取好奇心信号（最近 20 条）
+        # ── 收集好奇心上下文 ──
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
         cst = _tz(_td(hours=8))
         today = _dt.now(cst).strftime("%Y-%m-%d")
+
+        # 好奇心信号（最近 20 条）
         signals_path = self.home / "logs" / f"curiosity-signals-{today}.jsonl"
         signals_text = "（暂无信号）"
         if signals_path.exists():
@@ -475,57 +508,179 @@ class AssistantGateway:
             except Exception:
                 logger.debug("读取好奇心信号失败", exc_info=True)
 
-        # 读取 CURIOSITY.md
+        # CURIOSITY.md
         curiosity_path = self.home / "CURIOSITY.md"
         if not curiosity_path.exists():
             curiosity_path.write_text(CURIOSITY_INIT_TEMPLATE, encoding="utf-8")
             logger.info("已创建 CURIOSITY.md")
         curiosity_md = curiosity_path.read_text(encoding="utf-8")
 
-        # 如果没有信号且 CURIOSITY.md 没有当前兴趣，跳过
-        if signals_text == "（暂无信号）" and "## 当前兴趣\n\n##" in curiosity_md:
-            logger.debug("无好奇心信号且无当前兴趣，跳过探索")
+        # ── 收集进化上下文 ──
+        evolution_md = "（进化引擎未加载）"
+        source_summary = "（无源代码信息）"
+        git_log = "（无 git 信息）"
+        source_root = ""
+        remaining_today = 0
+
+        if self._evolution:
+            self._evolution.ensure_evolution_file()
+            evolution_md = self._evolution.read_evolution()
+            remaining_today = self._evolution.remaining_today
+            if self._evolution.source_root:
+                source_summary = self._evolution.get_source_summary()
+                git_log = self._evolution.get_recent_git_log()
+                source_root = str(self._evolution.source_root)
+
+        # 如果没有任何驱动力（无信号、无兴趣、无待办），跳过
+        has_curiosity = signals_text != "（暂无信号）" or "## 当前兴趣\n\n##" not in curiosity_md
+        has_evolution_backlog = "## 待办\n" in evolution_md and not evolution_md.endswith("## 待办\n发现但尚未实施的改进：\n\n## 进行中\n\n## 已完成\n\n## 失败记录\n")
+        if not has_curiosity and not has_evolution_backlog:
+            logger.debug("无好奇心信号、无当前兴趣、无进化待办，跳过自主行动")
             return
 
-        # 构建探索 prompt
+        # 反思和工具统计
+        reflections_summary = self._get_reflections_summary()
+        tool_stats_summary = self._get_tool_stats_summary(router)
+
+        # ── 构建统一 prompt ──
         system = router.memory.build_context()
         system += "\n\n" + CURIOSITY_EXPLORE_PROMPT.format(
             signals=signals_text,
             curiosity_md=curiosity_md,
+            evolution_md=evolution_md,
+            source_summary=source_summary,
+            git_log=git_log,
+            remaining_today=remaining_today,
+            reflections_summary=reflections_summary,
+            tool_stats_summary=tool_stats_summary,
+            source_root=source_root or "（未知）",
         )
 
-        chat_id = self.config.feishu.owner_chat_id or "curiosity"
-        messages = [{"role": "user", "content": "请检查好奇心信号并决定是否探索。"}]
+        chat_id = self.config.feishu.owner_chat_id or "autonomous"
+        messages = [{"role": "user", "content": "请根据你的好奇心决定下一步行动。"}]
 
-        # 记录探索前的 CURIOSITY.md 内容用于变更检测
+        # 记录行动前的文件状态用于变更检测
         old_curiosity = curiosity_md
+        old_evolution = evolution_md
+
+        # 进化守护：如果可能执行进化，先保存 checkpoint
+        if self._evolution and remaining_today > 0 and self._evolution.source_root:
+            self._evolution.save_checkpoint()
 
         try:
             result = await router._reply_with_tool_loop(
                 system, messages, chat_id, None,
             )
-            if result and result.strip() and result.strip() != "无":
-                router.memory.append_daily(f"- 好奇心探索: {result[:100]}\n")
-                logger.info("好奇心探索完成: %s", result[:80])
+            if not result or not result.strip() or result.strip() == "无":
+                # 没有行动，清除 checkpoint
+                if self._evolution:
+                    self._evolution.clear_checkpoint()
+                logger.debug("自主行动周期: 无需行动")
+                return
 
-                # 检查是否有新的改进建议（对比探索前后的内容差异）
-                new_curiosity = curiosity_path.read_text(encoding="utf-8")
-                if new_curiosity != old_curiosity and "改进建议" in new_curiosity:
-                    # 提取「改进建议」部分（兼容 ## 改进建议 或 ##改进建议 等格式）
-                    import re as _re
-                    m = _re.search(r"##\s*改进建议\s*\n(.*?)(?:\n##|\Z)",
-                                   new_curiosity, _re.DOTALL)
-                    section = m.group(1).strip() if m else ""
-                    owner_chat_id = self.config.feishu.owner_chat_id
-                    if section and owner_chat_id:
-                        await router.adapter.send(OutgoingMessage(
-                            owner_chat_id,
-                            "我在探索中发现了一些改进建议，已记录在 CURIOSITY.md 中。",
-                        ))
-            else:
-                logger.debug("好奇心探索结果为空或「无」")
+            router.memory.append_daily(f"- 自主行动: {result[:100]}\n")
+            logger.info("自主行动周期完成: %s", result[:80])
+
+            # 检测是否执行了进化（EVOLUTION.md 发生了变化）
+            did_evolve = False
+            if self._evolution and self._evolution.evolution_path.exists():
+                new_evolution = self._evolution.evolution_path.read_text(encoding="utf-8")
+                if new_evolution != old_evolution:
+                    did_evolve = True
+                    self._evolution.record_attempt()
+                    logger.info("检测到进化行为，已计数")
+
+            # 进化守护：如果没有执行进化，清除 checkpoint
+            # （如果执行了进化，保留 checkpoint 等下次启动验证）
+            if self._evolution and not did_evolve:
+                self._evolution.clear_checkpoint()
+
+            # 检测好奇心日志变化（保持原有的改进建议通知逻辑）
+            new_curiosity = curiosity_path.read_text(encoding="utf-8")
+            if new_curiosity != old_curiosity and "改进建议" in new_curiosity:
+                import re as _re
+                m = _re.search(r"##\s*改进建议\s*\n(.*?)(?:\n##|\Z)",
+                               new_curiosity, _re.DOTALL)
+                section = m.group(1).strip() if m else ""
+                owner_chat_id = self.config.feishu.owner_chat_id
+                if section and owner_chat_id:
+                    await router.adapter.send(OutgoingMessage(
+                        owner_chat_id,
+                        "我在探索中发现了一些改进建议，已记录在 CURIOSITY.md 中。",
+                    ))
+
         except Exception:
-            logger.exception("好奇心探索执行失败")
+            logger.exception("自主行动周期执行失败")
+
+        # EVOLUTION.md 压缩：条目过多时自动摘要归档
+        try:
+            if self._evolution and self._evolution.needs_compaction():
+                await self._compact_evolution_log(router)
+        except Exception:
+            logger.exception("EVOLUTION.md 压缩失败")
+
+    async def _compact_evolution_log(self, router: MessageRouter) -> None:
+        """用 LLM 摘要归档 EVOLUTION.md 中的旧条目。"""
+        from lq.prompts import EVOLUTION_COMPACT_COMPLETED, EVOLUTION_COMPACT_FAILED
+
+        material = self._evolution.get_compaction_material()
+        if not material:
+            return
+
+        completed_summary = None
+        failed_summary = None
+
+        if material["old_completed"]:
+            prompt = EVOLUTION_COMPACT_COMPLETED.format(
+                old_completed=material["old_completed"],
+            )
+            completed_summary = await router.executor.reply("", prompt)
+            logger.info("已完成记录压缩: %d 字", len(completed_summary))
+
+        if material["old_failed"]:
+            prompt = EVOLUTION_COMPACT_FAILED.format(
+                old_failed=material["old_failed"],
+            )
+            failed_summary = await router.executor.reply("", prompt)
+            logger.info("失败记录压缩: %d 字", len(failed_summary))
+
+        self._evolution.apply_compaction(completed_summary, failed_summary)
+
+    def _get_reflections_summary(self) -> str:
+        """收集今日反思日志摘要"""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cst = _tz(_td(hours=8))
+        today = _dt.now(cst).strftime("%Y-%m-%d")
+        ref_path = self.home / "logs" / f"reflections-{today}.jsonl"
+        if not ref_path.exists():
+            return "（今日暂无反思记录）"
+        try:
+            lines = ref_path.read_text(encoding="utf-8").strip().splitlines()
+            if not lines:
+                return "（今日暂无反思记录）"
+            entries = []
+            for line in lines[-15:]:  # 最近 15 条
+                entry = json.loads(line)
+                entries.append(f"- {entry.get('reflection', '')}")
+            return "\n".join(entries)
+        except Exception:
+            return "（反思记录读取失败）"
+
+    def _get_tool_stats_summary(self, router: MessageRouter) -> str:
+        """收集工具使用统计摘要"""
+        if not router._tool_stats:
+            return "（暂无工具使用记录）"
+        lines = []
+        for tname, ts in router._tool_stats.items():
+            total = ts.get("success", 0) + ts.get("fail", 0)
+            if total > 0:
+                rate = round(ts["success"] / total * 100)
+                last_err = ts.get("last_error", "")
+                line = f"- {tname}: {total}次, 成功率{rate}%"
+                if last_err:
+                    line += f" (最近错误: {last_err[:80]})"
+                lines.append(line)
+        return "\n".join(lines) if lines else "（暂无工具使用记录）"
 
     async def _poll_inbox(self) -> None:
         """轮询 inbox.txt，构造标准事件推入 queue（走完整的适配器路径）。"""
@@ -652,6 +807,18 @@ class AssistantGateway:
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("Lark").setLevel(logging.WARNING)
 
+    @property
+    def _clean_shutdown_path(self) -> Path:
+        return self.home / ".clean-shutdown"
+
+    def _was_clean_shutdown(self) -> bool:
+        """检测上次运行是否正常关闭。
+
+        正常关闭时 _cleanup 会写入 .clean-shutdown 标记文件；
+        如果标记不存在，说明上次是崩溃退出。
+        """
+        return self._clean_shutdown_path.exists()
+
     def _write_pid(self) -> None:
         pid_path = self.home / "gateway.pid"
         pid_path.write_text(str(os.getpid()))
@@ -662,6 +829,14 @@ class AssistantGateway:
         if pid_path.exists():
             pid_path.unlink()
             logger.info("PID 文件已清理")
+        # 标记正常关闭，供下次启动时判断是否需要回滚进化
+        try:
+            self._clean_shutdown_path.write_text(
+                datetime.now(CST).isoformat(), encoding="utf-8",
+            )
+            logger.info("clean shutdown 标记已写入")
+        except Exception:
+            logger.warning("clean shutdown 标记写入失败")
 
     def _setup_signals(self) -> None:
         loop = asyncio.get_running_loop()

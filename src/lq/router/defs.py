@@ -138,7 +138,7 @@ TOOLS: list[dict] = [
                 "filename": {
                     "type": "string",
                     "description": TOOL_FIELD_FILENAME_READ,
-                    "enum": ["SOUL.md", "MEMORY.md", "HEARTBEAT.md"],
+                    "enum": ["SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md", "EVOLUTION.md"],
                 },
             },
             "required": ["filename"],
@@ -153,7 +153,7 @@ TOOLS: list[dict] = [
                 "filename": {
                     "type": "string",
                     "description": TOOL_FIELD_FILENAME_WRITE,
-                    "enum": ["SOUL.md", "MEMORY.md", "HEARTBEAT.md"],
+                    "enum": ["SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md", "EVOLUTION.md"],
                 },
                 "content": {
                     "type": "string",

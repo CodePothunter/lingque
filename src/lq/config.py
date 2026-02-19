@@ -68,6 +68,8 @@ class LQConfig:
     groups: list[GroupConfig] = field(default_factory=list)
     cost_alert_daily: float = 5.0  # USD
     curiosity_budget: float = 1.0  # 每日好奇心探索预算 (USD)
+    evolution_max_daily: int = 3   # 每日最大自进化次数
+    evolution_budget: float = 2.0  # 每日自进化预算 (USD)
     owner_name: str = ""  # 主人的飞书名（init 时设置，用于运行时自动发现 owner_chat_id）
     chat_memory_budget: int = 2000  # per-chat 长期记忆 token 预算
 
@@ -89,6 +91,8 @@ class LQConfig:
         cfg.heartbeat_interval = d.get("heartbeat_interval", 3600)
         cfg.cost_alert_daily = d.get("cost_alert_daily", 5.0)
         cfg.curiosity_budget = d.get("curiosity_budget", 1.0)
+        cfg.evolution_max_daily = d.get("evolution_max_daily", 3)
+        cfg.evolution_budget = d.get("evolution_budget", 2.0)
         cfg.owner_name = d.get("owner_name", "")
         cfg.chat_memory_budget = d.get("chat_memory_budget", 2000)
         ah = d.get("active_hours", [8, 23])
