@@ -16,6 +16,10 @@ from lq.platform.types import BotIdentity, ChatMember, OutgoingMessage
 logger = logging.getLogger(__name__)
 
 
+class AdapterRoutingError(Exception):
+    """chat_id 格式与可用适配器不匹配时抛出。"""
+
+
 class MultiAdapter(PlatformAdapter):
     """组合多个 PlatformAdapter，统一对外暴露为单一适配器。
 
@@ -121,18 +125,21 @@ class MultiAdapter(PlatformAdapter):
             if is_discord_format and "Discord" in cls_name:
                 return adapter
 
-        # 格式与可用适配器不匹配时记录警告
+        # 格式与可用适配器不匹配时抛出明确异常
+        available = ", ".join(type(a).__name__.replace("Adapter", "") for a in self._adapters)
         if is_feishu_format:
-            logger.warning(
-                "chat_id '%s' 是飞书格式但未启用飞书适配器，将回退到 primary",
-                chat_id[:20] + "..." if len(chat_id) > 20 else chat_id,
+            display_id = chat_id[:20] + "..." if len(chat_id) > 20 else chat_id
+            raise AdapterRoutingError(
+                f"chat_id '{display_id}' 是飞书格式，"
+                f"但当前未启用飞书适配器。可用适配器: {available}"
             )
-        elif is_discord_format:
-            logger.warning(
-                "chat_id '%s' 是 Discord 格式但未启用 Discord 适配器，将回退到 primary",
-                chat_id,
+        if is_discord_format:
+            raise AdapterRoutingError(
+                f"chat_id '{chat_id}' 是 Discord 格式，"
+                f"但当前未启用 Discord 适配器。可用适配器: {available}"
             )
 
+        # 未知格式 — 回退到 primary（向后兼容）
         return None
 
     def _for_msg(self, message_id: str) -> PlatformAdapter:
