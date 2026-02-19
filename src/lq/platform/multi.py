@@ -96,7 +96,27 @@ class MultiAdapter(PlatformAdapter):
     # ── 路由辅助 ──
 
     def _for_chat(self, chat_id: str) -> PlatformAdapter:
-        return self._chat_adapter.get(chat_id, self._primary)
+        adapter = self._chat_adapter.get(chat_id)
+        if adapter:
+            return adapter
+        # 根据 chat_id 格式推断归属适配器，避免错误路由
+        guessed = self._guess_adapter(chat_id)
+        if guessed:
+            return guessed
+        return self._primary
+
+    def _guess_adapter(self, chat_id: str) -> PlatformAdapter | None:
+        """根据 chat_id 格式推断归属适配器。
+
+        飞书 chat_id 以 'oc_' 开头；Discord chat_id 是纯数字。
+        """
+        for adapter in self._adapters:
+            cls_name = type(adapter).__name__
+            if chat_id.startswith("oc_") and "Feishu" in cls_name:
+                return adapter
+            if chat_id.isdigit() and "Discord" in cls_name:
+                return adapter
+        return None
 
     def _for_msg(self, message_id: str) -> PlatformAdapter:
         return self._msg_adapter.get(message_id, self._primary)

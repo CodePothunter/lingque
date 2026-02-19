@@ -2,12 +2,12 @@
 
 [中文文档](README_CN.md)
 
-A personal AI assistant framework built on a **platform-agnostic core** with pluggable chat platform adapters. The core engine handles all conversation logic, tool execution, memory, and group chat intelligence without depending on any specific chat platform. Adapters are thin wrappers that translate platform events into standard types. Ships with a [Feishu (Lark)](https://www.feishu.cn/) adapter and a local terminal adapter; adding a new platform requires only one adapter file. Features include private/group chat with intelligent replies, calendar management, long-term memory, and runtime self-extension through tool creation.
+A personal AI assistant framework built on a **platform-agnostic core** with pluggable chat platform adapters. The core engine handles all conversation logic, tool execution, memory, and group chat intelligence without depending on any specific chat platform. Adapters are thin wrappers that translate platform events into standard types. Ships with [Feishu (Lark)](https://www.feishu.cn/), [Discord](https://discord.com/), and local terminal adapters; adding a new platform requires only one adapter file. Features include private/group chat with intelligent replies, calendar management, long-term memory, and runtime self-extension through tool creation.
 
 ## Features
 
-- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Discord, Telegram, Slack, etc.) requires only one adapter file
-- **Pluggable adapters** — Ships with a Feishu (Lark) adapter (WebSocket persistent connection, instant DM replies, three-layer group chat intervention) and a local terminal adapter; both go through the same unified event pipeline
+- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Telegram, Slack, etc.) requires only one adapter file
+- **Pluggable adapters** — Ships with Feishu (Lark), Discord, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
 - **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
 - **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
@@ -31,13 +31,18 @@ A personal AI assistant framework built on a **platform-agnostic core** with plu
 - Python >= 3.11
 - [uv](https://docs.astral.sh/uv/)
 - Any Anthropic-compatible API endpoint (e.g. cloud provider proxies, self-hosted gateways)
-- *(Optional)* A Feishu custom app (with IM + Calendar permissions) — only needed for Feishu adapter mode
+- *(Optional)* Platform credentials — only needed for the adapter(s) you want to use:
+  - **Feishu**: A Feishu custom app (with IM + Calendar permissions)
+  - **Discord**: A Discord bot application with Message Content Intent enabled
 
 ### Install
 
 ```bash
 cd <your-path>/lingque
 uv sync
+
+# If using Discord adapter, also install the optional dependency:
+uv pip install -e '.[discord]'
 ```
 
 ### Prepare `.env`
@@ -49,9 +54,10 @@ Create a `.env` file in the project root (for multiple agents, use `.env.agent1`
 ANTHROPIC_BASE_URL=https://your-provider.com/api/anthropic
 ANTHROPIC_AUTH_TOKEN=xxxxx
 
-# Optional — only needed for Feishu adapter mode
+# Optional — only needed for the adapters you use
 FEISHU_APP_ID=cli_xxxxx
 FEISHU_APP_SECRET=xxxxx
+DISCORD_BOT_TOKEN=xxxxx
 ```
 
 ### Initialize an Instance
@@ -93,11 +99,16 @@ uv run lq edit @奶油 soul
 # Feishu mode (default)
 uv run lq start @奶油
 
-# Local-only mode (no Feishu credentials needed)
+# Discord mode
+uv run lq start @奶油 --adapter discord
+
+# Local-only mode (no platform credentials needed)
 uv run lq start @奶油 --adapter local
 
-# Multi-platform mode (Feishu + local simultaneously)
+# Multi-platform mode (combine any adapters)
 uv run lq start @奶油 --adapter feishu,local
+uv run lq start @奶油 --adapter discord,local
+uv run lq start @奶油 --adapter feishu,discord,local
 
 # Background
 nohup uv run lq start @奶油 &
@@ -107,6 +118,49 @@ uv run lq stop @奶油            # stop
 ```
 
 > Instance names work in both Chinese and pinyin: `@奶油` and `@naiyou` are equivalent.
+
+## Platform Adapter Setup
+
+LingQue supports three platform adapters. You can use any combination simultaneously via `--adapter`.
+
+### Local (terminal)
+
+No setup required. Use `--adapter local` or `lq chat @NAME` for interactive terminal chat.
+
+### Feishu (Lark)
+
+1. Go to [Feishu Open Platform](https://open.feishu.cn/) and create a Custom App
+2. Enable **IM** and **Calendar** permissions
+3. Under **Event Subscriptions**, add the required IM events and enable WebSocket mode
+4. Copy `App ID` and `App Secret` into `.env`:
+   ```
+   FEISHU_APP_ID=cli_xxxxx
+   FEISHU_APP_SECRET=xxxxx
+   ```
+5. Start with `--adapter feishu` (default)
+
+### Discord
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications) and create a New Application
+2. Navigate to **Bot** page:
+   - Click **Reset Token** to get the bot token (shown only once)
+   - Enable **Message Content Intent** under Privileged Gateway Intents
+   - Enable **Server Members Intent** under Privileged Gateway Intents
+3. Navigate to **OAuth2 → URL Generator**:
+   - Scopes: check `bot`
+   - Bot Permissions: check `Send Messages`, `Read Message History`, `Add Reactions`, `Manage Messages`, `View Channels`
+   - Open the generated URL in a browser to invite the bot to your server
+4. Add the token to `.env`:
+   ```
+   DISCORD_BOT_TOKEN=xxxxx
+   ```
+5. Install the optional dependency and start:
+   ```bash
+   uv pip install -e '.[discord]'
+   uv run lq start @NAME --adapter discord
+   ```
+
+In Discord, DM the bot or @mention it in a channel to chat.
 
 ## Architecture
 
@@ -120,11 +174,12 @@ platform/
 ├── adapter.py   — PlatformAdapter ABC (9 abstract + 4 optional methods)
 └── multi.py     — MultiAdapter (composite adapter for multi-platform mode)
 
-feishu/adapter.py  — FeishuAdapter (wraps sender + listener internally)
-conversation.py    — LocalAdapter (terminal mode, two modes: gateway with stdin/inbox event sources, chat with passive connect)
+feishu/adapter.py    — FeishuAdapter (wraps sender + listener internally)
+discord_/adapter.py  — DiscordAdapter (wraps sender + discord.py client in daemon thread)
+conversation.py      — LocalAdapter (terminal mode, two modes: gateway with stdin/inbox event sources, chat with passive connect)
 ```
 
-The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on the Feishu SDK directly.
+The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on platform SDKs directly.
 
 ### Event Flow
 
@@ -132,9 +187,10 @@ All adapters produce standard events through the same unified path:
 
 ```
 Event sources (per adapter):
-  FeishuAdapter:  Feishu WS → _event_converter → queue.put()
-  LocalAdapter:   stdin → _read_stdin → queue.put()
-                  inbox.txt → _watch_inbox → queue.put()
+  FeishuAdapter:   Feishu WS → _event_converter → queue.put()
+  DiscordAdapter:  discord.py WS (daemon thread) → _event_converter → queue.put()
+  LocalAdapter:    stdin → _read_stdin → queue.put()
+                   inbox.txt → _watch_inbox → queue.put()
 
 Unified pipeline:
   asyncio.Queue → _consume_messages → router.handle(standard_event)
@@ -147,8 +203,9 @@ Unified pipeline:
 
 Output:
   router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
-    FeishuAdapter:  OnIt emoji → REST API → remove emoji
-    LocalAdapter:   ⏳ thinking indicator → terminal card/text → clear indicator
+    FeishuAdapter:   OnIt emoji → REST API → remove emoji
+    DiscordAdapter:  typing indicator (8s refresh) → REST API (auto-chunk at 2000 chars) → cancel typing
+    LocalAdapter:    ⏳ thinking indicator → terminal card/text → clear indicator
 ```
 
 ## Built-in Tools
@@ -254,7 +311,7 @@ The assistant will automatically write the code, validate it, and load it. The n
 | Command | Description |
 |---------|-------------|
 | `uv run lq init --name NAME [--from-env .env]` | Initialize instance |
-| `uv run lq start @NAME [--adapter TYPE]` | Start (TYPE: `feishu`, `local`, or comma-separated like `feishu,local`) |
+| `uv run lq start @NAME [--adapter TYPE]` | Start (TYPE: `feishu`, `discord`, `local`, or comma-separated like `discord,local`) |
 | `uv run lq stop @NAME` | Stop |
 | `uv run lq restart @NAME [--adapter TYPE]` | Restart |
 | `uv run lq list` | List all instances |
@@ -275,6 +332,19 @@ Edit `~/.lq-{slug}/config.json`:
   "name": "奶油",
   "slug": "naiyou",
   "model": "claude-opus-4-6",
+  "api": {
+    "base_url": "https://your-provider.com/api/anthropic",
+    "api_key": "xxxxx",
+    "proxy": "http://127.0.0.1:7890"
+  },
+  "feishu": {
+    "app_id": "cli_xxxxx",
+    "app_secret": "xxxxx"
+  },
+  "discord": {
+    "bot_token": "xxxxx",
+    "bot_id": ""
+  },
   "heartbeat_interval": 3600,
   "active_hours": [8, 23],
   "cost_alert_daily": 5.0,
@@ -293,6 +363,10 @@ Edit `~/.lq-{slug}/config.json`:
 | `name` | Display name (supports Chinese) |
 | `slug` | Directory name (auto-generated pinyin) |
 | `model` | LLM model name |
+| `api.base_url` | Anthropic-compatible API endpoint |
+| `api.proxy` | HTTP proxy (used by both httpx and discord.py) |
+| `feishu.app_id` / `app_secret` | Feishu app credentials |
+| `discord.bot_token` | Discord bot token (`bot_id` is auto-populated on first start) |
 | `heartbeat_interval` | Heartbeat interval (seconds) |
 | `active_hours` | Active hours `[start, end)` |
 | `cost_alert_daily` | Daily cost alert threshold (USD) |
@@ -334,12 +408,15 @@ src/lq/
 ├── executor/
 │   ├── api.py          # Anthropic API (with retry + tool use)
 │   └── claude_code.py  # Claude Code subprocess
-└── feishu/
-    ├── adapter.py      # FeishuAdapter (PlatformAdapter impl, wraps sender + listener)
-    ├── listener.py     # WebSocket event receiver (internal to adapter)
-    ├── sender.py       # REST API calls (internal to adapter)
-    ├── calendar.py     # Calendar API
-    └── cards.py        # Card builder
+├── feishu/
+│   ├── adapter.py      # FeishuAdapter (PlatformAdapter impl, wraps sender + listener)
+│   ├── listener.py     # WebSocket event receiver (internal to adapter)
+│   ├── sender.py       # REST API calls (internal to adapter)
+│   ├── calendar.py     # Calendar API
+│   └── cards.py        # Card builder
+└── discord_/
+    ├── adapter.py      # DiscordAdapter (PlatformAdapter impl, wraps sender + discord.py client)
+    └── sender.py       # Discord REST API calls via httpx (internal to adapter)
 
 tests/
 ├── test_platform.py        # Platform abstraction unit tests (pytest)
