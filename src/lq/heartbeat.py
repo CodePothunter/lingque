@@ -17,8 +17,12 @@ class HeartbeatRunner:
         interval: int,
         active_hours: tuple[int, int],
         workspace: Path | None = None,
+        min_interval: int = 300,
     ) -> None:
         self.interval = interval
+        self.base_interval = interval        # 基准间隔（用于退避上限）
+        self.min_interval = min_interval     # 最短间隔（秒）
+        self._current_interval = interval    # 当前实际间隔
         self.active_hours = active_hours
         self.workspace = workspace
         self.shutdown_event: asyncio.Event | None = None
@@ -31,16 +35,32 @@ class HeartbeatRunner:
         self._last_weekly: str | None = None
         self._load_state()
 
+    def notify_did_work(self) -> None:
+        """自主行动做了有意义的事，缩短下次间隔。"""
+        self._current_interval = self.min_interval
+        logger.info("心跳间隔缩短至 %ds（有自主行动）", self._current_interval)
+
+    def notify_idle(self) -> None:
+        """自主行动无事可做，指数退避恢复间隔。"""
+        self._current_interval = min(
+            self._current_interval * 2,
+            self.base_interval,
+        )
+        logger.info("心跳间隔调整为 %ds（无事可做，退避）", self._current_interval)
+
     async def run_forever(self, shutdown_event: asyncio.Event) -> None:
         """定时循环，检查活跃时段"""
         self.shutdown_event = shutdown_event
-        logger.info("心跳启动: 间隔=%ds, 活跃时段=%s", self.interval, self.active_hours)
+        logger.info(
+            "心跳启动: 基准间隔=%ds, 最短间隔=%ds, 活跃时段=%s",
+            self.base_interval, self.min_interval, self.active_hours,
+        )
 
         while not shutdown_event.is_set():
             try:
                 await asyncio.wait_for(
                     shutdown_event.wait(),
-                    timeout=self.interval,
+                    timeout=self._current_interval,
                 )
                 break  # shutdown_event 被设置
             except asyncio.TimeoutError:

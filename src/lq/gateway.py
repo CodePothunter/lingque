@@ -312,7 +312,9 @@ class AssistantGateway:
             self.config.heartbeat_interval,
             self.config.active_hours,
             self.home,
+            min_interval=self.config.heartbeat_min_interval,
         )
+        self._heartbeat = heartbeat
         heartbeat.on_heartbeat = self._make_heartbeat_callback(
             executor, memory, adapter, calendar, stats, router
         )
@@ -514,147 +516,172 @@ class AssistantGateway:
         - 审视并改进自身框架代码（自我进化）
 
         由 LLM 在统一的 prompt 下自主决策行动方向。
+        支持续接循环：LLM 可通过 [CONTINUE] 标记请求继续执行下一步。
         """
         from lq.prompts import CURIOSITY_EXPLORE_PROMPT, CURIOSITY_INIT_TEMPLATE
 
-        # 预算检查：好奇心预算 + 进化预算 = 自主行动总预算
-        autonomous_budget = self.config.curiosity_budget + self.config.evolution_budget
-        if stats:
-            daily = stats.get_daily_summary()
-            today_cost = daily.get("total_cost", 0.0)
-            ceiling = self.config.cost_alert_daily - autonomous_budget
-            if today_cost > ceiling:
-                logger.debug(
-                    "今日费用 $%.4f 超过自主行动阈值 $%.2f "
-                    "(总预算 $%.2f - 自主预算 $%.2f)，跳过",
-                    today_cost, ceiling,
-                    self.config.cost_alert_daily, autonomous_budget,
-                )
-                return
+        max_continuations = self.config.autonomous_max_continuations
+        did_any_work = False  # 整个周期是否做了有意义的事
 
-        # ── 收集好奇心上下文 ──
-        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-        cst = _tz(_td(hours=8))
-        today = _dt.now(cst).strftime("%Y-%m-%d")
+        for continuation in range(1, max_continuations + 1):
+            # 预算检查：每轮都重新检查，避免续接时超预算
+            autonomous_budget = self.config.curiosity_budget + self.config.evolution_budget
+            if stats:
+                daily = stats.get_daily_summary()
+                today_cost = daily.get("total_cost", 0.0)
+                ceiling = self.config.cost_alert_daily - autonomous_budget
+                if today_cost > ceiling:
+                    logger.debug(
+                        "今日费用 $%.4f 超过自主行动阈值 $%.2f "
+                        "(总预算 $%.2f - 自主预算 $%.2f)，跳过",
+                        today_cost, ceiling,
+                        self.config.cost_alert_daily, autonomous_budget,
+                    )
+                    break
 
-        # 好奇心信号（最近 20 条）
-        signals_path = self.home / "logs" / f"curiosity-signals-{today}.jsonl"
-        signals_text = "（暂无信号）"
-        if signals_path.exists():
-            try:
-                lines = signals_path.read_text(encoding="utf-8").strip().splitlines()
-                if lines:
-                    entries = []
-                    for line in lines[-20:]:
-                        entry = json.loads(line)
-                        entries.append(f"- {entry.get('topic', '?')}（来源: {entry.get('source', '?')}）")
-                    signals_text = "\n".join(entries)
-            except Exception:
-                logger.debug("读取好奇心信号失败", exc_info=True)
+            # ── 收集好奇心上下文 ──
+            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+            cst = _tz(_td(hours=8))
+            today = _dt.now(cst).strftime("%Y-%m-%d")
 
-        # CURIOSITY.md
-        curiosity_path = self.home / "CURIOSITY.md"
-        if not curiosity_path.exists():
-            curiosity_path.write_text(CURIOSITY_INIT_TEMPLATE, encoding="utf-8")
-            logger.info("已创建 CURIOSITY.md")
-        curiosity_md = curiosity_path.read_text(encoding="utf-8")
+            # 好奇心信号（最近 20 条）
+            signals_path = self.home / "logs" / f"curiosity-signals-{today}.jsonl"
+            signals_text = "（暂无信号）"
+            if signals_path.exists():
+                try:
+                    lines = signals_path.read_text(encoding="utf-8").strip().splitlines()
+                    if lines:
+                        entries = []
+                        for line in lines[-20:]:
+                            entry = json.loads(line)
+                            entries.append(f"- {entry.get('topic', '?')}（来源: {entry.get('source', '?')}）")
+                        signals_text = "\n".join(entries)
+                except Exception:
+                    logger.debug("读取好奇心信号失败", exc_info=True)
 
-        # ── 收集进化上下文 ──
-        evolution_md = "（进化引擎未加载）"
-        source_summary = "（无源代码信息）"
-        git_log = "（无 git 信息）"
-        source_root = ""
-        remaining_today = 0
+            # CURIOSITY.md
+            curiosity_path = self.home / "CURIOSITY.md"
+            if not curiosity_path.exists():
+                curiosity_path.write_text(CURIOSITY_INIT_TEMPLATE, encoding="utf-8")
+                logger.info("已创建 CURIOSITY.md")
+            curiosity_md = curiosity_path.read_text(encoding="utf-8")
 
-        if self._evolution:
-            self._evolution.ensure_evolution_file()
-            evolution_md = self._evolution.read_evolution()
-            remaining_today = self._evolution.remaining_today
-            if self._evolution.source_root:
-                source_summary = self._evolution.get_source_summary()
-                git_log = self._evolution.get_recent_git_log()
-                source_root = str(self._evolution.source_root)
+            # ── 收集进化上下文 ──
+            evolution_md = "（进化引擎未加载）"
+            source_summary = "（无源代码信息）"
+            git_log = "（无 git 信息）"
+            source_root = ""
+            remaining_today = 0
 
-        # 如果没有任何驱动力（无信号、无兴趣、无待办），跳过
-        has_curiosity = signals_text != "（暂无信号）" or "## 当前兴趣\n\n##" not in curiosity_md
-        has_evolution_backlog = "## 待办\n" in evolution_md and not evolution_md.endswith("## 待办\n发现但尚未实施的改进：\n\n## 进行中\n\n## 已完成\n\n## 失败记录\n")
-        if not has_curiosity and not has_evolution_backlog:
-            logger.debug("无好奇心信号、无当前兴趣、无进化待办，跳过自主行动")
-            return
+            if self._evolution:
+                self._evolution.ensure_evolution_file()
+                evolution_md = self._evolution.read_evolution()
+                remaining_today = self._evolution.remaining_today
+                if self._evolution.source_root:
+                    source_summary = self._evolution.get_source_summary()
+                    git_log = self._evolution.get_recent_git_log()
+                    source_root = str(self._evolution.source_root)
 
-        # 反思和工具统计
-        reflections_summary = self._get_reflections_summary()
-        tool_stats_summary = self._get_tool_stats_summary(router)
+            # 如果没有任何驱动力（无信号、无兴趣、无待办），跳过
+            has_curiosity = signals_text != "（暂无信号）" or "## 当前兴趣\n\n##" not in curiosity_md
+            has_evolution_backlog = "## 待办\n" in evolution_md and not evolution_md.endswith("## 待办\n发现但尚未实施的改进：\n\n## 进行中\n\n## 已完成\n\n## 失败记录\n")
+            if not has_curiosity and not has_evolution_backlog:
+                logger.debug("无好奇心信号、无当前兴趣、无进化待办，跳过自主行动")
+                break
 
-        # ── 构建统一 prompt ──
-        system = router.memory.build_context()
-        system += "\n\n" + CURIOSITY_EXPLORE_PROMPT.format(
-            signals=signals_text,
-            curiosity_md=curiosity_md,
-            evolution_md=evolution_md,
-            source_summary=source_summary,
-            git_log=git_log,
-            remaining_today=remaining_today,
-            reflections_summary=reflections_summary,
-            tool_stats_summary=tool_stats_summary,
-            source_root=source_root or "（未知）",
-        )
+            # 反思和工具统计
+            reflections_summary = self._get_reflections_summary()
+            tool_stats_summary = self._get_tool_stats_summary(router)
 
-        chat_id = self.config.feishu.owner_chat_id or "autonomous"
-        messages = [{"role": "user", "content": "请根据你的好奇心决定下一步行动。"}]
-
-        # 记录行动前的文件状态用于变更检测
-        old_curiosity = curiosity_md
-        old_evolution = evolution_md
-
-        # 进化守护：如果可能执行进化，先保存 checkpoint
-        if self._evolution and remaining_today > 0 and self._evolution.source_root:
-            self._evolution.save_checkpoint()
-
-        try:
-            result = await router._reply_with_tool_loop(
-                system, messages, chat_id, None,
+            # ── 构建统一 prompt ──
+            system = router.memory.build_context()
+            system += "\n\n" + CURIOSITY_EXPLORE_PROMPT.format(
+                signals=signals_text,
+                curiosity_md=curiosity_md,
+                evolution_md=evolution_md,
+                source_summary=source_summary,
+                git_log=git_log,
+                remaining_today=remaining_today,
+                reflections_summary=reflections_summary,
+                tool_stats_summary=tool_stats_summary,
+                source_root=source_root or "（未知）",
             )
-            if not result or not result.strip() or result.strip() == "无":
-                # 没有行动，清除 checkpoint
-                if self._evolution:
+
+            chat_id = self.config.feishu.owner_chat_id or "autonomous"
+            messages = [{"role": "user", "content": "请根据你的好奇心决定下一步行动。"}]
+
+            # 记录行动前的文件状态用于变更检测
+            old_curiosity = curiosity_md
+            old_evolution = evolution_md
+
+            # 进化守护：如果可能执行进化，先保存 checkpoint
+            if self._evolution and remaining_today > 0 and self._evolution.source_root:
+                self._evolution.save_checkpoint()
+
+            try:
+                result = await router._reply_with_tool_loop(
+                    system, messages, chat_id, None,
+                )
+                if not result or not result.strip() or result.strip() == "无":
+                    # 没有行动，清除 checkpoint
+                    if self._evolution:
+                        self._evolution.clear_checkpoint()
+                    logger.debug("自主行动周期: 无需行动 (轮次 %d/%d)", continuation, max_continuations)
+                    break
+
+                # 解析 [CONTINUE]/[DONE] 标记
+                has_continue = "[CONTINUE]" in result
+                result_clean = result.replace("[CONTINUE]", "").replace("[DONE]", "").strip()
+
+                did_any_work = True
+                router.memory.append_daily(f"- 自主行动: {result_clean[:100]}\n")
+                logger.info("自主行动周期 (轮次 %d/%d): %s", continuation, max_continuations, result_clean[:80])
+
+                # 检测是否执行了进化（EVOLUTION.md 发生了变化）
+                did_evolve = False
+                if self._evolution and self._evolution.evolution_path.exists():
+                    new_evolution = self._evolution.evolution_path.read_text(encoding="utf-8")
+                    if new_evolution != old_evolution:
+                        did_evolve = True
+                        self._evolution.record_attempt()
+                        logger.info("检测到进化行为，已计数")
+
+                # 进化守护：如果没有执行进化，清除 checkpoint
+                # （如果执行了进化，保留 checkpoint 等下次启动验证）
+                if self._evolution and not did_evolve:
                     self._evolution.clear_checkpoint()
-                logger.debug("自主行动周期: 无需行动")
-                return
 
-            router.memory.append_daily(f"- 自主行动: {result[:100]}\n")
-            logger.info("自主行动周期完成: %s", result[:80])
+                # 检测好奇心日志变化（保持原有的改进建议通知逻辑）
+                new_curiosity = curiosity_path.read_text(encoding="utf-8")
+                if new_curiosity != old_curiosity and "改进建议" in new_curiosity:
+                    import re as _re
+                    m = _re.search(r"##\s*改进建议\s*\n(.*?)(?:\n##|\Z)",
+                                   new_curiosity, _re.DOTALL)
+                    section = m.group(1).strip() if m else ""
+                    owner_chat_id = self.config.feishu.owner_chat_id
+                    if section and owner_chat_id:
+                        await router.adapter.send(OutgoingMessage(
+                            owner_chat_id,
+                            "我在探索中发现了一些改进建议，已记录在 CURIOSITY.md 中。",
+                        ))
 
-            # 检测是否执行了进化（EVOLUTION.md 发生了变化）
-            did_evolve = False
-            if self._evolution and self._evolution.evolution_path.exists():
-                new_evolution = self._evolution.evolution_path.read_text(encoding="utf-8")
-                if new_evolution != old_evolution:
-                    did_evolve = True
-                    self._evolution.record_attempt()
-                    logger.info("检测到进化行为，已计数")
+                # 续接判断：没有 [CONTINUE] 标记则结束循环
+                if not has_continue:
+                    logger.info("自主行动未请求续接，结束循环")
+                    break
+                logger.info("自主行动请求续接 [CONTINUE]，进入轮次 %d", continuation + 1)
 
-            # 进化守护：如果没有执行进化，清除 checkpoint
-            # （如果执行了进化，保留 checkpoint 等下次启动验证）
-            if self._evolution and not did_evolve:
-                self._evolution.clear_checkpoint()
+            except Exception:
+                logger.exception("自主行动周期执行失败 (轮次 %d/%d)", continuation, max_continuations)
+                break
 
-            # 检测好奇心日志变化（保持原有的改进建议通知逻辑）
-            new_curiosity = curiosity_path.read_text(encoding="utf-8")
-            if new_curiosity != old_curiosity and "改进建议" in new_curiosity:
-                import re as _re
-                m = _re.search(r"##\s*改进建议\s*\n(.*?)(?:\n##|\Z)",
-                               new_curiosity, _re.DOTALL)
-                section = m.group(1).strip() if m else ""
-                owner_chat_id = self.config.feishu.owner_chat_id
-                if section and owner_chat_id:
-                    await router.adapter.send(OutgoingMessage(
-                        owner_chat_id,
-                        "我在探索中发现了一些改进建议，已记录在 CURIOSITY.md 中。",
-                    ))
-
-        except Exception:
-            logger.exception("自主行动周期执行失败")
+        # 通知心跳调度器调整间隔
+        heartbeat = getattr(self, "_heartbeat", None)
+        if heartbeat:
+            if did_any_work:
+                heartbeat.notify_did_work()
+            else:
+                heartbeat.notify_idle()
 
         # EVOLUTION.md 压缩：条目过多时自动摘要归档
         try:
