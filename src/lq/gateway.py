@@ -612,6 +612,40 @@ class AssistantGateway:
         except Exception:
             logger.exception("自主行动周期执行失败")
 
+        # EVOLUTION.md 压缩：条目过多时自动摘要归档
+        try:
+            if self._evolution and self._evolution.needs_compaction():
+                await self._compact_evolution_log(router)
+        except Exception:
+            logger.exception("EVOLUTION.md 压缩失败")
+
+    async def _compact_evolution_log(self, router: MessageRouter) -> None:
+        """用 LLM 摘要归档 EVOLUTION.md 中的旧条目。"""
+        from lq.prompts import EVOLUTION_COMPACT_COMPLETED, EVOLUTION_COMPACT_FAILED
+
+        material = self._evolution.get_compaction_material()
+        if not material:
+            return
+
+        completed_summary = None
+        failed_summary = None
+
+        if material["old_completed"]:
+            prompt = EVOLUTION_COMPACT_COMPLETED.format(
+                old_completed=material["old_completed"],
+            )
+            completed_summary = await router.executor.reply("", prompt)
+            logger.info("已完成记录压缩: %d 字", len(completed_summary))
+
+        if material["old_failed"]:
+            prompt = EVOLUTION_COMPACT_FAILED.format(
+                old_failed=material["old_failed"],
+            )
+            failed_summary = await router.executor.reply("", prompt)
+            logger.info("失败记录压缩: %d 字", len(failed_summary))
+
+        self._evolution.apply_compaction(completed_summary, failed_summary)
+
     def _get_reflections_summary(self) -> str:
         """收集今日反思日志摘要"""
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz

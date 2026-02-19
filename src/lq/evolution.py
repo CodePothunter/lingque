@@ -15,11 +15,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# ── 压缩阈值 ──
+# 已完成 / 失败记录超过这些条数时触发压缩
+COMPACT_COMPLETED_THRESHOLD = 10
+COMPACT_FAILED_THRESHOLD = 5
+# 压缩后保留最近 N 条原始记录
+COMPACT_KEEP_COMPLETED = 5
+COMPACT_KEEP_FAILED = 3
 
 CST = timezone(timedelta(hours=8))
 
@@ -125,6 +134,131 @@ class EvolutionEngine:
         """读取 EVOLUTION.md 内容"""
         self.ensure_evolution_file()
         return self.evolution_path.read_text(encoding="utf-8")
+
+    # ── EVOLUTION.md 压缩 ──
+
+    @staticmethod
+    def _split_entries(section_text: str) -> tuple[str, list[str]]:
+        """将一个 section 拆成 (前言, [条目列表])。
+
+        每个条目以 ``### `` 开头（LLM 写入的格式）。
+        返回的条目包含 ``### `` 前缀。
+        """
+        parts = re.split(r"\n(?=### )", section_text)
+        preamble = parts[0] if parts else ""
+        entries = [p for p in parts[1:]]
+        return preamble, entries
+
+    def _parse_sections(self) -> list[tuple[str, str]]:
+        """将 EVOLUTION.md 拆成有序 [(heading, body), …] 列表。
+
+        heading 不含 ``## `` 前缀。第一段（标题之前）heading 为空字符串。
+        """
+        content = self.read_evolution()
+        sections: list[tuple[str, str]] = []
+        current_heading = ""
+        current_lines: list[str] = []
+
+        for line in content.splitlines(keepends=True):
+            if line.startswith("## ") and not line.startswith("### "):
+                sections.append((current_heading, "".join(current_lines)))
+                current_heading = line[3:].strip()
+                current_lines = []
+            else:
+                current_lines.append(line)
+
+        sections.append((current_heading, "".join(current_lines)))
+        return sections
+
+    def _rebuild_from_sections(self, sections: list[tuple[str, str]]) -> str:
+        """从 sections 列表重建 EVOLUTION.md 内容。"""
+        parts: list[str] = []
+        for heading, body in sections:
+            if heading:
+                parts.append(f"## {heading}\n{body}")
+            else:
+                parts.append(body)
+        return "".join(parts)
+
+    def needs_compaction(self) -> bool:
+        """检查 EVOLUTION.md 的「已完成」或「失败记录」是否过长。"""
+        if not self.evolution_path.exists():
+            return False
+        sections = dict(self._parse_sections())
+        _, completed = self._split_entries(sections.get("已完成", ""))
+        _, failed = self._split_entries(sections.get("失败记录", ""))
+        return (len(completed) > COMPACT_COMPLETED_THRESHOLD
+                or len(failed) > COMPACT_FAILED_THRESHOLD)
+
+    def get_compaction_material(self) -> dict[str, str] | None:
+        """返回需要被压缩的旧条目文本，供 LLM 摘要。
+
+        Returns:
+            dict with 'old_completed' and 'old_failed' keys (raw text),
+            or None if no compaction needed.
+        """
+        sections = dict(self._parse_sections())
+        _, completed = self._split_entries(sections.get("已完成", ""))
+        _, failed = self._split_entries(sections.get("失败记录", ""))
+
+        need_compact_c = len(completed) > COMPACT_COMPLETED_THRESHOLD
+        need_compact_f = len(failed) > COMPACT_FAILED_THRESHOLD
+
+        if not need_compact_c and not need_compact_f:
+            return None
+
+        old_completed = ""
+        if need_compact_c:
+            old_entries = completed[:-COMPACT_KEEP_COMPLETED]
+            old_completed = "\n".join(f"### {e}" for e in old_entries)
+
+        old_failed = ""
+        if need_compact_f:
+            old_entries = failed[:-COMPACT_KEEP_FAILED]
+            old_failed = "\n".join(f"### {e}" for e in old_entries)
+
+        return {"old_completed": old_completed, "old_failed": old_failed}
+
+    def apply_compaction(
+        self,
+        completed_summary: str | None,
+        failed_summary: str | None,
+    ) -> None:
+        """用 LLM 生成的摘要替换旧条目，保留最近的条目。
+
+        Args:
+            completed_summary: 已完成条目的压缩摘要（None 表示该部分不需要压缩）
+            failed_summary: 失败记录的压缩摘要（None 表示该部分不需要压缩）
+        """
+        sections = self._parse_sections()
+        new_sections: list[tuple[str, str]] = []
+
+        for heading, body in sections:
+            if heading == "已完成" and completed_summary is not None:
+                preamble, entries = self._split_entries(body)
+                recent = entries[-COMPACT_KEEP_COMPLETED:]
+                new_body = (
+                    preamble.rstrip("\n") + "\n\n"
+                    + completed_summary.strip() + "\n\n"
+                    + "\n".join(f"### {e}" for e in recent)
+                )
+                new_sections.append((heading, new_body))
+            elif heading == "失败记录" and failed_summary is not None:
+                preamble, entries = self._split_entries(body)
+                recent = entries[-COMPACT_KEEP_FAILED:]
+                new_body = (
+                    preamble.rstrip("\n") + "\n\n"
+                    + failed_summary.strip() + "\n\n"
+                    + "\n".join(f"### {e}" for e in recent)
+                )
+                new_sections.append((heading, new_body))
+            else:
+                new_sections.append((heading, body))
+
+        self.evolution_path.write_text(
+            self._rebuild_from_sections(new_sections), encoding="utf-8",
+        )
+        logger.info("EVOLUTION.md 已压缩")
 
     # ── 源代码信息 ──
 

@@ -875,6 +875,33 @@ EVOLUTION_INIT_TEMPLATE = (
 )
 
 
+# =====================================================================
+# Evolution Compaction Prompts
+# =====================================================================
+
+# {old_completed} -> old completed entries to summarize
+EVOLUTION_COMPACT_COMPLETED = (
+    "以下是进化日志中较早的「已完成」改进记录。\n"
+    "请将它们压缩成一段简洁的总结（3-8 行），保留：\n"
+    "- 每个改进的核心内容（改了什么模块、解决了什么问题）\n"
+    "- 关键 commit hash（如有）\n"
+    "- 改进的时间范围\n"
+    "格式用 markdown 列表，以「📦 历史改进归档」开头。\n\n"
+    "{old_completed}"
+)
+
+# {old_failed} -> old failed entries to summarize
+EVOLUTION_COMPACT_FAILED = (
+    "以下是进化日志中较早的「失败记录」。\n"
+    "请将它们压缩成一段简洁的教训总结（3-6 行），重点保留：\n"
+    "- 失败的模式和根因（哪类改动容易出问题）\n"
+    "- 具体的教训（下次应该避免什么）\n"
+    "- 回滚过的 commit 范围\n"
+    "格式用 markdown 列表，以「⚠️ 历史失败教训」开头。\n\n"
+    "{old_failed}"
+)
+
+
 EXTRACTION_PROMPTS = {
     "memory_write": (
         "从用户消息中提取要记住的内容。\n"
