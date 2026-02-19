@@ -108,14 +108,31 @@ class MultiAdapter(PlatformAdapter):
     def _guess_adapter(self, chat_id: str) -> PlatformAdapter | None:
         """根据 chat_id 格式推断归属适配器。
 
-        飞书 chat_id 以 'oc_' 开头；Discord chat_id 是纯数字。
+        飞书 chat_id 以 'oc_'/'ou_'/'on_' 开头；Discord chat_id 是纯数字。
+        如果格式与可用适配器不匹配，记录警告并返回 None。
         """
+        is_feishu_format = chat_id.startswith(("oc_", "ou_", "on_"))
+        is_discord_format = chat_id.isdigit()
+
         for adapter in self._adapters:
             cls_name = type(adapter).__name__
-            if chat_id.startswith("oc_") and "Feishu" in cls_name:
+            if is_feishu_format and "Feishu" in cls_name:
                 return adapter
-            if chat_id.isdigit() and "Discord" in cls_name:
+            if is_discord_format and "Discord" in cls_name:
                 return adapter
+
+        # 格式与可用适配器不匹配时记录警告
+        if is_feishu_format:
+            logger.warning(
+                "chat_id '%s' 是飞书格式但未启用飞书适配器，将回退到 primary",
+                chat_id[:20] + "..." if len(chat_id) > 20 else chat_id,
+            )
+        elif is_discord_format:
+            logger.warning(
+                "chat_id '%s' 是 Discord 格式但未启用 Discord 适配器，将回退到 primary",
+                chat_id,
+            )
+
         return None
 
     def _for_msg(self, message_id: str) -> PlatformAdapter:
