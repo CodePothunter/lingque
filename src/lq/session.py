@@ -170,7 +170,7 @@ class Session:
         # 从后往前收集消息，直到预算用完
         selected: list[dict] = []
         for msg in reversed(self.messages):
-            msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
+            msg_tokens = msg.get("_tokens", _estimate_content_tokens(msg.get("content", "")))
             if budget - msg_tokens < 0 and selected:
                 # 预算不够且已有消息，停止
                 break
@@ -269,7 +269,7 @@ class Session:
         for msg in reversed(self.messages):
             if len(kept) >= COMPACT_MAX_KEEP:
                 break
-            msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
+            msg_tokens = msg.get("_tokens", _estimate_content_tokens(msg.get("content", "")))
             if budget - msg_tokens < 0 and kept:
                 break
             kept.append(msg)
@@ -296,7 +296,7 @@ class Session:
             if keep_count >= COMPACT_MAX_KEEP:
                 break
             msg = self.messages[i]
-            msg_tokens = msg.get("_tokens", estimate_tokens(msg.get("content", "")))
+            msg_tokens = msg.get("_tokens", _estimate_content_tokens(msg.get("content", "")))
             if budget - msg_tokens < 0:
                 break
             keep_from = i
