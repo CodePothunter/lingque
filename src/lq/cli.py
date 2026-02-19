@@ -140,7 +140,7 @@ def _parse_adapters(adapter_str: str) -> list[str]:
 @cli.command()
 @click.argument("instance")
 @click.option("--adapter", "adapter_str", default="feishu",
-              help="聊天平台适配器，逗号分隔多选（feishu=飞书, local=纯本地）")
+              help="聊天平台适配器，逗号分隔多选（feishu=飞书, discord=Discord, local=纯本地）")
 def start(instance: str, adapter_str: str) -> None:
     """启动灵雀实例（@name 或 @slug）
 
@@ -148,7 +148,9 @@ def start(instance: str, adapter_str: str) -> None:
     示例:
       lq start @name                    # 默认飞书
       lq start @name --adapter local    # 纯本地（无需飞书凭证）
+      lq start @name --adapter discord  # Discord
       lq start @name --adapter feishu,local  # 同时连接飞书 + 本地
+      lq start @name --adapter discord,local # 同时连接 Discord + 本地
     """
     adapter_types = _parse_adapters(adapter_str)
     home, display, cfg = _resolve(instance)
@@ -207,7 +209,7 @@ def stop(instance: str) -> None:
 @cli.command()
 @click.argument("instance")
 @click.option("--adapter", "adapter_str", default="feishu",
-              help="聊天平台适配器，逗号分隔多选（feishu=飞书, local=纯本地）")
+              help="聊天平台适配器，逗号分隔多选（feishu=飞书, discord=Discord, local=纯本地）")
 def restart(instance: str, adapter_str: str) -> None:
     """重启灵雀实例"""
     adapter_types = _parse_adapters(adapter_str)

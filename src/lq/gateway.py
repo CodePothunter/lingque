@@ -30,7 +30,7 @@ from lq.tools import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
-KNOWN_ADAPTERS = {"feishu", "local"}
+KNOWN_ADAPTERS = {"feishu", "local", "discord"}
 
 
 class AssistantGateway:
@@ -71,6 +71,7 @@ class AssistantGateway:
         bot_name = self.config.name
         has_feishu = "feishu" in self.adapter_types
         has_local = "local" in self.adapter_types
+        has_discord = "discord" in self.adapter_types
 
         # 凭证校验 + 提醒
         if has_feishu:
@@ -98,6 +99,49 @@ class AssistantGateway:
                         bot_open_id, self.config.feishu.app_id, bot_name)
             adapters.append(feishu_adapter)
             primary = feishu_adapter
+
+        if has_discord:
+            if not self.config.discord.bot_token:
+                if len(self.adapter_types) > 1:
+                    logger.warning("Discord 凭证未配置，跳过 Discord 适配器")
+                    self.adapter_types = [t for t in self.adapter_types if t != "discord"]
+                    has_discord = False
+                else:
+                    raise RuntimeError("Discord 凭证未配置（bot_token 为空），无法启动 Discord 适配器")
+
+        if has_discord:
+            try:
+                from lq.discord_.adapter import DiscordAdapter
+            except ImportError:
+                raise RuntimeError(
+                    "discord.py 未安装，请运行: uv pip install -e '.[discord]'"
+                )
+            discord_adapter = DiscordAdapter(
+                self.config.discord.bot_token,
+                proxy=self.config.api.proxy,
+            )
+            try:
+                identity = await discord_adapter.get_identity()
+            except Exception as exc:
+                if len(self.adapter_types) > 1:
+                    logger.warning("Discord 身份获取失败，跳过 Discord 适配器: %s", exc)
+                    self.adapter_types = [t for t in self.adapter_types if t != "discord"]
+                    has_discord = False
+                else:
+                    raise RuntimeError(
+                        f"Discord 身份获取失败（请检查 bot_token 是否有效）: {exc}"
+                    ) from exc
+        if has_discord:
+            if identity.bot_id:
+                self.config.discord.bot_id = identity.bot_id
+            if not primary:
+                bot_open_id = identity.bot_id
+                bot_name = identity.bot_name or self.config.name
+            logger.info("Discord 适配器: id=%s name=%s",
+                        identity.bot_id, identity.bot_name)
+            adapters.append(discord_adapter)
+            if primary is None:
+                primary = discord_adapter
 
         if has_local:
             from lq.conversation import LocalAdapter

@@ -50,6 +50,12 @@ class FeishuConfig:
 
 
 @dataclass
+class DiscordConfig:
+    bot_token: str = ""
+    bot_id: str = ""  # 启动时自动获取
+
+
+@dataclass
 class GroupConfig:
     chat_id: str = ""
     note: str = ""  # 群描述/用途，用于 LLM 介入判断
@@ -62,6 +68,7 @@ class LQConfig:
     slug: str = ""              # 目录名（纯 ASCII），为空时自动从 name 生成
     api: APIConfig = field(default_factory=APIConfig)
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
+    discord: DiscordConfig = field(default_factory=DiscordConfig)
     model: str = "glm-5"
     heartbeat_interval: int = 3600  # 秒
     active_hours: tuple[int, int] = (8, 23)  # 活跃时段
@@ -113,6 +120,12 @@ class LQConfig:
             app_secret=fs.get("app_secret", ""),
             bot_open_id=fs.get("bot_open_id", ""),
             owner_chat_id=fs.get("owner_chat_id", ""),
+        )
+
+        dc = d.get("discord", {})
+        cfg.discord = DiscordConfig(
+            bot_token=dc.get("bot_token", ""),
+            bot_id=dc.get("bot_id", ""),
         )
 
         cfg.groups = [GroupConfig(**g) for g in d.get("groups", [])]
@@ -179,4 +192,5 @@ def load_from_env(env_path: Path) -> LQConfig:
     cfg.api.mcp_key = vals.get("ZHIPU_API_KEY", "") or cfg.api.api_key
     cfg.feishu.app_id = vals.get("FEISHU_APP_ID", "")
     cfg.feishu.app_secret = vals.get("FEISHU_APP_SECRET", "")
+    cfg.discord.bot_token = vals.get("DISCORD_BOT_TOKEN", "")
     return cfg
