@@ -327,7 +327,7 @@ class GroupChatMixin:
         # 校验 reply_to_message_id
         reply_to = judgment.get("reply_to_message_id")
         valid_msg_ids = {m["message_id"] for m in recent}
-        if not (reply_to and isinstance(reply_to, str) and reply_to.startswith("om_") and reply_to in valid_msg_ids):
+        if not (reply_to and isinstance(reply_to, str) and reply_to in valid_msg_ids):
             reply_to = None
 
         if self.session_mgr:
