@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-02-19 — Discord 适配器修复与增强 (v1.1.0)
+
+### 🐛 Discord 适配器 Bug 修复
+
+- **角色提及识别** — `@role` 提及（`<@&role_id>`）现在正确触发 `is_mention_bot`，通过检查 `message.role_mentions` 中 bot 是否拥有被 @ 的角色
+- **Discord 占位符可读化** — 所有 Discord 占位符统一替换为人类可读格式：
+  - `<@user_id>` / `<@!user_id>` → `@显示名`
+  - `<@&role_id>` → `@角色名`
+  - `<#channel_id>` → `#频道名`
+  - 之前直接删除 bot 提及导致上下文丢失（如 `你就是 @奶油 吗` 变成 `你就是  吗`）
+- **typing indicator 残留** — 发送消息前主动取消该频道的 typing task，修复回复后仍显示"正在输入"的问题
+- **跨平台路由修复** — `MultiAdapter._guess_adapter()` 根据 chat_id 格式推断归属（`oc_` → 飞书，纯数字 → Discord），避免飞书 chat_id 被发到 Discord API 导致 400 错误
+- **discord.Client 关闭** — `disconnect()` 使用 `asyncio.run_coroutine_threadsafe()` 在 client 自己的事件循环上关闭，修复跨事件循环 RuntimeError
+- **启动竞态** — `on_message` / `on_raw_reaction_add` 增加 `client_ready` 守卫，避免 `client.user` 为 None 时的 NoneType 比较
+- **代理透传** — `discord.py` 内部 aiohttp 不读环境变量代理，现在显式传入 `proxy` 参数
+- **gateway 身份获取失败处理** — `get_identity()` 失败时，多适配器模式优雅跳过，单适配器模式给出清晰错误信息
+
+### 🔧 其他改进（bot 自进化）
+
+- `send_message` 工具修复对 Discord channel_id 的误判
+- Vision MCP 服务状态检测，不可用时优雅降级
+- MultiAdapter 路由警告——chat_id 格式与可用适配器不匹配时记录日志
+
+---
+
 ## 2026-02-19 — Discord 适配器 & 文档整理 (v1.0.0)
 
 ### ✨ 新增 Discord 平台适配器 (`feature/discord-adapter`)

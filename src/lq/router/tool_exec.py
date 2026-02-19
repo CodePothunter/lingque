@@ -248,6 +248,12 @@ class ToolExecMixin:
                     input_data.get("category", "today"),
                 )
 
+            elif name == "vision_analyze":
+                return await self._tool_vision_analyze(
+                    input_data["image_source"],
+                    input_data.get("prompt", "描述这张图片的内容"),
+                )
+
             else:
                 # 尝试自定义工具注册表
                 if self.tool_registry and self.tool_registry.has_tool(name):

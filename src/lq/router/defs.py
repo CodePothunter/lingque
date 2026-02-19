@@ -403,6 +403,25 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "vision_analyze",
+        "description": "分析图片内容（基于 zai-mcp-server Vision）。支持本地路径、URL、base64 三种图片源。当用户发送图片或需要理解图片时使用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "image_source": {
+                    "type": "string",
+                    "description": "图片源：本地路径（/path/to/image.png）、URL（https://...）、或 base64 data URI（data:image/png;base64,...）",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "对图片的分析指令，如「描述这张图片」「识别图中的文字」「分析这张图表」",
+                    "default": "描述这张图片的内容",
+                },
+            },
+            "required": ["image_source"],
+        },
+    },
+    {
         "name": "get_my_stats",
         "description": TOOL_DESC_GET_MY_STATS,
         "input_schema": {

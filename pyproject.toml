@@ -1,6 +1,6 @@
 [project]
 name = "lingque"
-version = "1.0.0"
+version = "1.1.0"
 description = "灵雀 — 平台无关的个人 AI 助理框架，支持可插拔聊天平台适配器"
 requires-python = ">=3.11"
 dependencies = [

@@ -22,6 +22,7 @@ from .private import PrivateChatMixin
 from .group import GroupChatMixin
 from .tool_loop import ToolLoopMixin
 from .tool_exec import ToolExecMixin
+from .vision_mcp import VisionMCPMixin
 from .web_tools import WebToolsMixin
 from .runtime_tools import RuntimeToolsMixin
 
@@ -33,6 +34,7 @@ class MessageRouter(
     GroupChatMixin,
     ToolLoopMixin,
     ToolExecMixin,
+    VisionMCPMixin,
     WebToolsMixin,
     RuntimeToolsMixin,
 ):

@@ -508,6 +508,15 @@ TOOL_FIELD_FILE_MAX_LINES = "最大读取行数，默认 500"
 TOOL_FIELD_WRITE_PATH = "目标文件的绝对路径或相对于工作区的路径"
 TOOL_FIELD_WRITE_CONTENT = "要写入的文件内容"
 
+# Vision MCP 工具
+TOOL_DESC_VISION_ANALYZE = (
+    "分析图片内容（基于 zai-mcp-server Vision）。"
+    "可以理解图片中的场景、物体、文字、UI 设计、图表数据、技术架构图等。"
+    "支持本地文件路径或远程 URL。需要搭配 prompt 描述你想从图片中获取什么信息。"
+)
+TOOL_FIELD_VISION_IMAGE = "图片来源：本地文件路径或远程 URL"
+TOOL_FIELD_VISION_PROMPT = "分析指令：描述你想从图片中了解或提取什么信息"
+
 
 # =====================================================================
 # UI / User-Facing Messages

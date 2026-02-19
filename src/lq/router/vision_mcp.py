@@ -1,9 +1,11 @@
-"""Vision MCP 集成：通过 zai-mcp-server 进行图像理解与分析"""
+"""Vision MCP 集成：通过 zai-mcp-server (stdio) 进行图像理解与分析"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -11,9 +13,51 @@ logger = logging.getLogger(__name__)
 
 
 class VisionMCPMixin:
-    """Vision MCP 图像分析能力（zai-mcp-server）。"""
+    """Vision MCP 图像分析能力（zai-mcp-server，stdio 传输）。"""
 
-    _vision_mcp_session_id: str | None = None
+    # 类级别缓存：子进程 + 初始化标志
+    _vision_proc: asyncio.subprocess.Process | None = None
+    _vision_proc_initialized: bool = False
+    _vision_req_id: int = 0
+
+    async def _ensure_vision_proc(self) -> asyncio.subprocess.Process:
+        """确保 zai-mcp-server 子进程已启动并完成 MCP 初始化。"""
+        # 检查已有进程是否仍然存活
+        if self._vision_proc is not None and self._vision_proc.returncode is None:
+            if self._vision_proc_initialized:
+                return self._vision_proc
+        else:
+            # 进程已退出或不存在，重置状态
+            VisionMCPMixin._vision_proc = None
+            VisionMCPMixin._vision_proc_initialized = False
+
+        api_key = getattr(self.executor, "mcp_key", "") or os.environ.get("Z_AI_API_KEY", "")
+        if not api_key:
+            raise ValueError("未配置 Z_AI_API_KEY")
+
+        env = {**os.environ, "Z_AI_API_KEY": api_key, "Z_AI_MODE": "ZHIPU"**os.environ, "Z_AI_API_KEY": api_key}
+
+        proc = await asyncio.create_subprocess_exec(
+            "npx", "-y", "@z_ai/mcp-server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        VisionMCPMixin._vision_proc = proc
+
+        # MCP 初始化握手
+        await self._vision_mcp_request("initialize", {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "lingque", "version": "1.0.0"},
+        })
+        await self._vision_mcp_request(
+            "notifications/initialized", is_notification=True,
+        )
+        VisionMCPMixin._vision_proc_initialized = True
+        logger.info("zai-mcp-server 子进程已启动并初始化 (pid=%s)", proc.pid)
+        return proc
 
     async def _vision_mcp_request(
         self,
@@ -22,109 +66,70 @@ class VisionMCPMixin:
         *,
         is_notification: bool = False,
     ) -> dict | None:
-        """向 zai-mcp-server 发送 JSON-RPC 请求。
-
-        传输方式与 web_search MCP 相同：Streamable HTTP，支持 JSON 和 SSE 响应。
-        """
-        import httpx
-
-        mcp_url = "http://localhost:3100/mcp"
-
-        headers: dict[str, str] = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-        if self._vision_mcp_session_id:
-            headers["Mcp-Session-Id"] = self._vision_mcp_session_id
+        """通过 stdio 向 zai-mcp-server 发送 JSON-RPC 请求并读取响应。"""
+        proc = VisionMCPMixin._vision_proc
+        if proc is None or proc.stdin is None or proc.stdout is None:
+            raise RuntimeError("zai-mcp-server 子进程未启动")
 
         payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if not is_notification:
-            payload["id"] = hash((method, time.time())) & 0x7FFFFFFF
+            VisionMCPMixin._vision_req_id += 1
+            payload["id"] = VisionMCPMixin._vision_req_id
         if params:
             payload["params"] = params
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(mcp_url, json=payload, headers=headers)
-            resp.raise_for_status()
+        line = json.dumps(payload) + "\n"
+        proc.stdin.write(line.encode())
+        await proc.stdin.drain()
 
-            sid = resp.headers.get("mcp-session-id")
-            if sid:
-                self._vision_mcp_session_id = sid
+        if is_notification:
+            return None
 
-            if is_notification:
-                return None
+        # 读取响应行（跳过空行和非 JSON 行）
+        while True:
+            raw = await asyncio.wait_for(proc.stdout.readline(), timeout=120.0)
+            if not raw:
+                raise RuntimeError("zai-mcp-server 子进程意外关闭")
+            raw_str = raw.decode().strip()
+            if not raw_str:
+                continue
+            try:
+                return json.loads(raw_str)
+            except json.JSONDecodeError:
+                # 可能是 stderr 混入或调试输出，跳过
+                logger.debug("跳过非 JSON 输出: %s", raw_str[:200])
+                continue
 
-            content_type = resp.headers.get("content-type", "")
-            if "text/event-stream" in content_type:
-                last_data: dict | None = None
-                for line in resp.text.splitlines():
-                    if line.startswith("data:"):
-                        raw = line[5:].lstrip()
-                        if not raw:
-                            continue
-                        try:
-                            last_data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                return last_data or {}
-            return resp.json()
-
-    async def _ensure_vision_mcp_session(self) -> None:
-        """确保 Vision MCP 会话已初始化。"""
-        if self._vision_mcp_session_id:
-            return
-        await self._vision_mcp_request("initialize", {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": {"name": "lingque", "version": "1.0.0"},
-        })
-        await self._vision_mcp_request("notifications/initialized", is_notification=True)
-
-    async def _check_vision_mcp_available(self) -> bool:
-        """快速检测 Vision MCP 服务是否可达（2 秒超时）。"""
-        import httpx
-
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.post(
-                    "http://localhost:3100/mcp",
-                    json={"jsonrpc": "2.0", "method": "ping", "id": 0},
-                    headers={"Content-Type": "application/json"},
-                )
-                return resp.status_code < 500
-        except Exception:
-            return False
+    async def _kill_vision_proc(self) -> None:
+        """终止子进程并重置状态。"""
+        proc = VisionMCPMixin._vision_proc
+        if proc and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        VisionMCPMixin._vision_proc = None
+        VisionMCPMixin._vision_proc_initialized = False
 
     async def _tool_vision_analyze(self, image_source: str, prompt: str) -> dict:
-        """通过 zai-mcp-server 的 analyze_image 工具分析图片"""
+        """通过 zai-mcp-server 的 image_analysis 工具分析图片。"""
         try:
-            if not await self._check_vision_mcp_available():
-                return {
-                    "success": False,
-                    "error": "Vision MCP 服务未启动，请先启动 zai-mcp-server",
-                }
-
-            try:
-                await self._ensure_vision_mcp_session()
-            except Exception:
-                self._vision_mcp_session_id = None
-                await self._ensure_vision_mcp_session()
+            await self._ensure_vision_proc()
 
             resp = await self._vision_mcp_request("tools/call", {
-                "name": "analyze_image",
+                "name": "image_analysis",
                 "arguments": {
                     "image_source": image_source,
                     "prompt": prompt,
                 },
             })
 
+            # 错误响应时重启子进程重试一次
             if not resp or "result" not in resp:
                 if resp and resp.get("error"):
-                    logger.warning("Vision MCP 返回错误，重置会话重试: %s", resp["error"])
-                    self._vision_mcp_session_id = None
-                    await self._ensure_vision_mcp_session()
+                    logger.warning("Vision MCP 返回错误，重启子进程重试: %s", resp["error"])
+                    await self._kill_vision_proc()
+                    await self._ensure_vision_proc()
                     resp = await self._vision_mcp_request("tools/call", {
-                        "name": "analyze_image",
+                        "name": "image_analysis",
                         "arguments": {
                             "image_source": image_source,
                             "prompt": prompt,
@@ -151,5 +156,5 @@ class VisionMCPMixin:
 
         except Exception as e:
             logger.exception("Vision MCP 分析失败: %s", image_source)
-            self._vision_mcp_session_id = None
+            await self._kill_vision_proc()
             return {"success": False, "error": f"图片分析失败: {e}"}
