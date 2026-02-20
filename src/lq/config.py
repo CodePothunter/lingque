@@ -53,6 +53,7 @@ class FeishuConfig:
 class DiscordConfig:
     bot_token: str = ""
     bot_id: str = ""  # 启动时自动获取
+    owner_chat_id: str = ""
 
 
 @dataclass
@@ -128,6 +129,7 @@ class LQConfig:
 
         dc = d.get("discord", {})
         cfg.discord = DiscordConfig(
+            owner_chat_id=dc.get("owner_chat_id", ""),
             bot_token=dc.get("bot_token", ""),
             bot_id=dc.get("bot_id", ""),
         )
