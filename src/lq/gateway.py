@@ -54,6 +54,51 @@ class AssistantGateway:
             return getattr(feishu_cfg, "owner_chat_id", None)
         return None
 
+    @staticmethod
+    def _detect_chat_id_platform(chat_id: str) -> str | None:
+        """判断 chat_id 的平台格式：'feishu'、'discord' 或 None（未知）。"""
+        if chat_id.startswith(("oc_", "ou_", "on_")):
+            return "feishu"
+        if chat_id.isdigit():
+            return "discord"
+        return None
+
+    def _check_config_consistency(self, adapter_types: list[str]) -> None:
+        """检查配置中 chat_id 格式与启用的适配器是否匹配。
+
+        仅记录 WARNING 日志，不阻止启动。
+        """
+        active = set(adapter_types)
+        checks: list[tuple[str, str]] = []
+
+        # feishu.owner_chat_id
+        feishu_owner = getattr(self.config.feishu, "owner_chat_id", "")
+        if feishu_owner:
+            checks.append(("feishu.owner_chat_id", feishu_owner))
+
+        # discord.owner_chat_id（如果存在）
+        discord_cfg = getattr(self.config, "discord", None)
+        if discord_cfg:
+            discord_owner = getattr(discord_cfg, "owner_chat_id", "")
+            if discord_owner:
+                checks.append(("discord.owner_chat_id", discord_owner))
+
+        # groups[].chat_id
+        for i, group in enumerate(self.config.groups):
+            if group.chat_id:
+                checks.append((f"groups[{i}].chat_id", group.chat_id))
+
+        for field_name, chat_id in checks:
+            platform = self._detect_chat_id_platform(chat_id)
+            if platform and platform not in active:
+                truncated = chat_id[:20] + "..." if len(chat_id) > 20 else chat_id
+                platform_label = "飞书" if platform == "feishu" else "Discord"
+                logger.warning(
+                    "配置一致性警告: %s='%s' 是%s格式，但未启用%s适配器。当前启用: %s",
+                    field_name, truncated, platform_label, platform_label,
+                    ", ".join(adapter_types),
+                )
+
     async def run(self) -> None:
         """主入口：配置日志 → 写 PID → 启动组件 → 事件循环"""
         self._setup_logging()
@@ -166,6 +211,9 @@ class AssistantGateway:
 
         if not adapters:
             raise RuntimeError("没有可用的适配器，无法启动")
+
+        # 配置一致性检查：chat_id 格式与适配器匹配
+        self._check_config_consistency(self.adapter_types)
 
         # 单适配器直接使用，多适配器用 MultiAdapter 组合
         if len(adapters) == 1:
