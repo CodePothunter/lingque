@@ -15,7 +15,7 @@ from lq.platform import (
     PlatformAdapter, IncomingMessage, OutgoingMessage,
     Reaction, CardAction, ChatType,
 )
-from lq.prompts import PREAMBLE_STARTS, BOT_POLL_AT_REASON
+from lq.prompts import PREAMBLE_STARTS, BOT_POLL_AT_REASON, SILENCE_MARKER
 
 from .defs import TOOLS
 from .private import PrivateChatMixin
@@ -313,6 +313,9 @@ class MessageRouter(
     async def _send_reply(self, text: str, chat_id: str, reply_to_message_id: str | None) -> None:
         """发送回复"""
         text = self._CLEAN_RE.sub("", text).strip()
+        if text == SILENCE_MARKER:
+            logger.info("收到沉默标记，跳过发送 chat=%s", chat_id[-8:])
+            return
         if not text:
             return
         # 去重
