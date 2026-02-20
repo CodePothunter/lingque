@@ -85,7 +85,15 @@ class ClaudeCodeExecutor:
                 proc.kill()
             except Exception:
                 pass
-            return {"success": False, "output": "", "error": f"执行超时 ({timeout}s)"}
+            return {
+                "success": False,
+                "output": "",
+                "error": (
+                    f"Claude Code 执行超时 ({timeout}s)，"
+                    f"如需更长执行时间，可在调用时指定更大的 timeout 参数"
+                    f"（如 timeout={timeout * 2}）"
+                ),
+            }
         except FileNotFoundError:
             logger.error("claude CLI 未找到")
             return {"success": False, "output": "", "error": "claude CLI 未安装，请先安装 Claude Code CLI"}
@@ -148,7 +156,15 @@ class ClaudeCodeExecutor:
                 proc.kill()
             except Exception:
                 pass
-            return {"success": False, "output": "", "error": f"执行超时 ({timeout}s)"}
+            return {
+                "success": False,
+                "output": "",
+                "error": (
+                    f"Claude Code 执行超时 ({timeout}s)，"
+                    f"如需更长执行时间，可在调用时指定更大的 timeout 参数"
+                    f"（如 timeout={timeout * 2}）"
+                ),
+            }
         except FileNotFoundError:
             logger.error("claude CLI 未找到")
             return {"success": False, "output": "", "error": "claude CLI 未安装"}
@@ -240,7 +256,11 @@ class BashExecutor:
             return {
                 "success": False,
                 "output": "",
-                "error": f"命令执行超时 ({timeout}s)",
+                "error": (
+                    f"命令执行超时 ({timeout}s)，"
+                    f"如需更长执行时间，可在调用时指定更大的 timeout 参数"
+                    f"（如 timeout={timeout * 2}）"
+                ),
                 "exit_code": -1,
             }
 
