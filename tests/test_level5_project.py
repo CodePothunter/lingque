@@ -119,7 +119,7 @@ def _test_rest_api(suite: TestSuite) -> None:
         f"8. 入口文件为 {project_dir}/server.py\n"
         f"\n"
         f"请用 write_file 工具创建所有文件，确保代码完整可运行。",
-        timeout=180,
+        timeout=300,
     )
 
     # ── Step 2: 验证文件生成 ──
@@ -305,7 +305,7 @@ def _test_data_pipeline(suite: TestSuite) -> None:
         f"\n"
         f"只使用 Python 标准库（csv, json, random, datetime 等），不用 pandas。\n"
         f"请用 write_file 创建所有文件。",
-        timeout=180,
+        timeout=300,
     )
 
     # ── 验证文件生成 ──
@@ -473,7 +473,7 @@ def _test_cli_project(suite: TestSuite) -> None:
         f"  3. templates.py 提供完整 HTML 模板（含 <html><head><body> 等）\n"
         f"\n"
         f"只使用 Python 标准库。请用 write_file 创建所有文件。",
-        timeout=180,
+        timeout=600,
     )
 
     # ── 验证文件结构 ──

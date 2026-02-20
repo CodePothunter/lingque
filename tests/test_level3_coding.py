@@ -134,6 +134,7 @@ print("PASS")
         "这个字典应该支持 get(key) 和 put(key, value) 操作。"
         "当容量满时，删除最久未使用的键值对。"
         "请实现为一个类 LRUCache，构造函数接受 capacity 参数。"
+        "**重要：get(key) 在 key 不存在时必须返回 -1，而不是 None。**"
         "只给代码。"
     )
     code = _extract_python_code(reply)

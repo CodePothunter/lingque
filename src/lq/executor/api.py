@@ -189,6 +189,8 @@ class DirectAPIExecutor:
                 })
 
         combined_text = _clean_output("\n".join(text_parts))
+        logger.info("API 返回: stop_reason=%s text_len=%d preview=%s", 
+                    resp.stop_reason, len(combined_text), combined_text[:150])
 
         if not pending_tools or resp.stop_reason == "end_turn":
             return ToolResponse(

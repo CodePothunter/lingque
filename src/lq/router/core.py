@@ -328,6 +328,7 @@ class MessageRouter(
         if reply_to_message_id and not reply_to_message_id.startswith("inbox_"):
             reply_to = reply_to_message_id
         if chat_id and chat_id != "local_cli":
+            logger.info("_send_reply: chat=%s len=%d text=%s", chat_id[-8:], len(text), text[:200])
             try:
                 await self.adapter.send(OutgoingMessage(chat_id, text, reply_to=reply_to))
             except Exception as e:

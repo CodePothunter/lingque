@@ -18,6 +18,7 @@ class HeartbeatRunner:
         active_hours: tuple[int, int],
         workspace: Path | None = None,
         min_interval: int = 300,
+        bored_threshold: int = 3,
     ) -> None:
         self.interval = interval
         self.base_interval = interval        # 基准间隔（用于退避上限）
@@ -25,7 +26,7 @@ class HeartbeatRunner:
         self._current_interval = interval    # 当前实际间隔
         self.active_hours = active_hours
         self.workspace = workspace
-        self.shutdown_event: asyncio.Event | None = None
+        self._shutdown_event: asyncio.Event | None = None
 
         # 回调（Phase 3+ 注入）
         self.on_heartbeat: Any = None
@@ -33,27 +34,48 @@ class HeartbeatRunner:
         # 频率控制（从持久化文件恢复）
         self._last_daily: str | None = None
         self._last_weekly: str | None = None
+        
+        # 无聊感算法：追踪连续空闲次数
+        self._idle_streak = 0
+        self._bored_threshold = bored_threshold  # 触发"无聊"的阈值
+        
         self._load_state()
 
     def notify_did_work(self) -> None:
-        """自主行动做了有意义的事，缩短下次间隔。"""
+        """自主行动做了有意义的事，缩短下次间隔，重置空闲计数。"""
         self._current_interval = self.min_interval
-        logger.info("心跳间隔缩短至 %ds（有自主行动）", self._current_interval)
+        self._idle_streak = 0
+        logger.info("心跳间隔缩短至 %ds（有自主行动），空闲计数重置", self._current_interval)
 
     def notify_idle(self) -> None:
-        """自主行动无事可做，指数退避恢复间隔。"""
+        """自主行动无事可做，指数退避恢复间隔，增加空闲计数。"""
         self._current_interval = min(
             self._current_interval * 2,
             self.base_interval,
         )
-        logger.info("心跳间隔调整为 %ds（无事可做，退避）", self._current_interval)
+        self._idle_streak += 1
+        logger.info(
+            "心跳间隔调整为 %ds（无事可做，退避），空闲连续 %d 次",
+            self._current_interval, self._idle_streak,
+        )
+
+    def is_bored(self) -> bool:
+        """是否处于"无聊"状态（连续多次空闲）。
+        
+        当返回 True 时，建议触发主动探索模式。
+        """
+        return self._idle_streak >= self._bored_threshold
+
+    def get_idle_streak(self) -> int:
+        """获取当前空闲连续次数。"""
+        return self._idle_streak
 
     async def run_forever(self, shutdown_event: asyncio.Event) -> None:
         """定时循环，检查活跃时段"""
-        self.shutdown_event = shutdown_event
+        self._shutdown_event = shutdown_event
         logger.info(
-            "心跳启动: 基准间隔=%ds, 最短间隔=%ds, 活跃时段=%s",
-            self.base_interval, self.min_interval, self.active_hours,
+            "心跳启动: 基准间隔=%ds, 最短间隔=%ds, 活跃时段=%s, 无聊阈值=%d",
+            self.base_interval, self.min_interval, self.active_hours, self._bored_threshold,
         )
 
         while not shutdown_event.is_set():
@@ -111,7 +133,11 @@ class HeartbeatRunner:
             data = json.loads(p.read_text())
             self._last_daily = data.get("last_daily")
             self._last_weekly = data.get("last_weekly")
-            logger.info("心跳状态已恢复: daily=%s weekly=%s", self._last_daily, self._last_weekly)
+            self._idle_streak = data.get("idle_streak", 0)
+            logger.info(
+                "心跳状态已恢复: daily=%s weekly=%s idle_streak=%d",
+                self._last_daily, self._last_weekly, self._idle_streak,
+            )
         except Exception:
             logger.warning("心跳状态文件损坏，忽略")
 
@@ -123,6 +149,7 @@ class HeartbeatRunner:
             p.write_text(json.dumps({
                 "last_daily": self._last_daily,
                 "last_weekly": self._last_weekly,
+                "idle_streak": self._idle_streak,
             }))
         except Exception:
             logger.warning("心跳状态保存失败")
