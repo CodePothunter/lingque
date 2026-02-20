@@ -328,7 +328,11 @@ class MessageRouter(
         if reply_to_message_id and not reply_to_message_id.startswith("inbox_"):
             reply_to = reply_to_message_id
         if chat_id and chat_id != "local_cli":
-            await self.adapter.send(OutgoingMessage(chat_id, text, reply_to=reply_to))
+            try:
+                await self.adapter.send(OutgoingMessage(chat_id, text, reply_to=reply_to))
+            except Exception as e:
+                logger.error("发送回复失败 chat=%s error=%s text_preview=%s", chat_id[-8:], e, text[:100])
+                raise
         else:
             logger.info("本地回复（未发送）: %s", text[:200])
 
