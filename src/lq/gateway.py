@@ -41,6 +41,19 @@ class AssistantGateway:
         self.shutdown_event = asyncio.Event()
         self.queue: asyncio.Queue = asyncio.Queue()
 
+    @property
+    def _owner_chat_id(self) -> str | None:
+        """解析主人 chat_id，优先 Discord，回退飞书。"""
+        discord_cfg = getattr(self.config, "discord", None)
+        if discord_cfg:
+            val = getattr(discord_cfg, "owner_chat_id", None)
+            if val:
+                return val
+        feishu_cfg = getattr(self.config, "feishu", None)
+        if feishu_cfg:
+            return getattr(feishu_cfg, "owner_chat_id", None)
+        return None
+
     async def run(self) -> None:
         """主入口：配置日志 → 写 PID → 启动组件 → 事件循环"""
         self._setup_logging()
@@ -212,7 +225,7 @@ class AssistantGateway:
                     pass
 
             # 解析主人身份
-            owner_chat_id = self.config.feishu.owner_chat_id
+            owner_chat_id = self._owner_chat_id
             owner_name = self.config.owner_name
             if not owner_name and owner_chat_id:
                 # 尝试从 session 中推断主人名字：
@@ -402,7 +415,7 @@ class AssistantGateway:
                     logger.info("晨报已生成: %s", greeting[:50])
 
                     # 发送晨报给主人
-                    owner_chat_id = config.feishu.owner_chat_id
+                    owner_chat_id = self._owner_chat_id
                     if owner_chat_id:
                         await adapter.send(OutgoingMessage(owner_chat_id, greeting))
                         logger.info("晨报已发送至 %s", owner_chat_id)
@@ -461,11 +474,11 @@ class AssistantGateway:
             )
             # 注入今日反思摘要和工具统计（漂移检测上下文）
             system += self._build_heartbeat_drift_context(router)
-            chat_id = self.config.feishu.owner_chat_id or "heartbeat"
+            chat_id = self._owner_chat_id or "heartbeat"
             messages = [{"role": "user", "content": "请检查并执行心跳任务。"}]
             result = await router._reply_with_tool_loop(system, messages, chat_id, None)
             if result and result.strip() and result.strip() != "无":
-                owner_chat_id = self.config.feishu.owner_chat_id
+                owner_chat_id = self._owner_chat_id
                 if owner_chat_id:
                     await router.adapter.send(OutgoingMessage(owner_chat_id, result))
                 router.memory.append_daily(f"- 心跳任务执行: {result[:100]}\n")
@@ -607,7 +620,7 @@ class AssistantGateway:
                 source_root=source_root or "（未知）",
             )
 
-            chat_id = self.config.feishu.owner_chat_id or "autonomous"
+            chat_id = self._owner_chat_id or "autonomous"
             messages = [{"role": "user", "content": "请根据你的好奇心决定下一步行动。"}]
 
             # 记录行动前的文件状态用于变更检测
@@ -658,7 +671,7 @@ class AssistantGateway:
                     m = _re.search(r"##\s*改进建议\s*\n(.*?)(?:\n##|\Z)",
                                    new_curiosity, _re.DOTALL)
                     section = m.group(1).strip() if m else ""
-                    owner_chat_id = self.config.feishu.owner_chat_id
+                    owner_chat_id = self._owner_chat_id
                     if section and owner_chat_id:
                         await router.adapter.send(OutgoingMessage(
                             owner_chat_id,
@@ -756,7 +769,7 @@ class AssistantGateway:
     async def _poll_inbox(self) -> None:
         """轮询 inbox.txt，构造标准事件推入 queue（走完整的适配器路径）。"""
         inbox_path = self.home / "inbox.txt"
-        chat_id = self.config.feishu.owner_chat_id or "local_cli"
+        chat_id = self._owner_chat_id or "local_cli"
         msg_counter = 0
         while not self.shutdown_event.is_set():
             try:
