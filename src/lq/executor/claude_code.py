@@ -11,6 +11,13 @@ from lq.config import APIConfig
 
 logger = logging.getLogger(__name__)
 
+
+def _is_nested_claude_session() -> bool:
+    """检测是否在 Claude Code 会话中运行（嵌套场景）"""
+    import os
+    return os.environ.get('CLAUDECODE') == '1'
+
+
 # Bash 命令安全限制
 _BLOCKED_COMMANDS = frozenset({
     "rm -rf /", "rm -rf /*", "mkfs", "dd if=",
@@ -46,6 +53,18 @@ class ClaudeCodeExecutor:
             prompt: 发送给 Claude Code 的指令。
             timeout: 最大执行时间（秒），默认 5 分钟。
         """
+        # 检测嵌套 Claude Code 会话
+        if _is_nested_claude_session():
+            logger.warning("检测到嵌套 Claude Code 会话，无法启动子进程")
+            return {
+                "success": False,
+                "output": "",
+                "error": (
+                    "当前运行在 Claude Code 会话中，无法启动嵌套的 Claude Code 子进程。"
+                    "建议：使用 run_bash 工具执行命令，或直接使用 read_file/write_file 操作文件。"
+                ),
+            }
+
         env = self._build_env()
 
         try:
@@ -113,6 +132,18 @@ class ClaudeCodeExecutor:
             working_dir: 工作目录（默认使用工作区目录）。
             timeout: 最大执行时间（秒）。
         """
+        # 检测嵌套 Claude Code 会话
+        if _is_nested_claude_session():
+            logger.warning("检测到嵌套 Claude Code 会话，无法启动子进程")
+            return {
+                "success": False,
+                "output": "",
+                "error": (
+                    "当前运行在 Claude Code 会话中，无法启动嵌套的 Claude Code 子进程。"
+                    "建议：使用 run_bash 工具执行命令，或直接使用 read_file/write_file 操作文件。"
+                ),
+            }
+
         full_prompt = prompt
         if context:
             full_prompt = f"背景信息：{context}\n\n任务：{prompt}"

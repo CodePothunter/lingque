@@ -824,7 +824,8 @@ OWNER_IDENTITY_TEMPLATE = (
 # =====================================================================
 
 # {signals}, {curiosity_md}, {evolution_md}, {source_summary}, {git_log},
-# {remaining_today}, {reflections_summary}, {tool_stats_summary}, {source_root}
+# {remaining_today}, {reflections_summary}, {tool_stats_summary}, {source_root},
+# {error_suggestions}
 CURIOSITY_EXPLORE_PROMPT = (
     "你现在有一段空闲时间。好奇心是你成长的驱动力——"
     "它既驱动你探索外部世界，也驱动你审视和改进自己。\n\n"
@@ -833,6 +834,7 @@ CURIOSITY_EXPLORE_PROMPT = (
     "## 进化日志\n{evolution_md}\n\n"
     "## 源代码结构\n{source_summary}\n\n"
     "## 最近 git 提交\n{git_log}\n\n"
+    "## 错误日志分析\n{error_suggestions}\n\n"
     "## 近期反思\n{reflections_summary}\n\n"
     "## 工具使用统计\n{tool_stats_summary}\n\n"
     "## 今日剩余代码改进次数: {remaining_today}\n\n"

@@ -643,6 +643,13 @@ class AssistantGateway:
                     git_log = self._evolution.get_recent_git_log()
                     source_root = str(self._evolution.source_root)
 
+                    # 收集错误日志分析
+                    error_suggestions = "（暂无明显错误模式）"
+                    if self._evolution:
+                        suggestions = self._evolution.suggest_improvements()
+                        if suggestions:
+                            error_suggestions = "\n".join(f"- {s}" for s in suggestions)
+
             # 如果没有任何驱动力（无信号、无兴趣、无待办），跳过
             has_curiosity = signals_text != "（暂无信号）" or "## 当前兴趣\n\n##" not in curiosity_md
             has_evolution_backlog = "## 待办\n" in evolution_md and not evolution_md.endswith("## 待办\n发现但尚未实施的改进：\n\n## 进行中\n\n## 已完成\n\n## 失败记录\n")
