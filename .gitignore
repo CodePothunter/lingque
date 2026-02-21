@@ -36,3 +36,6 @@ inbox.txt
 # Lock file (optional — uncomment to track)
 # uv.lock
 .nienie.env
+
+# customized data
+data/
