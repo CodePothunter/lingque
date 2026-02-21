@@ -182,7 +182,17 @@ class DiscordAdapter(PlatformAdapter):
 
     # ── 表达 ──
 
+    # 飞书 chat_id 前缀：oc_（群聊）、ou_（用户）、on_（通知群）
+    _FEISHU_PREFIXES = ("oc_", "ou_", "on_")
+
     async def send(self, message: OutgoingMessage) -> str | None:
+        # 防御性校验：拒绝飞书格式的 chat_id
+        if message.chat_id and message.chat_id.startswith(self._FEISHU_PREFIXES):
+            raise ValueError(
+                f"Discord adapter 收到飞书格式 chat_id: {message.chat_id[:20]}，"
+                "请检查路由逻辑是否将消息发送到了错误的平台"
+            )
+
         # 发消息前先取消该频道的 typing task，
         # 避免 send 后 typing 再次触发导致"正在输入"残留
         self._cancel_typing_for_channel(message.chat_id)
@@ -239,6 +249,9 @@ class DiscordAdapter(PlatformAdapter):
     async def start_thinking(self, message_id: str) -> str | None:
         """后台 task 每 8 秒刷新 typing indicator。"""
         channel_id = self._msg_channel_map.get(message_id, "")
+        if channel_id and channel_id.startswith(self._FEISHU_PREFIXES):
+            logger.warning("start_thinking 收到飞书格式 channel_id: %s，跳过", channel_id[:20])
+            return None
         if not channel_id:
             return None
 

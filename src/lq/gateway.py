@@ -526,9 +526,8 @@ class AssistantGateway:
             messages = [{"role": "user", "content": "请检查并执行心跳任务。"}]
             result = await router._reply_with_tool_loop(system, messages, chat_id, None)
             if result and result.strip() and result.strip() != "无":
-                owner_chat_id = self._owner_chat_id
-                if owner_chat_id:
-                    await router.adapter.send(OutgoingMessage(owner_chat_id, result))
+                # 注意：_reply_with_tool_loop 已通过 _send_reply 发送最终回复，
+                # 此处不再重复调用 adapter.send，避免消息双重发送。
                 router.memory.append_daily(f"- 心跳任务执行: {result[:100]}\n")
                 logger.info("心跳任务执行: %s", result[:80])
         except Exception:

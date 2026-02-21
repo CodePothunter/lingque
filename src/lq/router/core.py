@@ -333,9 +333,31 @@ class MessageRouter(
                 await self.adapter.send(OutgoingMessage(chat_id, text, reply_to=reply_to))
             except Exception as e:
                 logger.error("发送回复失败 chat=%s error=%s text_preview=%s", chat_id[-8:], e, text[:100])
+                # 降级：尝试用 owner 的正确 chat_id 重发
+                fallback_id = self._get_owner_chat_id()
+                if fallback_id and fallback_id != chat_id:
+                    logger.info("尝试降级发送至 owner chat_id=%s", fallback_id[-8:])
+                    try:
+                        await self.adapter.send(OutgoingMessage(fallback_id, text))
+                    except Exception as e2:
+                        logger.error("降级发送也失败: %s", e2)
                 raise
         else:
             logger.info("本地回复（未发送）: %s", text[:200])
+
+    def _get_owner_chat_id(self) -> str | None:
+        """获取主人 chat_id，优先 Discord，回退飞书。"""
+        if not self.config:
+            return None
+        discord_cfg = getattr(self.config, "discord", None)
+        if discord_cfg:
+            val = getattr(discord_cfg, "owner_chat_id", None)
+            if val:
+                return val
+        feishu_cfg = getattr(self.config, "feishu", None)
+        if feishu_cfg:
+            return getattr(feishu_cfg, "owner_chat_id", None)
+        return None
 
     # ── 卡片回调 ──
 
