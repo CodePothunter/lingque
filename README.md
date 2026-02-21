@@ -10,6 +10,7 @@ A personal AI assistant framework built on a **platform-agnostic core** with plu
 - **Pluggable adapters** — Ships with Feishu (Lark), Discord, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
 - **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
+- **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log)
 - **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
 - **Calendar integration** — Query/create calendar events via adapter, daily briefings (Feishu calendar supported out-of-box)
 - **Card messages** — Structured information display (schedule cards, task cards, info cards), rendered natively by each adapter
@@ -75,6 +76,8 @@ Chinese names are auto-converted to pinyin slugs for directory names:
 ├── SOUL.md              # Persona definition ← edit this
 ├── MEMORY.md            # Long-term memory
 ├── HEARTBEAT.md         # Heartbeat task definitions
+├── CURIOSITY.md         # Curiosity log (what the assistant wants to learn)
+├── EVOLUTION.md         # Evolution log (how the assistant improves itself)
 ├── bot_identities.json  # Auto-inferred identities of other bots
 ├── groups.json          # Known group chat IDs (for morning greetings, etc.)
 ├── memory/              # Daily journals
