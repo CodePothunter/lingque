@@ -411,9 +411,9 @@ class AssistantGateway:
             t.cancel()
         if pending:
             await asyncio.wait(pending, timeout=2.0)
-        # 触发 on_close 钩子
-        await hooks.trigger("on_close", gateway=self)
-        logger.info("on_close 钩子已触发")
+        # 触发 on_shutdown 钩子
+        await hooks.trigger("on_shutdown", gateway=self)
+        logger.info("on_shutdown 钩子已触发")
 
 
         # 关闭时保存会话并断开适配器

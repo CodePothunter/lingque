@@ -193,9 +193,21 @@ class DirectAPIExecutor:
                     resp.stop_reason, len(combined_text), combined_text[:150])
 
         if not pending_tools or resp.stop_reason == "end_turn":
+            # stop_reason=tool_use 但没有 tool_use 块 → API 截断了工具调用
+            truncated = (
+                not pending_tools
+                and resp.stop_reason == "tool_use"
+            )
+            if truncated:
+                logger.warning(
+                    "tool_use 截断: stop_reason=tool_use 但无 tool_use 块, text=%s",
+                    combined_text[:150],
+                )
             return ToolResponse(
                 text=combined_text,
                 tool_calls=tool_calls,
+                tool_use_truncated=truncated,
+                messages=msgs,
             )
 
         tool_calls.extend(pending_tools)
@@ -243,9 +255,11 @@ class ToolResponse:
         pending: bool = False,
         raw_response: Any = None,
         messages: list[dict] | None = None,
+        tool_use_truncated: bool = False,
     ) -> None:
         self.text = text
         self.tool_calls = tool_calls or []
         self.pending = pending
         self.raw_response = raw_response
         self.messages = messages or []
+        self.tool_use_truncated = tool_use_truncated

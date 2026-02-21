@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from lq.platform import OutgoingMessage
-from lq.prompts import ACTION_NUDGE
+from lq.prompts import ACTION_NUDGE, TOOL_USE_TRUNCATED_NUDGE
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,20 @@ class ToolLoopMixin:
                     self.memory.invalidate_awareness_cache()
                 resp = await self.executor.continue_after_tools(
                     system, resp.messages, all_tools, tool_results, resp.raw_response
+                )
+            elif resp.tool_use_truncated and nudge_count < 2:
+                # tool_use 被截断（GLM API 已知问题），催促 LLM 重试
+                nudge_count += 1
+                logger.info(
+                    "tool_use 截断，催促重试 (%d/2) 原文: %s",
+                    nudge_count, (resp.text or "")[:100],
+                )
+                continued_messages = resp.messages + [
+                    {"role": "assistant", "content": resp.text or "(工具调用被截断)"},
+                    {"role": "user", "content": TOOL_USE_TRUNCATED_NUDGE},
+                ]
+                resp = await self.executor.reply_with_tools(
+                    system, continued_messages, all_tools
                 )
             elif (
                 allow_nudge
