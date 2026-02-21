@@ -18,6 +18,7 @@ CST = timezone(timedelta(hours=8))
 
 from lq.config import LQConfig
 from lq.evolution import EvolutionEngine
+from lq.drift_detector import DriftDetector
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.heartbeat import HeartbeatRunner
@@ -357,6 +358,9 @@ class AssistantGateway:
             self.home,
             max_daily=self.config.evolution_max_daily,
         )
+
+        # 初始化漂移检测器
+        self.drift_detector = DriftDetector(self.home)
         if self._evolution.source_root:
             logger.info("自进化引擎已加载: source=%s, max_daily=%d",
                         self._evolution.source_root, self.config.evolution_max_daily)
@@ -678,15 +682,12 @@ class AssistantGateway:
             if self._heartbeat and self._heartbeat.is_bored():
                 idle_streak = self._heartbeat.get_idle_streak()
                 bored_prompt = (
-                    f"\n\n【无聊信号】你已经连续 {idle_streak} 次心跳无事可做，这表明：\n"
-                    "- 当前没有足够的好奇心信号驱动你\n"
-                    "- 可能陷入了任务疲劳或兴趣枯竭\n\n"
-                    "建议行动：\n"
-                    "1. 主动搜索一个全新的话题（比如最近AI领域的突破、新的编程范式）\n"
-                    "2. 学习一个新技能（比如新的工具、新的API）\n"
-                    "3. 审视自己的 SOUL.md，看看是否需要调整人格或兴趣方向\n"
-                    "4. 联网搜索"AI Agent 2026 最新进展"之类的热点，给自己注入新鲜感\n\n"
-                    "不要重复已经做过的事，尝试跳出舒适圈。\n"
+                    f"\n\n【无聊信号】你已经连续 {idle_streak} 次心跳无事可做。\n"
+                    "说明你最近缺少驱动力。想想有没有什么让你真正好奇的事——"
+                    "不限于技术，任何方向都行。翻翻 CURIOSITY.md 和 MEMORY.md，"
+                    "回忆一下之前搁置的想法、主人提过的需求、或者你自己冒出来过但没深入的念头。\n"
+                    "也可以联网看看最近世界上在发生什么，找到让你有兴趣的东西。\n"
+                    "不要重复已经做过的事。\n"
                 )
                 logger.info("检测到无聊信号（连续空闲 %d 次），将建议主动探索", idle_streak)
 
