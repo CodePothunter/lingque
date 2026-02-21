@@ -70,6 +70,28 @@ def write_heartbeat_template(path: Path) -> None:
     )
 
 
+def write_progress_template(path: Path) -> None:
+    """生成 PROGRESS.md 模板（进度追踪）"""
+    path.write_text(
+        """\
+# 进度追踪
+
+## 当前目标
+
+
+## 里程碑
+
+
+## 每周回顾
+
+
+## 关键成果
+
+""",
+        encoding="utf-8",
+    )
+
+
 def write_systemd_service(name: str, project_dir: str | None = None) -> Path:
     import shutil
     uv_path = shutil.which("uv") or "uv"

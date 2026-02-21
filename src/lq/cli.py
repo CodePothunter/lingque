@@ -97,11 +97,21 @@ def init(name: str, from_env: str | None, owner: str) -> None:
     write_memory_template(home / "MEMORY.md")
     write_heartbeat_template(home / "HEARTBEAT.md")
 
-    # 生成好奇心日志
+    # 生成好奇心日志和进化日志
     from lq.prompts import CURIOSITY_INIT_TEMPLATE
     curiosity_path = home / "CURIOSITY.md"
     if not curiosity_path.exists():
         curiosity_path.write_text(CURIOSITY_INIT_TEMPLATE, encoding="utf-8")
+
+    # 生成进化日志
+    from lq.prompts import EVOLUTION_INIT_TEMPLATE
+    evolution_path = home / "EVOLUTION.md"
+    if not evolution_path.exists():
+        evolution_path.write_text(EVOLUTION_INIT_TEMPLATE, encoding="utf-8")
+
+    # 生成进度追踪
+    from lq.templates import write_progress_template
+    write_progress_template(home / "PROGRESS.md")
 
     # 生成 systemd service
     service_path = write_systemd_service(slug)

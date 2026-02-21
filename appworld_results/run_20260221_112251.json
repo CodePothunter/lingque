@@ -1,0 +1,62 @@
+[
+  {
+    "task_id": "3d9a636_1",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.157736"
+  },
+  {
+    "task_id": "3d9a636_2",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.270568"
+  },
+  {
+    "task_id": "3d9a636_3",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.383226"
+  },
+  {
+    "task_id": "fd1f8fa_1",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.496055"
+  },
+  {
+    "task_id": "fd1f8fa_2",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.614859"
+  },
+  {
+    "task_id": "fd1f8fa_3",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.728585"
+  },
+  {
+    "task_id": "325d6ec_1",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.839388"
+  },
+  {
+    "task_id": "325d6ec_2",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:50.950637"
+  },
+  {
+    "task_id": "325d6ec_3",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:51.063466"
+  },
+  {
+    "task_id": "29a7b7e_1",
+    "error": "constr() got an unexpected keyword argument 'regex'",
+    "status": "error",
+    "timestamp": "2026-02-21T11:22:51.179010"
+  }
+]

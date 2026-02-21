@@ -656,6 +656,23 @@ class AssistantGateway:
                 logger.debug("无好奇心信号、无当前兴趣、无进化待办，跳过自主行动")
                 break
 
+            # ── 无聊信号检测 ──
+            bored_prompt = ""
+            if self._heartbeat and self._heartbeat.is_bored():
+                idle_streak = self._heartbeat.get_idle_streak()
+                bored_prompt = (
+                    f"\n\n【无聊信号】你已经连续 {idle_streak} 次心跳无事可做，这表明：\n"
+                    "- 当前没有足够的好奇心信号驱动你\n"
+                    "- 可能陷入了任务疲劳或兴趣枯竭\n\n"
+                    "建议行动：\n"
+                    "1. 主动搜索一个全新的话题（比如最近AI领域的突破、新的编程范式）\n"
+                    "2. 学习一个新技能（比如新的工具、新的API）\n"
+                    "3. 审视自己的 SOUL.md，看看是否需要调整人格或兴趣方向\n"
+                    "4. 联网搜索"AI Agent 2026 最新进展"之类的热点，给自己注入新鲜感\n\n"
+                    "不要重复已经做过的事，尝试跳出舒适圈。\n"
+                )
+                logger.info("检测到无聊信号（连续空闲 %d 次），将建议主动探索", idle_streak)
+
             # 反思和工具统计
             reflections_summary = self._get_reflections_summary()
             tool_stats_summary = self._get_tool_stats_summary(router)
@@ -673,6 +690,8 @@ class AssistantGateway:
                 tool_stats_summary=tool_stats_summary,
                 source_root=source_root or "（未知）",
             )
+            if bored_prompt:
+                system += bored_prompt
 
             chat_id = self._owner_chat_id or "autonomous"
             messages = [{"role": "user", "content": "请根据你的好奇心决定下一步行动。"}]

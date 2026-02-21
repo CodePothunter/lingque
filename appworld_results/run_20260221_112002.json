@@ -1,0 +1,62 @@
+[
+  {
+    "task_id": "3d9a636_1",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.124960"
+  },
+  {
+    "task_id": "3d9a636_2",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.167698"
+  },
+  {
+    "task_id": "3d9a636_3",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.208247"
+  },
+  {
+    "task_id": "fd1f8fa_1",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.248487"
+  },
+  {
+    "task_id": "fd1f8fa_2",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.288640"
+  },
+  {
+    "task_id": "fd1f8fa_3",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.329338"
+  },
+  {
+    "task_id": "325d6ec_1",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.373342"
+  },
+  {
+    "task_id": "325d6ec_2",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.413652"
+  },
+  {
+    "task_id": "325d6ec_3",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.453750"
+  },
+  {
+    "task_id": "29a7b7e_1",
+    "error": "If you use `@root_validator` with pre=False (the default) you MUST specify `skip_on_failure=True`. Note that `@root_validator` is deprecated and should be replaced with `@model_validator`.\n\nFor further information visit https://errors.pydantic.dev/2.12/u/root-validator-pre-skip",
+    "status": "error",
+    "timestamp": "2026-02-21T11:20:02.499897"
+  }
+]

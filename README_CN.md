@@ -8,6 +8,8 @@
 - **可插拔适配器** — 内置飞书、Discord 和本地终端适配器，全部走相同的统一事件管线。可在单一平台运行，也可多平台同时连接
 - **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，支持完整工具链，无需任何外部聊天平台凭证
 - **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
+- **自进化系统** — 五文件联动实现自主成长：SOUL.md 人格 + MEMORY.md 记忆 + HEARTBEAT.md 心跳任务 + CURIOSITY.md 好奇心日志 + EVOLUTION.md 进化日志
+- **进度追踪** — PROGRESS.md 记录目标、里程碑和每周回顾
 - **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
 - **日历集成** — 通过适配器查询/创建日程，每日晨报（已内置飞书日历支持）
 - **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡），由各适配器原生渲染
@@ -73,6 +75,9 @@ uv run lq init --name 奶油 --from-env .env
 ├── SOUL.md              # 人格定义 ← 编辑这个
 ├── MEMORY.md            # 长期记忆
 ├── HEARTBEAT.md         # 心跳任务定义
+├── CURIOSITY.md         # 好奇心日志（探索兴趣和盲区）
+├── EVOLUTION.md        # 进化日志（框架自我改进历程）
+├── PROGRESS.md         # 进度追踪（目标和里程碑）
 ├── bot_identities.json  # 自主推断的其他 bot 身份映射
 ├── groups.json          # 已知群聊 ID（用于早安问候等）
 ├── memory/              # 每日日志
