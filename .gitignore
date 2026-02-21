@@ -39,3 +39,7 @@ inbox.txt
 
 # customized data
 data/
+
+# AppWorld experiment files
+appworld_results/
+experiments/
