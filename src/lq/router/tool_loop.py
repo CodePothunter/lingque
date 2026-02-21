@@ -37,10 +37,14 @@ class ToolLoopMixin:
             logger.info("跳过回复: 群 %s 已有回复进行中", chat_id[-8:])
             return ""
         async with lock:
-            return await self._reply_with_tool_loop_inner(
+            result = await self._reply_with_tool_loop_inner(
                 system, messages, chat_id, reply_to_message_id,
                 text_transform, allow_nudge,
             )
+            # 在持锁期间排空暂存的私聊消息，防止与新消息竞争
+            if self._private_pending_while_busy.get(chat_id):
+                await self._drain_pending_messages(chat_id)
+        return result
 
     async def _reply_with_tool_loop_inner(
         self,

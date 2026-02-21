@@ -96,17 +96,7 @@ class PrivateChatMixin:
         # 主人身份自动发现
         self._try_discover_owner(chat_id, sender_name)
 
-        system = self.memory.build_context(chat_id=chat_id)
-        system += (
-            f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
-            "如果用户要求记住什么，使用 write_memory 工具。"
-            "如果涉及日程，使用 calendar 工具。"
-            "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
-            "需要联网查询时（搜索、天气、新闻等），使用 web_search / web_fetch 工具。"
-            "需要计算或处理数据时，使用 run_python 工具。"
-            "需要读写文件时，使用 read_file / write_file 工具。"
-            "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE)
-        )
+        system = self._build_private_system(chat_id)
 
         # 使用会话管理器维护上下文
         if self.session_mgr:
@@ -120,6 +110,7 @@ class PrivateChatMixin:
         thinking_handle = await self.adapter.start_thinking(message_id) or ""
 
         # 尝试带工具回复
+        llm_failed = False
         try:
             reply_text = await self._reply_with_tool_loop(
                 system, messages, chat_id, message_id
@@ -127,9 +118,21 @@ class PrivateChatMixin:
         except Exception:
             logger.exception("私聊回复失败 (chat=%s)", chat_id)
             reply_text = ""
+            llm_failed = True
         finally:
             if thinking_handle:
                 await self.adapter.stop_thinking(message_id, thinking_handle)
+
+        # 锁忙时暂存消息（仅当非 LLM 错误导致的空回复），等当前回复完成后再处理
+        if not reply_text and not llm_failed and self._get_reply_lock(chat_id).locked():
+            self._private_pending_while_busy.setdefault(chat_id, []).append({
+                "text": combined_text,
+                "ts": time.time(),
+                "message_id": message_id,
+                "sender_name": sender_name,
+            })
+            logger.info("私聊消息暂存(锁忙): chat=%s text=%s", chat_id[-8:], combined_text[:40])
+            return
 
         if self.session_mgr and reply_text:
             session = self.session_mgr.get_or_create(chat_id)
@@ -144,6 +147,110 @@ class PrivateChatMixin:
         # 异步自我反思（fire-and-forget，不阻塞回复）
         if reply_text:
             asyncio.create_task(self._reflect_on_reply(chat_id, reply_text))
+
+    # ── 私聊系统 prompt 构建 ──
+
+    def _build_private_system(self, chat_id: str, has_queued: bool = False) -> str:
+        """构建私聊系统 prompt"""
+        system = self.memory.build_context(chat_id=chat_id)
+        system += (
+            f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
+            "如果用户要求记住什么，使用 write_memory 工具。"
+            "如果涉及日程，使用 calendar 工具。"
+            "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"
+            "需要联网查询时（搜索、天气、新闻等），使用 web_search / web_fetch 工具。"
+            "需要计算或处理数据时，使用 run_python 工具。"
+            "需要读写文件时，使用 read_file / write_file 工具。"
+            "\n\n" + wrap_tag(TAG_CONSTRAINTS, CONSTRAINTS_PRIVATE)
+        )
+        if has_queued:
+            system += (
+                "\n\n注意：用户在你回复期间又发了新消息，这些消息标注了时间戳。"
+                "对于已在之前的回复中涵盖过的内容，简短确认即可，不必重复回答。"
+            )
+        return system
+
+    # ── 锁忙消息排空 ──
+
+    async def _drain_pending_messages(self, chat_id: str) -> None:
+        """处理暂存的私聊消息（调用方已持有 reply lock）"""
+        pending = self._private_pending_while_busy.pop(chat_id, [])
+        if not pending:
+            return
+
+        count = len(pending)
+        last_message_id = pending[-1]["message_id"]
+        last_sender_name = pending[-1]["sender_name"]
+
+        try:
+            from datetime import datetime, timedelta, timezone
+            cst = timezone(timedelta(hours=8))
+
+            # 格式化暂存消息为 [HH:MM] 文本
+            parts: list[str] = []
+            for item in pending:
+                ts_str = datetime.fromtimestamp(item["ts"], tz=cst).strftime("%H:%M")
+                parts.append(f"[{ts_str}] {item['text']}")
+            queued_text = "\n".join(parts)
+
+            logger.info("排空暂存消息: chat=%s count=%d", chat_id[-8:], count)
+
+            # 消息已在 _flush_private 中写入 session，这里不重复添加
+            # 只需获取当前 session 上下文即可
+            if self.session_mgr:
+                messages = self.session_mgr.get_or_create(chat_id).get_messages()
+            else:
+                messages = [{"role": "user", "content": queued_text}]
+
+            system = self._build_private_system(chat_id, has_queued=True)
+
+            thinking_handle = await self.adapter.start_thinking(last_message_id) or ""
+            try:
+                # 直接调用 inner 方法，因为调用方已持有 reply lock
+                reply_text = await self._reply_with_tool_loop_inner(
+                    system, messages, chat_id, last_message_id
+                )
+            except Exception:
+                logger.exception("排空暂存消息回复失败 (chat=%s)", chat_id)
+                reply_text = ""
+                # 通知用户消息处理失败
+                try:
+                    await self.adapter.send(OutgoingMessage(
+                        chat_id, "抱歉，处理你之前的消息时出了问题，请再发一次。",
+                        reply_to=last_message_id,
+                    ))
+                except Exception:
+                    logger.debug("排空失败通知发送失败", exc_info=True)
+            finally:
+                if thinking_handle:
+                    await self.adapter.stop_thinking(last_message_id, thinking_handle)
+
+            if self.session_mgr and reply_text:
+                session = self.session_mgr.get_or_create(chat_id)
+                session.add_message("assistant", reply_text, sender_name="你")
+                if session.should_compact():
+                    await self._compact_session(session)
+
+            # 记录日志
+            log_preview = queued_text[:50] if queued_text else "[暂存消息]"
+            self.memory.append_daily(
+                f"- 私聊排空 [{last_sender_name}]: {log_preview}... → {'已回复' if reply_text else '回复失败'}\n",
+                chat_id=chat_id,
+            )
+
+            # 异步自我反思
+            if reply_text:
+                asyncio.create_task(self._reflect_on_reply(chat_id, reply_text))
+
+        except Exception:
+            logger.exception("排空暂存消息整体失败 (chat=%s), %d 条消息丢失", chat_id, count)
+            try:
+                await self.adapter.send(OutgoingMessage(
+                    chat_id, "抱歉，处理你之前的消息时出了问题，请再发一次。",
+                    reply_to=last_message_id,
+                ))
+            except Exception:
+                logger.debug("排空整体失败通知发送失败", exc_info=True)
 
     # ── 自我反思 + 好奇心信号 ──
 

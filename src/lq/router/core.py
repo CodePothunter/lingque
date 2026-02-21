@@ -90,6 +90,8 @@ class MessageRouter(
         # ReplyGate: per-chat 回复锁 + 冷却期，防止多路径并发回复同一群
         self._reply_locks: dict[str, asyncio.Lock] = {}
         self._reply_cooldown_ts: dict[str, float] = {}  # chat_id → 上次回复完成的时间戳
+        # 私聊锁忙时暂存的消息：chat_id → [{"text": str, "ts": float, "message_id": str, "sender_name": str}, ...]
+        self._private_pending_while_busy: dict[str, list[dict]] = {}
         # 工具调用统计（per-tool success/fail）
         self._tool_stats: dict[str, dict[str, int]] = {}
         # 注入依赖
