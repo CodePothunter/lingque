@@ -37,7 +37,7 @@ class AssistantGateway:
     def __init__(self, config: LQConfig, home: Path, adapter_types: list[str] | None = None) -> None:
         self.config = config
         self.home = home
-        self.adapter_types = adapter_types or ["feishu"]
+        self.adapter_types = adapter_types or ["local"]
         self.shutdown_event = asyncio.Event()
         self.queue: asyncio.Queue = asyncio.Queue()
 
