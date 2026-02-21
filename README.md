@@ -10,7 +10,7 @@ A personal AI assistant framework built on a **platform-agnostic core** with plu
 - **Pluggable adapters** — Ships with Feishu (Lark), Discord, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
 - **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
-- **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log)
+- **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log). See [Self-Evolution System](#self-evolution-system) for details
 - **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
 - **Calendar integration** — Query/create calendar events via adapter, daily briefings (Feishu calendar supported out-of-box)
 - **Card messages** — Structured information display (schedule cards, task cards, info cards), rendered natively by each adapter
@@ -325,6 +325,66 @@ The assistant will automatically write the code, validate it, and load it. The n
 | `uv run lq chat @NAME "message"` | Single-message mode |
 | `uv run lq say @NAME "message"` | Alias for `chat` |
 | `uv run lq upgrade @NAME` | Upgrade framework |
+
+
+## Self-Evolution System
+
+灵雀的自进化系统通过五个配置文件联动，实现 AI 助理的自主学习、反思和成长。
+
+### Five Config Files
+
+| File | Purpose | When Updated |
+|------|---------|--------------|
+| `SOUL.md` | **Persona & behavioral rules** — defines identity, personality, communication style, intervention principles | Manually edited or rare self-modification |
+| `MEMORY.md` | **Long-term knowledge** — important facts, user preferences, lessons learned, ongoing tasks | Automatically after learning something important |
+| `HEARTBEAT.md` | **Scheduled task templates** — defines what the assistant does during periodic heartbeat cycles | Manually configured or evolution updates |
+| `CURIOSITY.md` | **Curiosity log** — tracks what the assistant wants to learn, progress on exploration | Updated during heartbeat when curiosity signals detected |
+| `EVOLUTION.md` | **Evolution log** — records framework improvements, pending ideas, completed changes | Updated after each self-improvement cycle |
+
+### How They Work Together
+
+```
+Heartbeat Cycle (every N seconds)
+    │
+    ├── 1. Read HEARTBEAT.md → Choose task mode (learn / create / code / reflect)
+    │
+    ├── 2. Execute task:
+    │   │   ├── Learn mode → web_search → write_memory / write_chat_memory
+    │   │   ├── Create mode → content_creator → send to group
+    │   │   ├── Code mode → run_bash / run_claude_code → commit changes
+    │   │   └── Reflect mode → analyze logs → update EVOLUTION.md
+    │   │
+    ├── 3. Curiosity detection:
+    │   │   └── Found knowledge gap? → Log to CURIOSITY.md
+    │   │
+    └── 4. Send report to owner
+```
+
+### Example Workflow
+
+1. **Heartbeat triggers** → Assistant reads `HEARTBEAT.md`, sees "learn mode" is next
+2. **Learning** → Searches for "prompt engineering techniques", reads articles, extracts key insights
+3. **Memory storage** → Writes learnings to `MEMORY.md` under "Prompt Engineering" section
+4. **Curiosity log** → During learning, notices "chain-of-thought prompting" mentioned but not fully understood → logs to `CURIOSITY.md`
+5. **Next heartbeat** → Reads `CURIOSITY.md`, sees pending question → focuses next learning cycle on that topic
+6. **Evolution** → After several cycles, realizes a better prompt template → updates `EVOLUTION.md` with improvement idea → implements in next "code mode" cycle
+
+### Usage Scenarios
+
+- **Self-directed learning**: Assistant explores topics it is curious about without user prompting
+- **Continuous improvement**: Regular reflection on past conversations and outputs
+- **Framework evolution**: Assistant can propose and implement code improvements to its own system
+- **Persistent knowledge**: Lessons learned are stored long-term, not lost between sessions
+
+### Customization
+
+Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
+
+- Task modes: learn, create, code, reflect (customize which ones, in what order)
+- Task frequency: balance between different modes
+- Reflection topics: what to review during reflection cycles
+- Evolution priorities: what framework aspects to improve first
+
 
 ## Configuration
 
