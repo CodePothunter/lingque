@@ -8,6 +8,10 @@
 - on_reply: 发送回复前
 - on_shutdown: Agent 关闭时
 
+安全特性：
+- 异常隔离：单个钩子失败不影响其他钩子
+- 执行超时：每个钩子最多执行5秒，防止阻塞
+
 使用方法：
     from lq.hooks import hooks
     
@@ -23,11 +27,23 @@ import asyncio
 
 logger = logging.getLogger(__name__)
 
+# 默认钩子执行超时时间（秒）
+DEFAULT_HOOK_TIMEOUT = 5.0
+
+
+class HookTimeoutError(Exception):
+    """钩子执行超时异常"""
+    pass
+
 
 class HookRegistry:
     """钩子注册中心"""
     
-    def __init__(self):
+    def __init__(self, timeout: float = DEFAULT_HOOK_TIMEOUT):
+        """
+        Args:
+            timeout: 单个钩子最大执行时间（秒），默认5秒
+        """
         self._hooks: dict[str, list[Callable]] = {
             "on_load": [],
             "on_heartbeat": [],
@@ -35,6 +51,7 @@ class HookRegistry:
             "on_reply": [],
             "on_shutdown": [],
         }
+        self._timeout = timeout
     
     def register(self, hook_name: str):
         """装饰器：注册钩子
@@ -61,7 +78,7 @@ class HookRegistry:
         return decorator
     
     async def trigger(self, hook_name: str, *args, **kwargs) -> list[Any]:
-        """触发钩子
+        """触发钩子（带超时保护）
         
         Args:
             hook_name: 钩子名称
@@ -71,22 +88,37 @@ class HookRegistry:
         Returns:
             所有钩子函数的返回值列表
         
-        注意：
-            如果某个钩子抛出异常，记录日志但不影响其他钩子执行
+        安全特性：
+            1. 异常隔离：单个钩子失败不影响其他钩子
+            2. 执行超时：每个钩子最多执行 self._timeout 秒
         """
         results = []
-        for func in self._hooks.get(hook_name, []):
+        hook_funcs = self._hooks.get(hook_name, [])
+        
+        for func in hook_funcs:
             try:
-                # 支持同步和异步函数
+                # 包装同步函数为异步
                 if asyncio.iscoroutinefunction(func):
-                    result = await func(*args, **kwargs)
+                    coro = func(*args, **kwargs)
                 else:
-                    result = func(*args, **kwargs)
+                    coro = asyncio.to_thread(func, *args, **kwargs)
+                
+                # 执行带超时保护
+                result = await asyncio.wait_for(coro, timeout=self._timeout)
                 results.append(result)
+                
+            except asyncio.TimeoutError:
+                logger.error(
+                    "钩子执行超时: %s.%s（超时时间: %.1f秒）",
+                    hook_name, func.__name__, self._timeout
+                )
             except Exception:
                 logger.exception("钩子执行失败: %s.%s", hook_name, func.__name__)
         
-        logger.debug("钩子 %s 执行完成，共 %d 个，返回 %d 个结果", hook_name, len(self._hooks.get(hook_name, [])), len(results))
+        logger.debug(
+            "钩子 %s 执行完成，共 %d 个，返回 %d 个结果",
+            hook_name, len(hook_funcs), len(results)
+        )
         return results
     
     def list_hooks(self) -> dict[str, list[str]]:
