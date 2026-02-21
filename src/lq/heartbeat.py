@@ -95,6 +95,8 @@ class HeartbeatRunner:
 
     async def _heartbeat(self) -> None:
         """执行一次心跳"""
+        from lq.hooks import hooks  # 延迟导入避免循环依赖
+        
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         weekday = now.strftime("%A")
@@ -104,6 +106,17 @@ class HeartbeatRunner:
         is_daily = self._last_daily != today
         is_weekly = is_daily and weekday == "Monday" and self._last_weekly != today
 
+        # 触发 on_heartbeat 钩子（在回调前）
+        try:
+            await hooks.trigger(
+                "on_heartbeat",
+                is_daily_first=is_daily,
+                is_weekly_first=is_weekly,
+            )
+        except Exception:
+            logger.exception("on_heartbeat 钩子执行失败")
+
+        # 触发原有回调（保持兼容）
         if self.on_heartbeat:
             try:
                 await self.on_heartbeat(

@@ -22,6 +22,7 @@ from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.heartbeat import HeartbeatRunner
 from lq.memory import MemoryManager
 from lq.platform import PlatformAdapter, OutgoingMessage, IncomingMessage, ChatType, SenderType, MessageType
+from lq.hooks import hooks
 from lq.router import MessageRouter
 from lq.session import SessionManager
 from lq.stats import StatsTracker
@@ -384,6 +385,10 @@ class AssistantGateway:
         await adapter.connect(self.queue)
         logger.info("适配器已连接: %s", "+".join(self.adapter_types))
 
+        # 触发 on_load 钩子
+        await hooks.trigger("on_load", gateway=self, config=self.config)
+        logger.info("on_load 钩子已触发")
+
         # 并发运行消费者、心跳、会话自动保存
         tasks = [
             asyncio.create_task(self._consume_messages(router, loop), name="consumer"),
@@ -405,6 +410,10 @@ class AssistantGateway:
             t.cancel()
         if pending:
             await asyncio.wait(pending, timeout=2.0)
+        # 触发 on_close 钩子
+        await hooks.trigger("on_close", gateway=self)
+        logger.info("on_close 钩子已触发")
+
 
         # 关闭时保存会话并断开适配器
         session_mgr.save()
@@ -425,6 +434,13 @@ class AssistantGateway:
                 continue
 
             try:
+
+                # 触发 on_message 钩子（可过滤消息）
+                hook_results = await hooks.trigger("on_message", data=data)
+                if any(r is False for r in hook_results):
+                    logger.debug("消息被钩子过滤: %s", data.get("event_type"))
+                    continue
+
                 await router.handle(data)
             except Exception:
                 logger.exception("处理消息失败: %s", data.get("event_type", "unknown"))
