@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import signal
 import sys
@@ -970,7 +971,12 @@ class AssistantGateway:
 
         fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
         handlers: list[logging.Handler] = [
-            logging.FileHandler(log_file, encoding="utf-8"),
+            RotatingFileHandler(
+                log_file,
+                maxBytes=10*1024*1024,  # 10MB
+                backupCount=5,
+                encoding="utf-8",
+            ),
             logging.StreamHandler(sys.stderr),
         ]
         logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers)
