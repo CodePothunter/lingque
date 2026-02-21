@@ -72,7 +72,22 @@ class ToolLoopMixin:
             iteration += 1
 
             if resp.pending and resp.tool_calls:
+                # ── 推送中间思考文本给用户（斜体，表示内心世界）──
+                if resp.text and resp.text.strip():
+                    intermediate = self._CLEAN_RE.sub("", resp.text).strip()
+                    if intermediate:
+                        styled = "*" + intermediate.replace("\n", "*\n*") + "*"
+                        await self._send_reply(styled, chat_id, reply_to_message_id)
+
                 # LLM 调用了工具 → 执行并继续
+                # ── 发送工具执行通知卡片 ──
+                tool_summaries = []
+                for tc in resp.tool_calls:
+                    tool_summaries.append(self._tool_call_summary(tc["name"], tc["input"]))
+                await self._send_tool_notification(
+                    "\n".join(tool_summaries), chat_id, reply_to_message_id,
+                )
+
                 tool_results = []
                 for tc in resp.tool_calls:
                     tools_called.append(tc["name"])
@@ -187,6 +202,37 @@ class ToolLoopMixin:
                 await self.adapter.send(OutgoingMessage(chat_id, text, reply_to=reply_to, card=card))
         except Exception:
             logger.exception("工具通知发送失败")
+
+    # ── 工具调用摘要 ──
+
+    _TOOL_ICONS: dict[str, str] = {
+        "web_search": "🔍", "web_fetch": "🌐",
+        "run_python": "🐍", "run_bash": "💻", "run_claude_code": "🤖",
+        "read_file": "📄", "write_file": "✏️", "read_self_file": "📖", "write_self_file": "📝",
+        "write_memory": "🧠", "write_chat_memory": "🧠",
+        "send_message": "💬", "send_card": "🃏", "schedule_message": "⏰",
+        "calendar_create_event": "📅", "calendar_list_events": "📅",
+        "create_custom_tool": "🔧", "delete_custom_tool": "🗑️",
+        "vision_analyze": "👁️", "get_my_stats": "📊",
+    }
+
+    @staticmethod
+    def _tool_call_summary(name: str, input_data: dict) -> str:
+        """生成工具调用的简短摘要，用于通知卡片。"""
+        icon = ToolLoopMixin._TOOL_ICONS.get(name, "⚙️")
+        # 提取最有信息量的字段作为摘要
+        hint = ""
+        for key in ("query", "prompt", "command", "code", "url", "text",
+                     "section", "summary", "filename", "path", "name", "image_source"):
+            val = input_data.get(key)
+            if val and isinstance(val, str):
+                hint = val[:60].replace("\n", " ")
+                if len(val) > 60:
+                    hint += "…"
+                break
+        if hint:
+            return f"{icon} {name}: {hint}"
+        return f"{icon} {name}"
 
     # ── 审批机制 ──
 
