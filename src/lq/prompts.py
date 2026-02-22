@@ -840,6 +840,7 @@ OWNER_IDENTITY_TEMPLATE = (
 CURIOSITY_EXPLORE_PROMPT = (
     "你现在有一段空闲时间。好奇心是你成长的驱动力——"
     "它既驱动你探索外部世界，也驱动你审视和改进自己。\n\n"
+    "{recent_conversations}"
     "## 好奇心信号\n{signals}\n\n"
     "## 好奇心日志\n{curiosity_md}\n\n"
     "## 进化日志\n{evolution_md}\n\n"

@@ -415,6 +415,81 @@ class SessionManager:
             }
         return stats
 
+    def get_recent_index(self, max_preview_total: int = 20) -> str:
+        """返回有近期对话的会话索引，供心跳 prompt 使用。
+
+        max_preview_total 控制所有 session 合计最多展示多少条预览消息，
+        保证 prompt 体积可控。预览条数按各 session 的对话量比例分配：
+        聊得多的 session 多给几条，聊得少的少给，最少 2 条最多 6 条。
+
+        格式示例:
+        - [奶油] 最后活跃 14:32 · 18 条对话 | sessions/oc_xxx.json
+          奶油: "帮我看看这个图片生成的效果"
+          你: "图片已经生成好了，不过色调偏暗"
+          奶油: "markdown previewer 渲染有问题"
+          你: "我看看……是 CSS 的问题"
+        """
+        # 收集所有有消息的 session，按最后活跃时间倒序
+        candidates: list[tuple[float, str, Session]] = []
+        for cid, session in self._sessions.items():
+            if not session.messages:
+                continue
+            last_ts = session.messages[-1].get("timestamp", 0)
+            candidates.append((last_ts, cid, session))
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+
+        # 按对话量比例分配预览条数
+        total_msgs = sum(len(s.messages) for _, _, s in candidates)
+
+        lines: list[str] = []
+        preview_budget = max_preview_total
+        for last_ts, cid, session in candidates:
+            if preview_budget <= 0:
+                break
+            msg_count = len(session.messages)
+            ratio = msg_count / total_msgs if total_msgs else 0
+            # 按比例分配，但保证每个 session 至少 2 条、最多 6 条
+            alloc = max(2, min(round(ratio * max_preview_total), 6))
+            alloc = min(alloc, preview_budget)  # 不超过剩余预算
+
+            # 提取 sender_name
+            sender_name = ""
+            for msg in reversed(session.messages):
+                if msg.get("role") == "user" and msg.get("sender_name"):
+                    sender_name = msg["sender_name"]
+                    break
+
+            # 取最近的 user/assistant 消息保留对话节奏
+            trail: list[tuple[str, str]] = []
+            for msg in reversed(session.messages):
+                role = msg.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+                if msg.get("is_tool_use") or msg.get("is_tool_result"):
+                    continue
+                text = _content_to_text(msg.get("content", ""))
+                if not text:
+                    continue
+                label = sender_name or "用户" if role == "user" else "你"
+                trail.append((label, text[:60]))
+                if len(trail) >= alloc:
+                    break
+            trail.reverse()
+
+            rel_path = f"sessions/{cid}.json"
+            last_time_str = datetime.fromtimestamp(last_ts, tz=CST).strftime("%H:%M")
+            lines.append(f"- [{sender_name or cid}] 最后活跃 {last_time_str} · {msg_count} 条对话 | {rel_path}")
+            for label, text in trail:
+                lines.append(f"  {label}: \"{text}\"")
+
+            preview_budget -= len(trail)
+
+        return "\n".join(lines)
+
     def _load(self) -> None:
         """加载所有活跃会话：优先读 per-chat 文件，兼容旧版 current.json"""
         loaded = 0
