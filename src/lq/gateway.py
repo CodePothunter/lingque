@@ -18,7 +18,6 @@ CST = timezone(timedelta(hours=8))
 
 from lq.config import LQConfig
 from lq.evolution import EvolutionEngine
-from lq.drift_detector import DriftDetector
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.heartbeat import HeartbeatRunner
@@ -359,8 +358,6 @@ class AssistantGateway:
             max_daily=self.config.evolution_max_daily,
         )
 
-        # 初始化漂移检测器
-        self.drift_detector = DriftDetector(self.home)
         if self._evolution.source_root:
             logger.info("自进化引擎已加载: source=%s, max_daily=%d",
                         self._evolution.source_root, self.config.evolution_max_daily)
