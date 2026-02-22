@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ class HeartbeatRunner:
         workspace: Path | None = None,
         min_interval: int = 300,
         bored_threshold: int = 3,
+        jitter_ratio: float = 0.1,
     ) -> None:
         self.interval = interval
         self.base_interval = interval        # 基准间隔（用于退避上限）
@@ -27,6 +29,7 @@ class HeartbeatRunner:
         self.active_hours = active_hours
         self.workspace = workspace
         self._shutdown_event: asyncio.Event | None = None
+        self._jitter_ratio = jitter_ratio    # 抖动比例（±10%）
 
         # 回调（Phase 3+ 注入）
         self.on_heartbeat: Any = None
@@ -70,19 +73,30 @@ class HeartbeatRunner:
         """获取当前空闲连续次数。"""
         return self._idle_streak
 
+    def _get_jittered_interval(self) -> float:
+        """计算带抖动的等待时间，避免多实例同时触发。"""
+        jitter = random.uniform(-self._jitter_ratio, self._jitter_ratio)
+        return self._current_interval * (1 + jitter)
+
     async def run_forever(self, shutdown_event: asyncio.Event) -> None:
         """定时循环，检查活跃时段"""
         self._shutdown_event = shutdown_event
         logger.info(
-            "心跳启动: 基准间隔=%ds, 最短间隔=%ds, 活跃时段=%s, 无聊阈值=%d",
+            "心跳启动: 基准间隔=%ds, 最短间隔=%ds, 活跃时段=%s, 无聊阈值=%d, 抖动比例=±%.0f%%",
             self.base_interval, self.min_interval, self.active_hours, self._bored_threshold,
+            self._jitter_ratio * 100,
         )
 
         while not shutdown_event.is_set():
+            # 计算带抖动的实际等待时间
+            actual_wait = self._get_jittered_interval()
+            logger.debug("下次心跳等待: %.1fs (基准 %ds ±%.0f%%)",
+                        actual_wait, self._current_interval, self._jitter_ratio * 100)
+            
             try:
                 await asyncio.wait_for(
                     shutdown_event.wait(),
-                    timeout=self._current_interval,
+                    timeout=actual_wait,
                 )
                 break  # shutdown_event 被设置
             except asyncio.TimeoutError:
