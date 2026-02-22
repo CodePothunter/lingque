@@ -406,7 +406,7 @@ class MemoryManager:
 
     # ── 自我修改 API ──
 
-    EDITABLE_FILES = {"SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md", "EVOLUTION.md"}
+    EDITABLE_FILES = {"SOUL.md", "MEMORY.md", "HEARTBEAT.md", "CURIOSITY.md", "EVOLUTION.md", "CONTRIBUTING.md"}
 
     def read_self_file(self, filename: str) -> str:
         """读取工作区配置文件"""

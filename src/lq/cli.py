@@ -22,6 +22,7 @@ from lq.config import (
     slugify,
 )
 from lq.templates import (
+    write_contributing_template,
     write_heartbeat_template,
     write_memory_template,
     write_soul_template,
@@ -96,6 +97,11 @@ def init(name: str, from_env: str | None, owner: str) -> None:
     write_soul_template(home / "SOUL.md", name)
     write_memory_template(home / "MEMORY.md")
     write_heartbeat_template(home / "HEARTBEAT.md")
+
+    # 生成开发规范
+    contributing_path = home / "CONTRIBUTING.md"
+    if not contributing_path.exists():
+        write_contributing_template(contributing_path, name, slug)
 
     # 生成好奇心日志和进化日志
     from lq.prompts import CURIOSITY_INIT_TEMPLATE

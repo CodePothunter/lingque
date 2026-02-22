@@ -92,6 +92,91 @@ def write_progress_template(path: Path) -> None:
     )
 
 
+def write_contributing_template(path: Path, name: str, slug: str) -> None:
+    """生成 CONTRIBUTING.md — 框架代码开发规范"""
+    path.write_text(
+        f"""\
+# 开发规范
+
+本文档定义了灵雀实例修改框架源代码时必须遵守的开发流程。
+这些规则适用于所有 agent 实例，不可绕过。
+
+## Git 工作流
+
+### 1. 禁止直接修改 master 分支
+
+所有代码改动必须在 feature 分支上进行：
+
+```bash
+git checkout master && git pull origin master
+git checkout -b feature/简短描述
+```
+
+分支命名规范：`feature/简短描述`（如 `feature/backup-system`、`feature/fix-session-leak`）
+
+### 2. Commit 签名
+
+每次 commit 必须指定作者签名（多实例共用机器，禁止修改全局 git config）：
+
+```bash
+git commit --author="{name}-灵雀驱动的自我意识Agent <{slug}@lingque.ai>" -m "消息"
+```
+
+### 3. Commit 消息格式
+
+```
+emoji【类别】：简短描述
+```
+
+| emoji | 类别 | 用途 |
+|-------|------|------|
+| 🧬 | 进化 | 自我进化改进 |
+| ✨ | 功能 | 新功能 |
+| 🐛 | 修复 | Bug 修复 |
+| 🧹 | 清理 | 代码清理/重构 |
+| 📝 | 文档 | 文档更新 |
+
+### 4. 提交前验证
+
+改动后必须通过基础 import 验证：
+
+```bash
+cd {{source_root}} && python -c 'from lq.gateway import AssistantGateway; print("OK")'
+```
+
+验证失败则 `git checkout .` 回滚，不要提交坏代码。
+
+### 5. 推送并通知
+
+```bash
+git push origin feature/xxx
+```
+
+推送后用 `send_message` 通知主人，说明改了什么、为什么改。
+**不要自行合并到 master。** 等主人审核后由主人合并。
+
+## 工作区隔离
+
+- 实验脚本、临时测试代码放 `~/.lq-{slug}/workspace/`，不要放到项目源码树
+- 框架源代码改动在项目目录的 feature 分支上进行
+- 不要在项目根目录留下无关文件
+
+## 安全红线
+
+- 不改 config.json 和实例状态文件（SOUL.md 等改动需主人批准）
+- 不删功能，向后兼容
+- 改动在下次重启后生效
+- 进化安全网会自动保存 checkpoint；崩溃时自动回滚
+
+## 教训记录
+
+- 2026-02: 直接往 master 提交 containment.py 和 drift_detector.py，改了 gateway.py 的 import，
+  删除文件后导致项目无法启动。此后严格执行 feature branch + code review 流程。
+""",
+        encoding="utf-8",
+    )
+
+
 def write_systemd_service(name: str, project_dir: str | None = None) -> Path:
     import shutil
     uv_path = shutil.which("uv") or "uv"

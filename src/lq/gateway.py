@@ -716,6 +716,12 @@ class AssistantGateway:
             reflections_summary = self._get_reflections_summary()
             tool_stats_summary = self._get_tool_stats_summary(router)
 
+            # ── 读取开发规范 ──
+            contributing_rules = "（未配置 CONTRIBUTING.md）"
+            contributing_path = self.home / "CONTRIBUTING.md"
+            if contributing_path.exists():
+                contributing_rules = contributing_path.read_text(encoding="utf-8").strip()
+
             # ── 构建统一 prompt ──
             system = router.memory.build_context()
             system += "\n\n" + CURIOSITY_EXPLORE_PROMPT.format(
@@ -726,6 +732,7 @@ class AssistantGateway:
                 source_summary=source_summary,
                 git_log=git_log,
                 error_suggestions=error_suggestions,
+                contributing_rules=contributing_rules,
                 remaining_today=remaining_today,
                 reflections_summary=reflections_summary,
                 tool_stats_summary=tool_stats_summary,
