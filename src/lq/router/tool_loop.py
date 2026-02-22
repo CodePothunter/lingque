@@ -122,6 +122,30 @@ class ToolLoopMixin:
                 # 创建自定义工具后失效自我认知缓存
                 if "create_custom_tool" in tools_called or "delete_custom_tool" in tools_called:
                     self.memory.invalidate_awareness_cache()
+
+                # ── 检查用户是否在 loop 期间发了新消息 ──
+                pending = self._private_pending_while_busy.pop(chat_id, [])
+                if pending:
+                    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                    _cst = _tz(_td(hours=8))
+                    parts = []
+                    for item in pending:
+                        ts_str = _dt.fromtimestamp(item["ts"], tz=_cst).strftime("%H:%M")
+                        parts.append(f"[{ts_str}] {item['text']}")
+                    injected = "\n".join(parts)
+                    logger.info("loop 中注入用户新消息: chat=%s count=%d", chat_id[-8:], len(pending))
+
+                    # 写入 session 历史
+                    if self.session_mgr:
+                        session = self.session_mgr.get_or_create(chat_id)
+                        session.add_message("user", injected, sender_name=pending[-1].get("sender_name", ""))
+
+                    # 追加为 text block，和 tool_results 一起发给 LLM
+                    tool_results.append({
+                        "type": "text",
+                        "text": f"【用户在你执行工具期间发来了新消息，请充分考虑】\n{injected}",
+                    })
+
                 resp = await self.executor.continue_after_tools(
                     system, resp.messages, all_tools, tool_results, resp.raw_response
                 )

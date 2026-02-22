@@ -231,17 +231,18 @@ class DirectAPIExecutor:
         """工具执行完成后继续对话"""
         msgs = list(messages)
         msgs.append({"role": "assistant", "content": raw_response.content})
-        msgs.append({
-            "role": "user",
-            "content": [
-                {
+        # 构建 content blocks：支持混合 tool_result 和 text（用户中途指令）
+        content_blocks = []
+        for r in tool_results:
+            if r.get("type") == "text":
+                content_blocks.append({"type": "text", "text": r["text"]})
+            else:
+                content_blocks.append({
                     "type": "tool_result",
                     "tool_use_id": r["tool_use_id"],
                     "content": r["content"],
-                }
-                for r in tool_results
-            ],
-        })
+                })
+        msgs.append({"role": "user", "content": content_blocks})
         return await self.reply_with_tools(system, msgs, tools, max_tokens)
 
 
