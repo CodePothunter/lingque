@@ -82,6 +82,9 @@ class LQConfig:
     chat_memory_budget: int = 2000  # per-chat 长期记忆 token 预算
     autonomous_max_continuations: int = 5  # 每次心跳最多连续执行几轮自主行动
     heartbeat_min_interval: int = 300  # 心跳最短间隔（秒），有事做时缩短到此值
+    recent_conversation_preview: int = 20  # 心跳自主行动时对话预览总条数上限
+    backup_max_count: int = 10          # 最多保留几个备份
+    backup_size_threshold: int = 524288 # 512KB，文件夹增量触发阈值
 
     def __post_init__(self) -> None:
         if not self.slug:
@@ -107,6 +110,9 @@ class LQConfig:
         cfg.chat_memory_budget = d.get("chat_memory_budget", 2000)
         cfg.autonomous_max_continuations = d.get("autonomous_max_continuations", 5)
         cfg.heartbeat_min_interval = d.get("heartbeat_min_interval", 300)
+        cfg.recent_conversation_preview = d.get("recent_conversation_preview", 20)
+        cfg.backup_max_count = d.get("backup_max_count", 10)
+        cfg.backup_size_threshold = d.get("backup_size_threshold", 524288)
         ah = d.get("active_hours", [8, 23])
         cfg.active_hours = (ah[0], ah[1])
 

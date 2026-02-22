@@ -16,6 +16,7 @@ from pathlib import Path
 
 CST = timezone(timedelta(hours=8))
 
+from lq.backup import BackupManager
 from lq.config import LQConfig
 from lq.evolution import EvolutionEngine
 from lq.executor.api import DirectAPIExecutor
@@ -391,11 +392,19 @@ class AssistantGateway:
         await hooks.trigger("on_load", gateway=self, config=self.config)
         logger.info("on_load 钩子已触发")
 
-        # 并发运行消费者、心跳、会话自动保存
+        # 初始化备份管理器
+        backup_mgr = BackupManager(
+            self.home,
+            max_backups=self.config.backup_max_count,
+            size_threshold=self.config.backup_size_threshold,
+        )
+
+        # 并发运行消费者、心跳、会话自动保存、备份
         tasks = [
             asyncio.create_task(self._consume_messages(router, loop), name="consumer"),
             asyncio.create_task(heartbeat.run_forever(self.shutdown_event), name="heartbeat"),
             asyncio.create_task(self._auto_save_sessions(session_mgr), name="autosave"),
+            asyncio.create_task(backup_mgr.run_forever(self.shutdown_event), name="backup"),
         ]
         # inbox 轮询：local adapter 已内置 inbox 监听，无需重复；纯飞书模式保留
         if not has_local:
@@ -648,6 +657,7 @@ class AssistantGateway:
             evolution_md = "（进化引擎未加载）"
             source_summary = "（无源代码信息）"
             git_log = "（无 git 信息）"
+            error_suggestions = "（暂无明显错误模式）"
             source_root = ""
             remaining_today = 0
 
@@ -674,6 +684,20 @@ class AssistantGateway:
                 logger.debug("无好奇心信号、无当前兴趣、无进化待办，跳过自主行动")
                 break
 
+            # 近期对话索引（让好奇心延续对话方向）
+            recent_conversations = ""
+            if router.session_mgr:
+                index = router.session_mgr.get_recent_index(
+                    max_preview_total=self.config.recent_conversation_preview,
+                )
+                if index:
+                    recent_conversations = (
+                        "## 近期对话\n"
+                        "以下是你最近和用户聊的内容索引。你的好奇心和探索方向应自然延续这些话题，"
+                        "而非凭空开辟无关方向。如需了解完整对话内容，用 read_file 读取对应的 session 文件。\n\n"
+                        f"{index}\n\n"
+                    )
+
             # ── 无聊信号检测 ──
             bored_prompt = ""
             if self._heartbeat and self._heartbeat.is_bored():
@@ -695,11 +719,13 @@ class AssistantGateway:
             # ── 构建统一 prompt ──
             system = router.memory.build_context()
             system += "\n\n" + CURIOSITY_EXPLORE_PROMPT.format(
+                recent_conversations=recent_conversations,
                 signals=signals_text,
                 curiosity_md=curiosity_md,
                 evolution_md=evolution_md,
                 source_summary=source_summary,
                 git_log=git_log,
+                error_suggestions=error_suggestions,
                 remaining_today=remaining_today,
                 reflections_summary=reflections_summary,
                 tool_stats_summary=tool_stats_summary,
