@@ -102,6 +102,18 @@ class RuntimeToolsMixin:
         hours = hours % 24
         return f"{days}天{hours}小时"
 
+    # ── 漂移检测 ──
+
+    def _tool_detect_drift(self, days: int = 1) -> dict:
+        """扫描最近 N 天的回复，检测行为漂移。"""
+        from lq.drift import scan_session_replies
+
+        result = scan_session_replies(
+            self.memory.workspace / "sessions",
+            days=days,
+        )
+        return {"success": True, **result}
+
     # ── 文件操作 ──
 
     def _tool_read_file(self, path: str, max_lines: int = 500) -> dict:

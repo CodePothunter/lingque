@@ -13,6 +13,7 @@ from lq.prompts import (
     TOOL_DESC_WEB_SEARCH, TOOL_DESC_WEB_FETCH,
     TOOL_DESC_RUN_PYTHON, TOOL_DESC_READ_FILE, TOOL_DESC_WRITE_FILE,
     TOOL_DESC_GET_MY_STATS, TOOL_FIELD_STATS_CATEGORY,
+    TOOL_DESC_DETECT_DRIFT, TOOL_FIELD_DRIFT_DAYS,
     TOOL_FIELD_SECTION, TOOL_FIELD_CONTENT_MEMORY,
     TOOL_FIELD_CHAT_SECTION, TOOL_FIELD_CHAT_CONTENT,
     TOOL_FIELD_SUMMARY, TOOL_FIELD_START_TIME, TOOL_FIELD_END_TIME,
@@ -432,6 +433,20 @@ TOOLS: list[dict] = [
                     "description": TOOL_FIELD_STATS_CATEGORY,
                     "enum": ["today", "month", "capability"],
                     "default": "today",
+                },
+            },
+        },
+    },
+    {
+        "name": "detect_drift",
+        "description": TOOL_DESC_DETECT_DRIFT,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_DRIFT_DAYS,
+                    "default": 1,
                 },
             },
         },

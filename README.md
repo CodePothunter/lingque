@@ -16,7 +16,7 @@ A personal AI assistant framework built on a **platform-agnostic core** with plu
 - **Card messages** — Structured information display (schedule cards, task cards, info cards), rendered natively by each adapter
 - **Self-awareness** — The assistant understands its own architecture, can read/write its config files
 - **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
-- **Generalized agent** — 21 built-in tools covering memory, calendar, messaging, web search, code execution, file I/O, and Claude Code delegation
+- **Generalized agent** — 22 built-in tools covering memory, calendar, messaging, web search, code execution, file I/O, drift detection, and Claude Code delegation
 - **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
 - **Heartbeat-conversation linkage** — Autonomous heartbeat actions (curiosity exploration, self-evolution) are aware of recent conversations and naturally continue those topics instead of wandering off to unrelated directions
 - **Mid-loop instruction injection** — When a user sends a message while a tool-call loop is running, the new message is injected into the current loop context so the LLM can adjust its plan on the fly, rather than queuing it for later
@@ -215,7 +215,7 @@ Output:
 
 ## Built-in Tools
 
-The assistant has access to 21 built-in tools during conversations:
+The assistant has access to 22 built-in tools during conversations:
 
 **Memory & Self-Management**
 
@@ -262,6 +262,13 @@ The assistant has access to 21 built-in tools during conversations:
 | `test_custom_tool` | Validate tool code (without creating) |
 | `delete_custom_tool` | Delete a custom tool |
 | `toggle_custom_tool` | Enable/disable a custom tool |
+
+**Introspection**
+
+| Tool | Description |
+|------|-------------|
+| `get_my_stats` | Query own runtime statistics and API usage |
+| `detect_drift` | Scan recent replies for behavioral drift against SOUL.md rules |
 
 ### Claude Code Nesting Caveat
 

@@ -248,6 +248,11 @@ class ToolExecMixin:
                     input_data.get("category", "today"),
                 )
 
+            elif name == "detect_drift":
+                return self._tool_detect_drift(
+                    input_data.get("days", 1),
+                )
+
             elif name == "vision_analyze":
                 return await self._tool_vision_analyze(
                     input_data["image_source"],

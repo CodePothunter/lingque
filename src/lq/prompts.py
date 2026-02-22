@@ -915,6 +915,14 @@ CURIOSITY_INIT_TEMPLATE = (
 
 TOOL_DESC_GET_MY_STATS = "查看自己的运行状态和统计信息"
 
+TOOL_DESC_DETECT_DRIFT = (
+    "检测最近回复中的行为漂移（是否违反 SOUL.md 规范）。"
+    "扫描最近 N 天的 session 记录，检查 assistant 回复是否存在暴露工具名、"
+    "自称 AI、使用 emoji、时间戳前缀等违规行为。适合在心跳自省时使用。"
+)
+
+TOOL_FIELD_DRIFT_DAYS = "检查最近 N 天的回复（1-7），默认 1"
+
 TOOL_FIELD_STATS_CATEGORY = (
     "要查看的统计类别：today（今日统计）、month（本月统计）、capability（工具使用统计）"
 )

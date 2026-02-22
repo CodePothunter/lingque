@@ -61,6 +61,7 @@ def write_heartbeat_template(path: Path) -> None:
 ## 每天一次（早上）
 - 获取今日日程并发送晨报
 - 总结昨日日志
+- 使用 detect_drift 工具检查昨日行为是否符合 SOUL.md 规范
 
 ## 每周一次（周一早上）
 - 总结本周工作

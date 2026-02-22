@@ -237,7 +237,7 @@ class ToolLoopMixin:
         "send_message": "💬", "send_card": "🃏", "schedule_message": "⏰",
         "calendar_create_event": "📅", "calendar_list_events": "📅",
         "create_custom_tool": "🔧", "delete_custom_tool": "🗑️",
-        "vision_analyze": "👁️", "get_my_stats": "📊",
+        "vision_analyze": "👁️", "get_my_stats": "📊", "detect_drift": "🔍",
     }
 
     @staticmethod
