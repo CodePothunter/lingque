@@ -18,6 +18,8 @@ A personal AI assistant framework built on a **platform-agnostic core** with plu
 - **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
 - **Generalized agent** — 21 built-in tools covering memory, calendar, messaging, web search, code execution, file I/O, and Claude Code delegation
 - **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
+- **Heartbeat-conversation linkage** — Autonomous heartbeat actions (curiosity exploration, self-evolution) are aware of recent conversations and naturally continue those topics instead of wandering off to unrelated directions
+- **Mid-loop instruction injection** — When a user sends a message while a tool-call loop is running, the new message is injected into the current loop context so the LLM can adjust its plan on the fly, rather than queuing it for later
 - **Group chat intelligence** — @at message debounce merges rapid-fire messages, ReplyGate serializes concurrent replies with cooldown
 - **Social interactions** — Self-introduction on joining a group, welcome messages for new members, daily morning greetings with deterministic jitter to prevent duplicates
 - **API usage tracking** — Daily/monthly token usage and cost statistics
@@ -247,7 +249,7 @@ The assistant has access to 21 built-in tools during conversations:
 |------|-------------|
 | `run_python` | Execute Python code snippets for calculations and data processing |
 | `run_bash` | Execute shell commands |
-| `run_claude_code` | Delegate complex tasks to Claude Code subprocess |
+| `run_claude_code` | Delegate complex tasks to Claude Code subprocess (see [note below](#claude-code-nesting-caveat)) |
 | `read_file` | Read files from the filesystem |
 | `write_file` | Write/create files on the filesystem |
 
@@ -260,6 +262,29 @@ The assistant has access to 21 built-in tools during conversations:
 | `test_custom_tool` | Validate tool code (without creating) |
 | `delete_custom_tool` | Delete a custom tool |
 | `toggle_custom_tool` | Enable/disable a custom tool |
+
+### Claude Code Nesting Caveat
+
+The `run_claude_code` tool delegates complex tasks (multi-file edits, git operations, codebase analysis) to a Claude Code subprocess. However, **it cannot run inside an existing Claude Code session**. The executor checks for the `CLAUDECODE=1` environment variable and refuses to start if detected, to prevent infinite nesting.
+
+This means if you launch your instance from within a Claude Code terminal session:
+
+```bash
+# Inside a Claude Code session — CLAUDECODE=1 is inherited
+uv run lq start @name          # ❌ run_claude_code will always fail
+```
+
+Every `run_claude_code` call will fail with `检测到嵌套 Claude Code 会话，无法启动子进程`. The assistant will silently fall back to using `run_bash` + `write_file` instead, which works but loses Claude Code's multi-step reasoning capabilities.
+
+**Fix**: start your instance outside of Claude Code so the environment variable is not inherited:
+
+```bash
+# From a regular shell — no CLAUDECODE env var
+uv run lq start @name          # ✅ run_claude_code works normally
+
+# Or use nohup / systemd / tmux to detach from the Claude Code session
+nohup uv run lq start @name &  # ✅ also works
+```
 
 ## Custom Tool System
 
@@ -348,16 +373,19 @@ Heartbeat Cycle (every N seconds)
     │
     ├── 1. Read HEARTBEAT.md → Choose task mode (learn / create / code / reflect)
     │
-    ├── 2. Execute task:
+    ├── 2. Collect recent conversation index (proportional preview of active sessions)
+    │      → Inject into autonomous action prompt so curiosity follows conversation topics
+    │
+    ├── 3. Execute task:
     │   │   ├── Learn mode → web_search → write_memory / write_chat_memory
     │   │   ├── Create mode → content_creator → send to group
     │   │   ├── Code mode → run_bash / run_claude_code → commit changes
     │   │   └── Reflect mode → analyze logs → update EVOLUTION.md
     │   │
-    ├── 3. Curiosity detection:
+    ├── 4. Curiosity detection:
     │   │   └── Found knowledge gap? → Log to CURIOSITY.md
     │   │
-    └── 4. Send report to owner
+    └── 5. Send report to owner
 ```
 
 ### Example Workflow
@@ -433,6 +461,7 @@ Edit `~/.lq-{slug}/config.json`:
 | `heartbeat_interval` | Heartbeat interval (seconds) |
 | `active_hours` | Active hours `[start, end)` |
 | `cost_alert_daily` | Daily cost alert threshold (USD) |
+| `recent_conversation_preview` | Max total preview lines for recent conversations in heartbeat prompt (default: 20) |
 | `groups[].note` | Group description, helps LLM decide whether to intervene |
 | `groups[].eval_threshold` | Message count to trigger group evaluation |
 
@@ -448,7 +477,7 @@ src/lq/
 │   ├── core.py        # MessageRouter class + event dispatch + reply gate
 │   ├── private.py     # Private chat handling + reflection + curiosity signals
 │   ├── group.py       # Group chat three-layer intervention + collaboration
-│   ├── tool_loop.py   # Agentic tool-call loop + approval system
+│   ├── tool_loop.py   # Agentic tool-call loop + approval system + mid-loop user instruction injection
 │   ├── tool_exec.py      # Tool execution dispatch + multimodal content
 │   ├── web_tools.py      # Web search/fetch via MCP
 │   └── runtime_tools.py  # Python execution + file I/O + self-stats

@@ -17,6 +17,8 @@
 - **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
 - **通用 Agent 能力** — 21 个内置工具，覆盖记忆、日历、消息、联网搜索、代码执行、文件读写、Claude Code 委托
 - **多实例群聊协作** — 多个独立 bot 共存同一群聊，自动感知邻居、避免抢答，通过消息信号自主推断彼此身份并持久记忆
+- **心跳-对话联动** — 心跳自主行动（好奇心探索、自我进化）能感知近期对话内容，探索方向自然延续对话话题，而非凭空开辟无关方向
+- **Tool Loop 中途指令** — 用户在工具调用循环执行期间发来的消息会被注入当前 loop 上下文，LLM 可以即时调整行动计划，而非等整个 loop 跑完才处理
 - **群聊智能** — @at 消息防抖合并连续消息，ReplyGate 串行化并发回复并带冷却窗口
 - **社交互动** — 入群自我介绍、新成员欢迎消息、每日早安问候（deterministic jitter 防重发）
 - **API 消耗追踪** — 按日/月统计 Token 用量与费用
@@ -247,7 +249,7 @@ conversation.py      — LocalAdapter（终端模式，双模式：gateway 模�
 |------|------|
 | `run_python` | 执行 Python 代码片段，用于计算和数据处理 |
 | `run_bash` | 执行 Shell 命令 |
-| `run_claude_code` | 委托复杂任务给 Claude Code 子进程 |
+| `run_claude_code` | 委托复杂任务给 Claude Code 子进程（见[注意事项](#claude-code-嵌套限制)） |
 | `read_file` | 读取文件系统中的文件 |
 | `write_file` | 创建或写入文件 |
 
@@ -260,6 +262,29 @@ conversation.py      — LocalAdapter（终端模式，双模式：gateway 模�
 | `test_custom_tool` | 校验工具代码（不创建） |
 | `delete_custom_tool` | 删除自定义工具 |
 | `toggle_custom_tool` | 启用/禁用自定义工具 |
+
+### Claude Code 嵌套限制
+
+`run_claude_code` 工具将复杂任务（多文件编辑、git 操作、代码库分析等）委托给 Claude Code 子进程执行。但**它无法在已有的 Claude Code 会话内启动**——执行器会检测 `CLAUDECODE=1` 环境变量，检测到时直接拒绝启动以防止无限嵌套。
+
+也就是说，如果你在 Claude Code 终端里启动实例：
+
+```bash
+# 在 Claude Code 会话内 — 子进程继承 CLAUDECODE=1
+uv run lq start @name          # ❌ run_claude_code 每次都会失败
+```
+
+所有 `run_claude_code` 调用都会返回 `检测到嵌套 Claude Code 会话，无法启动子进程`。助理会静默降级为 `run_bash` + `write_file` 组合完成任务，能用但失去了 Claude Code 的多步推理能力。
+
+**解决方法**：在 Claude Code 会话外启动实例，确保环境变量不被继承：
+
+```bash
+# 普通 shell 中 — 无 CLAUDECODE 环境变量
+uv run lq start @name          # ✅ run_claude_code 正常工作
+
+# 或用 nohup / systemd / tmux 脱离 Claude Code 会话
+nohup uv run lq start @name &  # ✅ 同样可以
+```
 
 ## 自定义工具系统
 
@@ -348,16 +373,19 @@ async def execute(input_data: dict, context: dict) -> dict:
     │
     ├── 1. 读取 HEARTBEAT.md → 选择任务模式（学习 / 创作 / 写代码 / 反思）
     │
-    ├── 2. 执行任务：
+    ├── 2. 收集近期对话索引（按消息量比例分配各 session 的预览条数）
+    │      → 注入自主行动 prompt，让好奇心延续对话话题
+    │
+    ├── 3. 执行任务：
     │   │   ├── 学习模式 → web_search → write_memory / write_chat_memory
     │   │   ├── 创作模式 → content_creator → 发送到群
     │   │   ├── 写代码模式 → run_bash / run_claude_code → 提交修改
     │   │   └── 反思模式 → 分析日志 → 更新 EVOLUTION.md
     │   │
-    ├── 3. 好奇心检测：
+    ├── 4. 好奇心检测：
     │   │   └── 发现知识盲区？ → 记录到 CURIOSITY.md
     │   │
-    └── 4. 发送汇报给主人
+    └── 5. 发送汇报给主人
 ```
 
 ### 示例流程
@@ -433,6 +461,7 @@ async def execute(input_data: dict, context: dict) -> dict:
 | `heartbeat_interval` | 心跳间隔（秒） |
 | `active_hours` | 活跃时段 `[开始小时, 结束小时)` |
 | `cost_alert_daily` | 日消耗告警阈值（USD） |
+| `recent_conversation_preview` | 心跳自主行动时对话预览总条数上限（默认 20） |
 | `groups[].note` | 群描述，帮助 LLM 判断是否介入 |
 | `groups[].eval_threshold` | 群聊触发评估的消息数 |
 
@@ -448,7 +477,7 @@ src/lq/
 │   ├── core.py        # MessageRouter 类 + 事件分发 + 回复锁
 │   ├── private.py     # 私聊处理 + 自我反思 + 好奇心信号
 │   ├── group.py       # 群聊三层介入 + 协作记录
-│   ├── tool_loop.py   # Agent 工具调用循环 + 审批机制
+│   ├── tool_loop.py   # Agent 工具调用循环 + 审批机制 + loop 中途用户指令注入
 │   ├── tool_exec.py      # 工具执行分发 + 多模态内容
 │   ├── web_tools.py      # 联网搜索/抓取（MCP）
 │   └── runtime_tools.py  # Python 执行 + 文件读写 + 自身统计
