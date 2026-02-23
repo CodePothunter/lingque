@@ -2,30 +2,81 @@
 
 [中文文档](README_CN.md)
 
-A personal AI assistant framework built on a **platform-agnostic core** with pluggable chat platform adapters. The core engine handles all conversation logic, tool execution, memory, and group chat intelligence without depending on any specific chat platform. Adapters are thin wrappers that translate platform events into standard types. Ships with [Feishu (Lark)](https://www.feishu.cn/), [Discord](https://discord.com/), and local terminal adapters; adding a new platform requires only one adapter file. Features include private/group chat with intelligent replies, calendar management, long-term memory, and runtime self-extension through tool creation.
+**An AI assistant that grows on its own.** Unlike traditional chatbots that forget after each session, LingQue has long-term memory, autonomous learning, and a customizable persona — it evolves through continuous interaction and gets better at understanding you over time.
 
-## Features
+---
 
-- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Telegram, Slack, etc.) requires only one adapter file
-- **Pluggable adapters** — Ships with Feishu (Lark), Discord, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
-- **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
-- **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
-- **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log). See [Self-Evolution System](#self-evolution-system) for details
-- **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
-- **Calendar integration** — Query/create calendar events via adapter, daily briefings (Feishu calendar supported out-of-box)
-- **Card messages** — Structured information display (schedule cards, task cards, info cards), rendered natively by each adapter
-- **Self-awareness** — The assistant understands its own architecture, can read/write its config files
-- **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
-- **Generalized agent** — 22 built-in tools covering memory, calendar, messaging, web search, code execution, file I/O, drift detection, and Claude Code delegation
-- **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
-- **Heartbeat-conversation linkage** — Autonomous heartbeat actions (curiosity exploration, self-evolution) are aware of recent conversations and naturally continue those topics instead of wandering off to unrelated directions
-- **Mid-loop instruction injection** — When a user sends a message while a tool-call loop is running, the new message is injected into the current loop context so the LLM can adjust its plan on the fly, rather than queuing it for later
-- **Group chat intelligence** — @at message debounce merges rapid-fire messages, ReplyGate serializes concurrent replies with cooldown
-- **Social interactions** — Self-introduction on joining a group, welcome messages for new members, daily morning greetings with deterministic jitter to prevent duplicates
-- **API usage tracking** — Daily/monthly token usage and cost statistics
-- **Multi-instance** — Run multiple independent assistants simultaneously, fully isolated with no shared state
-- **Pinyin paths** — Chinese names auto-convert to pinyin slugs for filesystem compatibility
-- **Test framework** — 5-level LLM capability test suite (basic → reasoning → coding → complex → project) with automated harness
+> **LingQue in one sentence:** A personal AI assistant framework built on a platform-agnostic core, achieving a true autonomous growth loop through five interlocking files (persona / memory / heartbeat / curiosity / evolution log).
+
+---
+
+## Highlights
+
+|  | Capability | Description |
+|--|-----------|-------------|
+| **Remembers everything** | Long-term memory | Global memory + per-chat memory + daily journals, survives restarts |
+| **Grows autonomously** | Self-evolution loop | Heartbeat-driven learn-reflect-improve cycle, no manual intervention needed |
+| **Has personality** | Persona customization | SOUL.md defines character, tone, intervention rules — every instance is unique |
+| **Goes anywhere** | Platform-agnostic | Feishu, Discord, terminal — one core, multiple platforms simultaneously |
+| **Builds its own tools** | Runtime extension | Autonomously writes, validates, and loads new tool plugins mid-conversation |
+| **Collaborates in groups** | Multi-instance intelligence | Multiple bots coexist, auto-detect neighbors, avoid crosstalk, remember identities |
+
+---
+
+## Why LingQue
+
+| | Traditional ChatBot | LingQue |
+|--|---------------------|---------|
+| **Memory** | Forgets after session ends | Global + per-chat long-term memory, persists across sessions |
+| **Growth** | Starts from scratch every time | Heartbeat-driven autonomous learn-reflect-evolve cycle |
+| **Persona** | Generic assistant tone | SOUL.md gives full control over identity, personality, communication style |
+| **Tools** | Fixed feature set | Creates new tools mid-conversation, capabilities expand continuously |
+| **Platform** | Locked to one platform | Platform-agnostic core + pluggable adapters, extend anytime |
+| **Multi-instance** | Single bot | Multiple independent instances in parallel, each isolated with its own persona |
+
+---
+
+## Self-Evolution Loop
+
+LingQue's core differentiator: it doesn't just answer questions — it continuously evolves in the process.
+
+```mermaid
+graph LR
+    A["HEARTBEAT.md<br/>Heartbeat trigger"] --> B["Choose mode"]
+    B --> C["Learn"]
+    B --> D["Create"]
+    B --> E["Code"]
+    B --> F["Reflect"]
+    C --> G["MEMORY.md<br/>Store knowledge"]
+    D --> H["Send to group"]
+    E --> I["Commit improvements"]
+    F --> J["EVOLUTION.md<br/>Record growth"]
+    G --> K{"Knowledge gap?"}
+    K -- Yes --> L["CURIOSITY.md<br/>Log for exploration"]
+    L --> A
+    K -- No --> A
+    J --> A
+
+    style A fill:#4CAF50,color:#fff
+    style G fill:#2196F3,color:#fff
+    style J fill:#FF9800,color:#fff
+    style L fill:#9C27B0,color:#fff
+```
+
+> **SOUL.md** serves as the persona foundation throughout — it determines *how* the assistant learns, creates, reflects, and evolves.
+
+---
+
+## About "Persona": LingQue Is Not a Cold Framework
+
+Every LingQue instance has its own name and personality. For example:
+
+- **NieNie (捏捏)** — The first LingQue instance, endlessly curious, loves exploring technical boundaries, occasionally goes off to research something interesting and excitedly reports back
+- **NaiYou (奶油)** — A gentle, patient daily assistant, great at schedule management and information organization, communicates with care and thoroughness
+
+These "personas" are not gimmicks — they're defined in `SOUL.md` and directly influence the assistant's communication style, intervention strategies, and autonomous behavior patterns. You can shape LingQue into a rigorous work assistant or a lively creative partner.
+
+---
 
 ## Quick Start
 
@@ -124,6 +175,30 @@ uv run lq stop @奶油            # stop
 
 > Instance names work in both Chinese and pinyin: `@奶油` and `@naiyou` are equivalent.
 
+---
+
+<details>
+<summary><strong>CLI Reference</strong></summary>
+
+| Command | Description |
+|---------|-------------|
+| `uv run lq init --name NAME [--from-env .env]` | Initialize instance |
+| `uv run lq start @NAME [--adapter TYPE]` | Start (TYPE: `feishu`, `discord`, `local`, or comma-separated like `discord,local`) |
+| `uv run lq stop @NAME` | Stop |
+| `uv run lq restart @NAME [--adapter TYPE]` | Restart |
+| `uv run lq list` | List all instances |
+| `uv run lq status @NAME` | Status + API usage stats |
+| `uv run lq logs @NAME [--since 1h]` | View logs |
+| `uv run lq edit @NAME soul/memory/heartbeat/config` | Edit config files |
+| `uv run lq chat @NAME` | Interactive local chat (terminal) |
+| `uv run lq chat @NAME "message"` | Single-message mode |
+| `uv run lq say @NAME "message"` | Alias for `chat` |
+| `uv run lq upgrade @NAME` | Upgrade framework |
+
+</details>
+
+---
+
 ## Platform Adapter Setup
 
 LingQue supports three platform adapters. You can use any combination simultaneously via `--adapter`.
@@ -167,55 +242,104 @@ No setup required. Use `--adapter local` or `lq chat @NAME` for interactive term
 
 In Discord, DM the bot or @mention it in a channel to chat.
 
-## Architecture
+---
 
-### Platform Abstraction
+## Full Feature List
 
-The codebase is split into a **platform-agnostic core** and **platform-specific adapters**:
+<details>
+<summary><strong>Expand to see all features</strong></summary>
+
+- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Telegram, Slack, etc.) requires only one adapter file
+- **Pluggable adapters** — Ships with Feishu (Lark), Discord, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
+- **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
+- **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
+- **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log)
+- **Progress tracking** — PROGRESS.md records goals, milestones, and weekly reviews
+- **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
+- **Calendar integration** — Query/create calendar events via adapter, daily briefings (Feishu calendar supported out-of-box)
+- **Card messages** — Structured information display (schedule cards, task cards, info cards), rendered natively by each adapter
+- **Self-awareness** — The assistant understands its own architecture, can read/write its config files
+- **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
+- **Generalized agent** — 22 built-in tools covering memory, calendar, messaging, web search, code execution, file I/O, drift detection, and Claude Code delegation
+- **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
+- **Heartbeat-conversation linkage** — Autonomous heartbeat actions (curiosity exploration, self-evolution) are aware of recent conversations and naturally continue those topics instead of wandering off to unrelated directions
+- **Mid-loop instruction injection** — When a user sends a message while a tool-call loop is running, the new message is injected into the current loop context so the LLM can adjust its plan on the fly, rather than queuing it for later
+- **Group chat intelligence** — @at message debounce merges rapid-fire messages, ReplyGate serializes concurrent replies with cooldown
+- **Social interactions** — Self-introduction on joining a group, welcome messages for new members, daily morning greetings with deterministic jitter to prevent duplicates
+- **API usage tracking** — Daily/monthly token usage and cost statistics
+- **Multi-instance** — Run multiple independent assistants simultaneously, fully isolated with no shared state
+- **Pinyin paths** — Chinese names auto-convert to pinyin slugs for filesystem compatibility
+- **Test framework** — 5-level LLM capability test suite (basic → reasoning → coding → complex → project) with automated harness
+
+</details>
+
+---
+
+## Self-Evolution System
+
+LingQue's self-evolution system uses five interlocking config files to enable autonomous learning, reflection, and growth.
+
+### Five Config Files
+
+| File | Purpose | When Updated |
+|------|---------|--------------|
+| `SOUL.md` | **Persona & behavioral rules** — defines identity, personality, communication style, intervention principles | Manually edited or rare self-modification |
+| `MEMORY.md` | **Long-term knowledge** — important facts, user preferences, lessons learned, ongoing tasks | Automatically after learning something important |
+| `HEARTBEAT.md` | **Scheduled task templates** — defines what the assistant does during periodic heartbeat cycles | Manually configured or evolution updates |
+| `CURIOSITY.md` | **Curiosity log** — tracks what the assistant wants to learn, progress on exploration | Updated during heartbeat when curiosity signals detected |
+| `EVOLUTION.md` | **Evolution log** — records framework improvements, pending ideas, completed changes | Updated after each self-improvement cycle |
+
+### How They Work Together
 
 ```
-platform/
-├── types.py     — Standard data types (IncomingMessage, OutgoingMessage, Reaction, etc.)
-├── adapter.py   — PlatformAdapter ABC (9 abstract + 4 optional methods)
-└── multi.py     — MultiAdapter (composite adapter for multi-platform mode)
-
-feishu/adapter.py    — FeishuAdapter (wraps sender + listener internally)
-discord_/adapter.py  — DiscordAdapter (wraps sender + discord.py client in daemon thread)
-conversation.py      — LocalAdapter (terminal mode, two modes: gateway with stdin/inbox event sources, chat with passive connect)
+Heartbeat Cycle (every N seconds)
+    │
+    ├── 1. Read HEARTBEAT.md → Choose task mode (learn / create / code / reflect)
+    │
+    ├── 2. Collect recent conversation index (proportional preview of active sessions)
+    │      → Inject into autonomous action prompt so curiosity follows conversation topics
+    │
+    ├── 3. Execute task:
+    │   │   ├── Learn mode → web_search → write_memory / write_chat_memory
+    │   │   ├── Create mode → content_creator → send to group
+    │   │   ├── Code mode → run_bash / run_claude_code → commit changes
+    │   │   └── Reflect mode → analyze logs → update EVOLUTION.md
+    │   │
+    ├── 4. Curiosity detection:
+    │   │   └── Found knowledge gap? → Log to CURIOSITY.md
+    │   │
+    └── 5. Send report to owner
 ```
 
-The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on platform SDKs directly.
+### Example Workflow
 
-### Event Flow
+1. **Heartbeat triggers** → Assistant reads `HEARTBEAT.md`, sees "learn mode" is next
+2. **Learning** → Searches for "prompt engineering techniques", reads articles, extracts key insights
+3. **Memory storage** → Writes learnings to `MEMORY.md` under "Prompt Engineering" section
+4. **Curiosity log** → During learning, notices "chain-of-thought prompting" mentioned but not fully understood → logs to `CURIOSITY.md`
+5. **Next heartbeat** → Reads `CURIOSITY.md`, sees pending question → focuses next learning cycle on that topic
+6. **Evolution** → After several cycles, realizes a better prompt template → updates `EVOLUTION.md` with improvement idea → implements in next "code mode" cycle
 
-All adapters produce standard events through the same unified path:
+### Usage Scenarios
 
-```
-Event sources (per adapter):
-  FeishuAdapter:   Feishu WS → _event_converter → queue.put()
-  DiscordAdapter:  discord.py WS (daemon thread) → _event_converter → queue.put()
-  LocalAdapter:    stdin → _read_stdin → queue.put()
-                   inbox.txt → _watch_inbox → queue.put()
+- **Self-directed learning**: Assistant explores topics it is curious about without user prompting
+- **Continuous improvement**: Regular reflection on past conversations and outputs
+- **Framework evolution**: Assistant can propose and implement code improvements to its own system
+- **Persistent knowledge**: Lessons learned are stored long-term, not lost between sessions
 
-Unified pipeline:
-  asyncio.Queue → _consume_messages → router.handle(standard_event)
-    standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
-    ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
-    ├── "interaction"   → CardAction → _handle_card_action
-    ├── "reaction"      → Reaction → _handle_reaction_event
-    ├── "member_change" → _handle_member_change
-    └── "eval_timeout"  → _evaluate_buffer
+### Customization
 
-Output:
-  router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
-    FeishuAdapter:   OnIt emoji → REST API → remove emoji
-    DiscordAdapter:  typing indicator (8s refresh) → REST API (auto-chunk at 2000 chars) → cancel typing
-    LocalAdapter:    ⏳ thinking indicator → terminal card/text → clear indicator
-```
+Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
 
-## Built-in Tools
+- Task modes: learn, create, code, reflect (customize which ones, in what order)
+- Task frequency: balance between different modes
+- Reflection topics: what to review during reflection cycles
+- Evolution priorities: what framework aspects to improve first
 
-The assistant has access to 22 built-in tools during conversations:
+---
+
+<details>
+<summary><strong>Built-in Tools (22)</strong></summary>
 
 **Memory & Self-Management**
 
@@ -293,7 +417,12 @@ uv run lq start @name          # ✅ run_claude_code works normally
 nohup uv run lq start @name &  # ✅ also works
 ```
 
-## Custom Tool System
+</details>
+
+---
+
+<details>
+<summary><strong>Custom Tool System</strong></summary>
 
 The assistant can autonomously create new tools to extend its capabilities during conversations. Tools are stored as Python files in the `tools/` directory.
 
@@ -341,87 +470,63 @@ Simply tell the assistant in any connected chat platform (or local terminal):
 
 The assistant will automatically write the code, validate it, and load it. The new tool is then available in conversations.
 
-## CLI Reference
+</details>
 
-| Command | Description |
-|---------|-------------|
-| `uv run lq init --name NAME [--from-env .env]` | Initialize instance |
-| `uv run lq start @NAME [--adapter TYPE]` | Start (TYPE: `feishu`, `discord`, `local`, or comma-separated like `discord,local`) |
-| `uv run lq stop @NAME` | Stop |
-| `uv run lq restart @NAME [--adapter TYPE]` | Restart |
-| `uv run lq list` | List all instances |
-| `uv run lq status @NAME` | Status + API usage stats |
-| `uv run lq logs @NAME [--since 1h]` | View logs |
-| `uv run lq edit @NAME soul/memory/heartbeat/config` | Edit config files |
-| `uv run lq chat @NAME` | Interactive local chat (terminal) |
-| `uv run lq chat @NAME "message"` | Single-message mode |
-| `uv run lq say @NAME "message"` | Alias for `chat` |
-| `uv run lq upgrade @NAME` | Upgrade framework |
+---
 
+<details>
+<summary><strong>Architecture</strong></summary>
 
-## Self-Evolution System
+### Platform Abstraction
 
-灵雀的自进化系统通过五个配置文件联动，实现 AI 助理的自主学习、反思和成长。
-
-### Five Config Files
-
-| File | Purpose | When Updated |
-|------|---------|--------------|
-| `SOUL.md` | **Persona & behavioral rules** — defines identity, personality, communication style, intervention principles | Manually edited or rare self-modification |
-| `MEMORY.md` | **Long-term knowledge** — important facts, user preferences, lessons learned, ongoing tasks | Automatically after learning something important |
-| `HEARTBEAT.md` | **Scheduled task templates** — defines what the assistant does during periodic heartbeat cycles | Manually configured or evolution updates |
-| `CURIOSITY.md` | **Curiosity log** — tracks what the assistant wants to learn, progress on exploration | Updated during heartbeat when curiosity signals detected |
-| `EVOLUTION.md` | **Evolution log** — records framework improvements, pending ideas, completed changes | Updated after each self-improvement cycle |
-
-### How They Work Together
+The codebase is split into a **platform-agnostic core** and **platform-specific adapters**:
 
 ```
-Heartbeat Cycle (every N seconds)
-    │
-    ├── 1. Read HEARTBEAT.md → Choose task mode (learn / create / code / reflect)
-    │
-    ├── 2. Collect recent conversation index (proportional preview of active sessions)
-    │      → Inject into autonomous action prompt so curiosity follows conversation topics
-    │
-    ├── 3. Execute task:
-    │   │   ├── Learn mode → web_search → write_memory / write_chat_memory
-    │   │   ├── Create mode → content_creator → send to group
-    │   │   ├── Code mode → run_bash / run_claude_code → commit changes
-    │   │   └── Reflect mode → analyze logs → update EVOLUTION.md
-    │   │
-    ├── 4. Curiosity detection:
-    │   │   └── Found knowledge gap? → Log to CURIOSITY.md
-    │   │
-    └── 5. Send report to owner
+platform/
+├── types.py     — Standard data types (IncomingMessage, OutgoingMessage, Reaction, etc.)
+├── adapter.py   — PlatformAdapter ABC (9 abstract + 4 optional methods)
+└── multi.py     — MultiAdapter (composite adapter for multi-platform mode)
+
+feishu/adapter.py    — FeishuAdapter (wraps sender + listener internally)
+discord_/adapter.py  — DiscordAdapter (wraps sender + discord.py client in daemon thread)
+conversation.py      — LocalAdapter (terminal mode, two modes: gateway with stdin/inbox event sources, chat with passive connect)
 ```
 
-### Example Workflow
+The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on platform SDKs directly.
 
-1. **Heartbeat triggers** → Assistant reads `HEARTBEAT.md`, sees "learn mode" is next
-2. **Learning** → Searches for "prompt engineering techniques", reads articles, extracts key insights
-3. **Memory storage** → Writes learnings to `MEMORY.md` under "Prompt Engineering" section
-4. **Curiosity log** → During learning, notices "chain-of-thought prompting" mentioned but not fully understood → logs to `CURIOSITY.md`
-5. **Next heartbeat** → Reads `CURIOSITY.md`, sees pending question → focuses next learning cycle on that topic
-6. **Evolution** → After several cycles, realizes a better prompt template → updates `EVOLUTION.md` with improvement idea → implements in next "code mode" cycle
+### Event Flow
 
-### Usage Scenarios
+All adapters produce standard events through the same unified path:
 
-- **Self-directed learning**: Assistant explores topics it is curious about without user prompting
-- **Continuous improvement**: Regular reflection on past conversations and outputs
-- **Framework evolution**: Assistant can propose and implement code improvements to its own system
-- **Persistent knowledge**: Lessons learned are stored long-term, not lost between sessions
+```
+Event sources (per adapter):
+  FeishuAdapter:   Feishu WS → _event_converter → queue.put()
+  DiscordAdapter:  discord.py WS (daemon thread) → _event_converter → queue.put()
+  LocalAdapter:    stdin → _read_stdin → queue.put()
+                   inbox.txt → _watch_inbox → queue.put()
 
-### Customization
+Unified pipeline:
+  asyncio.Queue → _consume_messages → router.handle(standard_event)
+    standard_event = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+    ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+    ├── "interaction"   → CardAction → _handle_card_action
+    ├── "reaction"      → Reaction → _handle_reaction_event
+    ├── "member_change" → _handle_member_change
+    └── "eval_timeout"  → _evaluate_buffer
 
-Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
+Output:
+  router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
+    FeishuAdapter:   OnIt emoji → REST API → remove emoji
+    DiscordAdapter:  typing indicator (8s refresh) → REST API (auto-chunk at 2000 chars) → cancel typing
+    LocalAdapter:    ⏳ thinking indicator → terminal card/text → clear indicator
+```
 
-- Task modes: learn, create, code, reflect (customize which ones, in what order)
-- Task frequency: balance between different modes
-- Reflection topics: what to review during reflection cycles
-- Evolution priorities: what framework aspects to improve first
+</details>
 
+---
 
-## Configuration
+<details>
+<summary><strong>Configuration</strong></summary>
 
 Edit `~/.lq-{slug}/config.json`:
 
@@ -472,7 +577,12 @@ Edit `~/.lq-{slug}/config.json`:
 | `groups[].note` | Group description, helps LLM decide whether to intervene |
 | `groups[].eval_threshold` | Message count to trigger group evaluation |
 
-## Project Structure
+</details>
+
+---
+
+<details>
+<summary><strong>Project Structure</strong></summary>
 
 ```
 src/lq/
@@ -528,3 +638,5 @@ tests/
 ├── test_level4_complex.py  # Level 4: Web + agent loops
 └── test_level5_project.py  # Level 5: Large-scale build & deploy
 ```
+
+</details>

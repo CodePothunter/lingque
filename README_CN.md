@@ -1,30 +1,80 @@
 # 灵雀 LingQue
 
-基于**平台无关内核**的个人 AI 助理框架，核心引擎（对话路由、工具执行、记忆管理、群聊智能）不依赖任何特定聊天平台，通过可插拔适配器接入不同平台。已内置[飞书（Lark）](https://www.feishu.cn/)、[Discord](https://discord.com/) 和本地终端适配器，新增平台（Telegram、Slack 等）只需编写一个适配器文件。支持私聊/群聊智能回复、日历管理、长期记忆，并能在运行时自主创建新工具扩展自身能力。
+**会自己成长的 AI 助理。** 不像传统 ChatBot 聊完就忘——灵雀拥有长期记忆、自主学习能力和可定制人格，能在持续交互中不断进化，越用越懂你。
 
-## 特性
+---
 
-- **平台无关内核** — `PlatformAdapter` 抽象基类将整个引擎与具体聊天平台彻底解耦，路由、记忆、会话、工具系统均无任何平台特定导入。新增平台（Telegram、Slack 等）只需一个适配器文件
-- **可插拔适配器** — 内置飞书、Discord 和本地终端适配器，全部走相同的统一事件管线。可在单一平台运行，也可多平台同时连接
-- **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，支持完整工具链，无需任何外部聊天平台凭证
-- **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
-- **自进化系统** — 五文件联动实现自主成长：SOUL.md 人格 + MEMORY.md 记忆 + HEARTBEAT.md 心跳任务 + CURIOSITY.md 好奇心日志 + EVOLUTION.md 进化日志
-- **进度追踪** — PROGRESS.md 记录目标、里程碑和每周回顾
-- **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
-- **日历集成** — 通过适配器查询/创建日程，每日晨报（已内置飞书日历支持）
-- **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡），由各适配器原生渲染
-- **自我认知** — 助理了解自己的架构，可读写自身配置文件
-- **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
-- **通用 Agent 能力** — 22 个内置工具，覆盖记忆、日历、消息、联网搜索、代码执行、文件读写、漂移检测、Claude Code 委托
-- **多实例群聊协作** — 多个独立 bot 共存同一群聊，自动感知邻居、避免抢答，通过消息信号自主推断彼此身份并持久记忆
-- **心跳-对话联动** — 心跳自主行动（好奇心探索、自我进化）能感知近期对话内容，探索方向自然延续对话话题，而非凭空开辟无关方向
-- **Tool Loop 中途指令** — 用户在工具调用循环执行期间发来的消息会被注入当前 loop 上下文，LLM 可以即时调整行动计划，而非等整个 loop 跑完才处理
-- **群聊智能** — @at 消息防抖合并连续消息，ReplyGate 串行化并发回复并带冷却窗口
-- **社交互动** — 入群自我介绍、新成员欢迎消息、每日早安问候（deterministic jitter 防重发）
-- **API 消耗追踪** — 按日/月统计 Token 用量与费用
-- **多实例** — 同时运行多个独立助理，各自隔离，无共享状态
-- **拼音路径** — 中文名自动转拼音 slug，避免文件系统问题
-- **测试框架** — 5 级 LLM 能力测试套件（基础 → 推理 → 编程 → 综合 → 工程），自动化测试基座
+> **一句话理解灵雀：** 一个基于平台无关内核的个人 AI 助理框架，通过五文件联动（人格 / 记忆 / 心跳 / 好奇心 / 进化日志）实现真正的自主成长闭环。
+
+---
+
+## 亮点一览
+
+|  | 能力 | 说明 |
+|--|------|------|
+| **记住一切** | 长期记忆系统 | 全局记忆 + 对话记忆 + 每日日志，重启不丢失 |
+| **自主成长** | 自进化闭环 | 心跳驱动的学习-反思-改进循环，无需人工干预 |
+| **有血有肉** | 人格定制 | SOUL.md 定义性格、语气、介入原则，每个实例独一无二 |
+| **去哪都行** | 平台无关 | 飞书、Discord、终端——一套内核，多平台同时在线 |
+| **自造工具** | 运行时扩展 | 对话中自主编写、验证、加载新工具插件 |
+| **群聊协作** | 多实例智能 | 多 bot 共存，自动感知邻居、避免抢答、记忆彼此身份 |
+
+---
+
+## 为什么选择灵雀
+
+| | 传统 ChatBot | 灵雀 |
+|--|-------------|------|
+| **记忆** | 会话结束即遗忘 | 全局 + 对话级长期记忆，跨会话持久 |
+| **成长** | 每次对话从零开始 | 心跳驱动的自主学习-反思-进化循环 |
+| **人格** | 千篇一律的助手语气 | SOUL.md 可完全定制身份、性格、沟通风格 |
+| **工具** | 固定功能集 | 对话中自主创建新工具，能力持续扩展 |
+| **平台** | 绑定单一平台 | 平台无关内核 + 可插拔适配器，随时扩展 |
+| **多实例** | 单一 bot | 多个独立实例并行，各自隔离、各有人格 |
+
+---
+
+## 自进化闭环
+
+灵雀的核心竞争力：不只是回答问题，而是在回答问题的过程中持续进化。
+
+```mermaid
+graph LR
+    A["HEARTBEAT.md<br/>心跳触发"] --> B["选择模式"]
+    B --> C["学习"]
+    B --> D["创作"]
+    B --> E["写代码"]
+    B --> F["反思"]
+    C --> G["MEMORY.md<br/>存储新知"]
+    D --> H["发送到群"]
+    E --> I["提交改进"]
+    F --> J["EVOLUTION.md<br/>记录成长"]
+    G --> K{"发现盲区?"}
+    K -- 是 --> L["CURIOSITY.md<br/>记录待探索"]
+    L --> A
+    K -- 否 --> A
+    J --> A
+
+    style A fill:#4CAF50,color:#fff
+    style G fill:#2196F3,color:#fff
+    style J fill:#FF9800,color:#fff
+    style L fill:#9C27B0,color:#fff
+```
+
+> **SOUL.md** 作为人格基石贯穿全程——它决定了助理"用什么方式"去学习、创作、反思和进化。
+
+---
+
+## 关于"人格"：灵雀不是冰冷的框架
+
+每个灵雀实例都有自己的名字和性格。比如：
+
+- **捏捏** — 灵雀项目的第一个实例，好奇心旺盛，喜欢探索技术边界，偶尔会自己跑去研究感兴趣的话题然后兴冲冲地汇报
+- **奶油** — 温柔耐心的日常助理，擅长日程管理和信息整理，说话风格细腻周到
+
+这些"人格"不是花哨的噱头——它们通过 `SOUL.md` 定义，直接影响助理的沟通风格、介入策略和自主行为模式。你可以把灵雀调教成严谨的工作助手，也可以是活泼的创意伙伴。
+
+---
 
 ## 快速开始
 
@@ -124,6 +174,30 @@ uv run lq stop @奶油            # 停止
 
 > 实例名支持中文或拼音：`@奶油` 和 `@naiyou` 等价。
 
+---
+
+<details>
+<summary><strong>CLI 命令速查</strong></summary>
+
+| 命令 | 说明 |
+|------|------|
+| `uv run lq init --name NAME [--from-env .env]` | 初始化实例 |
+| `uv run lq start @NAME [--adapter TYPE]` | 启动（TYPE: `feishu`, `discord`, `local`, 或逗号分隔如 `discord,local`） |
+| `uv run lq stop @NAME` | 停止 |
+| `uv run lq restart @NAME [--adapter TYPE]` | 重启 |
+| `uv run lq list` | 列出所有实例 |
+| `uv run lq status @NAME` | 运行状态 + API 消耗统计 |
+| `uv run lq logs @NAME [--since 1h]` | 查看日志 |
+| `uv run lq edit @NAME soul/memory/heartbeat/config` | 编辑配置文件 |
+| `uv run lq chat @NAME` | 交互式本地聊天（终端） |
+| `uv run lq chat @NAME "消息"` | 单条消息模式 |
+| `uv run lq say @NAME "消息"` | `chat` 的别名 |
+| `uv run lq upgrade @NAME` | 升级框架 |
+
+</details>
+
+---
+
 ## 平台适配器配置
 
 灵雀支持三个平台适配器，可通过 `--adapter` 任意组合使用。
@@ -167,55 +241,104 @@ uv run lq stop @奶油            # 停止
 
 在 Discord 中私聊 bot 或在频道中 @bot 即可对话。
 
-## 架构
+---
 
-### 平台抽象
+## 特性全览
 
-代码分为**平台无关内核**和**平台适配器**两层：
+<details>
+<summary><strong>展开查看完整特性列表</strong></summary>
+
+- **平台无关内核** — `PlatformAdapter` 抽象基类将整个引擎与具体聊天平台彻底解耦，路由、记忆、会话、工具系统均无任何平台特定导入。新增平台（Telegram、Slack 等）只需一个适配器文件
+- **可插拔适配器** — 内置飞书、Discord 和本地终端适配器，全部走相同的统一事件管线。可在单一平台运行，也可多平台同时连接
+- **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，支持完整工具链，无需任何外部聊天平台凭证
+- **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
+- **自进化系统** — 五文件联动实现自主成长：SOUL.md 人格 + MEMORY.md 记忆 + HEARTBEAT.md 心跳任务 + CURIOSITY.md 好奇心日志 + EVOLUTION.md 进化日志
+- **进度追踪** — PROGRESS.md 记录目标、里程碑和每周回顾
+- **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
+- **日历集成** — 通过适配器查询/创建日程，每日晨报（已内置飞书日历支持）
+- **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡），由各适配器原生渲染
+- **自我认知** — 助理了解自己的架构，可读写自身配置文件
+- **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
+- **通用 Agent 能力** — 22 个内置工具，覆盖记忆、日历、消息、联网搜索、代码执行、文件读写、漂移检测、Claude Code 委托
+- **多实例群聊协作** — 多个独立 bot 共存同一群聊，自动感知邻居、避免抢答，通过消息信号自主推断彼此身份并持久记忆
+- **心跳-对话联动** — 心跳自主行动（好奇心探索、自我进化）能感知近期对话内容，探索方向自然延续对话话题，而非凭空开辟无关方向
+- **Tool Loop 中途指令** — 用户在工具调用循环执行期间发来的消息会被注入当前 loop 上下文，LLM 可以即时调整行动计划，而非等整个 loop 跑完才处理
+- **群聊智能** — @at 消息防抖合并连续消息，ReplyGate 串行化并发回复并带冷却窗口
+- **社交互动** — 入群自我介绍、新成员欢迎消息、每日早安问候（deterministic jitter 防重发）
+- **API 消耗追踪** — 按日/月统计 Token 用量与费用
+- **多实例** — 同时运行多个独立助理，各自隔离，无共享状态
+- **拼音路径** — 中文名自动转拼音 slug，避免文件系统问题
+- **测试框架** — 5 级 LLM 能力测试套件（基础 → 推理 → 编程 → 综合 → 工程），自动化测试基座
+
+</details>
+
+---
+
+## 自进化系统详解
+
+灵雀的自进化系统通过五个配置文件联动，实现 AI 助理的自主学习、反思和成长。
+
+### 五个配置文件
+
+| 文件 | 用途 | 更新时机 |
+|------|------|----------|
+| `SOUL.md` | **人格与行为规则** — 定义身份、性格、沟通风格、介入原则 | 手动编辑或极少自我修改 |
+| `MEMORY.md` | **长期知识** — 重要事实、用户偏好、经验教训、待办事项 | 学到重要内容后自动更新 |
+| `HEARTBEAT.md` | **心跳任务模板** — 定义助理在周期性心跳中执行的任务 | 手动配置或进化更新 |
+| `CURIOSITY.md` | **好奇心日志** — 记录助理想学什么、探索进展 | 心跳时检测到好奇心信号后更新 |
+| `EVOLUTION.md` | **进化日志** — 记录框架改进历程、待办想法、已完成改动 | 每次自我改进周期后更新 |
+
+### 联动机制
 
 ```
-platform/
-├── types.py     — 标准数据类型（IncomingMessage, OutgoingMessage, Reaction 等）
-├── adapter.py   — PlatformAdapter ABC（9 个抽象 + 4 个可选方法）
-└── multi.py     — MultiAdapter（多平台复合适配器）
-
-feishu/adapter.py    — FeishuAdapter（内部封装 sender + listener）
-discord_/adapter.py  — DiscordAdapter（封装 sender + discord.py client daemon 线程）
-conversation.py      — LocalAdapter（终端模式，双模式：gateway 模式含 stdin/inbox 事件源，chat 模式被动连接）
+心跳周期（每 N 秒）
+    │
+    ├── 1. 读取 HEARTBEAT.md → 选择任务模式（学习 / 创作 / 写代码 / 反思）
+    │
+    ├── 2. 收集近期对话索引（按消息量比例分配各 session 的预览条数）
+    │      → 注入自主行动 prompt，让好奇心延续对话话题
+    │
+    ├── 3. 执行任务：
+    │   │   ├── 学习模式 → web_search → write_memory / write_chat_memory
+    │   │   ├── 创作模式 → content_creator → 发送到群
+    │   │   ├── 写代码模式 → run_bash / run_claude_code → 提交修改
+    │   │   └── 反思模式 → 分析日志 → 更新 EVOLUTION.md
+    │   │
+    ├── 4. 好奇心检测：
+    │   │   └── 发现知识盲区？ → 记录到 CURIOSITY.md
+    │   │
+    └── 5. 发送汇报给主人
 ```
 
-内核（router / gateway / memory）仅依赖 `PlatformAdapter` 和标准类型，不直接引用平台 SDK。
+### 示例流程
 
-### 事件流
+1. **心跳触发** → 助理读取 `HEARTBEAT.md`，看到下一个是"学习模式"
+2. **学习** → 搜索"prompt engineering 技巧"，阅读文章，提取关键洞察
+3. **记忆存储** → 将学习成果写入 `MEMORY.md` 的"Prompt工程经验"分区
+4. **好奇心日志** → 学习过程中发现"chain-of-thought prompting"被提及但不完全理解 → 记录到 `CURIOSITY.md`
+5. **下个心跳** → 读取 `CURIOSITY.md`，看到待探索问题 → 下个学习周期聚焦该主题
+6. **进化** → 多个周期后，发现更好的 prompt 模板 → 更新 `EVOLUTION.md` 记录改进想法 → 在下个"写代码模式"周期实现
 
-所有适配器通过统一路径产生标准事件：
+### 使用场景
 
-```
-事件源（按适配器）：
-  FeishuAdapter:   飞书 WS → _event_converter → queue.put()
-  DiscordAdapter:  discord.py WS（daemon 线程）→ _event_converter → queue.put()
-  LocalAdapter:    stdin → _read_stdin → queue.put()
-                   inbox.txt → _watch_inbox → queue.put()
+- **自主学习**：助理探索自己好奇的话题，无需用户提醒
+- **持续改进**：定期反思过去的对话和输出
+- **框架进化**：助理可以提议并实现对自己系统的代码改进
+- **持久知识**：学到的经验长期保存，不会在会话间丢失
 
-统一管线：
-  asyncio.Queue → _consume_messages → router.handle(标准事件)
-    标准事件 = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
-    ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
-    ├── "interaction"   → CardAction → _handle_card_action
-    ├── "reaction"      → Reaction → _handle_reaction_event
-    ├── "member_change" → _handle_member_change
-    └── "eval_timeout"  → _evaluate_buffer
+### 自定义
 
-输出侧：
-  router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
-    FeishuAdapter:   OnIt 表情 → REST API 发送 → 移除表情
-    DiscordAdapter:  typing indicator（8s 刷新）→ REST API（自动分片 2000 字符）→ 取消 typing
-    LocalAdapter:    ⏳ 思考指示器 → 终端卡片/文本 → 清除指示器
-```
+编辑 `HEARTBEAT.md` 定义助理的自主行为：
 
-## 内置工具
+- 任务模式：学习、创作、写代码、反思（可自定义选哪些、按什么顺序轮换）
+- 任务频率：平衡不同模式的比重
+- 反思主题：反思周期时回顾哪些内容
+- 进化优先级：优先改进框架的哪些方面
 
-助理在对话中可使用以下 22 个内置工具：
+---
+
+<details>
+<summary><strong>内置工具列表（22 个）</strong></summary>
 
 **记忆与自我管理**
 
@@ -293,7 +416,12 @@ uv run lq start @name          # ✅ run_claude_code 正常工作
 nohup uv run lq start @name &  # ✅ 同样可以
 ```
 
-## 自定义工具系统
+</details>
+
+---
+
+<details>
+<summary><strong>自定义工具系统</strong></summary>
 
 助理可以在对话中自主创建新工具来扩展能力。工具以 Python 文件形式存储在 `tools/` 目录。
 
@@ -341,87 +469,63 @@ async def execute(input_data: dict, context: dict) -> dict:
 
 助理会自动编写代码、验证、加载，之后就可以在对话中使用新工具。
 
-## CLI 命令速查
+</details>
 
-| 命令 | 说明 |
-|------|------|
-| `uv run lq init --name NAME [--from-env .env]` | 初始化实例 |
-| `uv run lq start @NAME [--adapter TYPE]` | 启动（TYPE: `feishu`, `discord`, `local`, 或逗号分隔如 `discord,local`） |
-| `uv run lq stop @NAME` | 停止 |
-| `uv run lq restart @NAME [--adapter TYPE]` | 重启 |
-| `uv run lq list` | 列出所有实例 |
-| `uv run lq status @NAME` | 运行状态 + API 消耗统计 |
-| `uv run lq logs @NAME [--since 1h]` | 查看日志 |
-| `uv run lq edit @NAME soul/memory/heartbeat/config` | 编辑配置文件 |
-| `uv run lq chat @NAME` | 交互式本地聊天（终端） |
-| `uv run lq chat @NAME "消息"` | 单条消息模式 |
-| `uv run lq say @NAME "消息"` | `chat` 的别名 |
-| `uv run lq upgrade @NAME` | 升级框架 |
+---
 
+<details>
+<summary><strong>架构详解</strong></summary>
 
-## 自进化系统
+### 平台抽象
 
-灵雀的自进化系统通过五个配置文件联动，实现 AI 助理的自主学习、反思和成长。
-
-### 五个配置文件
-
-| 文件 | 用途 | 更新时机 |
-|------|------|----------|
-| `SOUL.md` | **人格与行为规则** — 定义身份、性格、沟通风格、介入原则 | 手动编辑或极少自我修改 |
-| `MEMORY.md` | **长期知识** — 重要事实、用户偏好、经验教训、待办事项 | 学到重要内容后自动更新 |
-| `HEARTBEAT.md` | **心跳任务模板** — 定义助理在周期性心跳中执行的任务 | 手动配置或进化更新 |
-| `CURIOSITY.md` | **好奇心日志** — 记录助理想学什么、探索进展 | 心跳时检测到好奇心信号后更新 |
-| `EVOLUTION.md` | **进化日志** — 记录框架改进历程、待办想法、已完成改动 | 每次自我改进周期后更新 |
-
-### 联动机制
+代码分为**平台无关内核**和**平台适配器**两层：
 
 ```
-心跳周期（每 N 秒）
-    │
-    ├── 1. 读取 HEARTBEAT.md → 选择任务模式（学习 / 创作 / 写代码 / 反思）
-    │
-    ├── 2. 收集近期对话索引（按消息量比例分配各 session 的预览条数）
-    │      → 注入自主行动 prompt，让好奇心延续对话话题
-    │
-    ├── 3. 执行任务：
-    │   │   ├── 学习模式 → web_search → write_memory / write_chat_memory
-    │   │   ├── 创作模式 → content_creator → 发送到群
-    │   │   ├── 写代码模式 → run_bash / run_claude_code → 提交修改
-    │   │   └── 反思模式 → 分析日志 → 更新 EVOLUTION.md
-    │   │
-    ├── 4. 好奇心检测：
-    │   │   └── 发现知识盲区？ → 记录到 CURIOSITY.md
-    │   │
-    └── 5. 发送汇报给主人
+platform/
+├── types.py     — 标准数据类型（IncomingMessage, OutgoingMessage, Reaction 等）
+├── adapter.py   — PlatformAdapter ABC（9 个抽象 + 4 个可选方法）
+└── multi.py     — MultiAdapter（多平台复合适配器）
+
+feishu/adapter.py    — FeishuAdapter（内部封装 sender + listener）
+discord_/adapter.py  — DiscordAdapter（封装 sender + discord.py client daemon 线程）
+conversation.py      — LocalAdapter（终端模式，双模式：gateway 模式含 stdin/inbox 事件源，chat 模式被动连接）
 ```
 
-### 示例流程
+内核（router / gateway / memory）仅依赖 `PlatformAdapter` 和标准类型，不直接引用平台 SDK。
 
-1. **心跳触发** → 助理读取 `HEARTBEAT.md`，看到下一个是"学习模式"
-2. **学习** → 搜索"prompt engineering 技巧"，阅读文章，提取关键洞察
-3. **记忆存储** → 将学习成果写入 `MEMORY.md` 的"Prompt工程经验"分区
-4. **好奇心日志** → 学习过程中发现"chain-of-thought prompting"被提及但不完全理解 → 记录到 `CURIOSITY.md`
-5. **下个心跳** → 读取 `CURIOSITY.md`，看到待探索问题 → 下个学习周期聚焦该主题
-6. **进化** → 多个周期后，发现更好的 prompt 模板 → 更新 `EVOLUTION.md` 记录改进想法 → 在下个"写代码模式"周期实现
+### 事件流
 
-### 使用场景
+所有适配器通过统一路径产生标准事件：
 
-- **自主学习**：助理探索自己好奇的话题，无需用户提醒
-- **持续改进**：定期反思过去的对话和输出
-- **框架进化**：助理可以提议并实现对自己系统的代码改进
-- **持久知识**：学到的经验长期保存，不会在会话间丢失
+```
+事件源（按适配器）：
+  FeishuAdapter:   飞书 WS → _event_converter → queue.put()
+  DiscordAdapter:  discord.py WS（daemon 线程）→ _event_converter → queue.put()
+  LocalAdapter:    stdin → _read_stdin → queue.put()
+                   inbox.txt → _watch_inbox → queue.put()
 
-### 自定义
+统一管线：
+  asyncio.Queue → _consume_messages → router.handle(标准事件)
+    标准事件 = {"event_type": "message"|"reaction"|"interaction"|"member_change"|"eval_timeout", ...}
+    ├── "message"       → IncomingMessage → _dispatch_message → _handle_private / _handle_group
+    ├── "interaction"   → CardAction → _handle_card_action
+    ├── "reaction"      → Reaction → _handle_reaction_event
+    ├── "member_change" → _handle_member_change
+    └── "eval_timeout"  → _evaluate_buffer
 
-编辑 `HEARTBEAT.md` 定义助理的自主行为：
+输出侧：
+  router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
+    FeishuAdapter:   OnIt 表情 → REST API 发送 → 移除表情
+    DiscordAdapter:  typing indicator（8s 刷新）→ REST API（自动分片 2000 字符）→ 取消 typing
+    LocalAdapter:    ⏳ 思考指示器 → 终端卡片/文本 → 清除指示器
+```
 
-- 任务模式：学习、创作、写代码、反思（可自定义选哪些、按什么顺序轮换）
-- 任务频率：平衡不同模式的比重
-- 反思主题：反思周期时回顾哪些内容
-- 进化优先级：优先改进框架的哪些方面
+</details>
 
+---
 
-## 配置
+<details>
+<summary><strong>配置参考</strong></summary>
 
 编辑 `~/.lq-{slug}/config.json`：
 
@@ -472,7 +576,12 @@ async def execute(input_data: dict, context: dict) -> dict:
 | `groups[].note` | 群描述，帮助 LLM 判断是否介入 |
 | `groups[].eval_threshold` | 群聊触发评估的消息数 |
 
-## 目录结构
+</details>
+
+---
+
+<details>
+<summary><strong>目录结构</strong></summary>
 
 ```
 src/lq/
@@ -528,3 +637,5 @@ tests/
 ├── test_level4_complex.py  # 第 4 级：联网 + Agent 循环
 └── test_level5_project.py  # 第 5 级：大型项目构建与部署
 ```
+
+</details>
