@@ -157,7 +157,9 @@ def _parse_adapters(adapter_str: str) -> list[str]:
 @click.argument("instance")
 @click.option("--adapter", "adapter_str", default="local",
               help="聊天平台适配器，逗号分隔多选（feishu=飞书, discord=Discord, local=纯本地）")
-def start(instance: str, adapter_str: str) -> None:
+@click.option("--action-store/--no-action-store", default=None,
+              help="是否输出工具调用记录和思考过程")
+def start(instance: str, adapter_str: str, action_store: bool | None) -> None:
     """启动灵雀实例（@name 或 @slug）
 
     \b
@@ -181,6 +183,10 @@ def start(instance: str, adapter_str: str) -> None:
         raise SystemExit(1)
 
     config = cfg or load_config(home)
+
+    if action_store is not None:
+        config.action_store = action_store
+
     click.echo(f"启动 @{display} (adapter={'+'.join(adapter_types)}) ...")
 
     if "local" in adapter_types and len(adapter_types) == 1:
