@@ -377,7 +377,7 @@ class DiscordAdapter(PlatformAdapter):
             try:
                 event_type = data.get("type", "")
                 if event_type == "message":
-                    self._convert_message(data["message"])
+                    await self._convert_message(data["message"])
                 elif event_type == "reaction":
                     self._convert_reaction(data["payload"])
                 elif event_type == "member_join":
@@ -387,7 +387,7 @@ class DiscordAdapter(PlatformAdapter):
 
         logger.info("Discord 事件转换器已停止")
 
-    def _convert_message(self, message: discord.Message) -> None:
+    async def _convert_message(self, message: discord.Message) -> None:
         """将 discord.Message 转换为标准 IncomingMessage。"""
         if self._queue is None:
             logger.warning("Discord 事件在 connect() 前到达，丢弃")
@@ -449,14 +449,29 @@ class DiscordAdapter(PlatformAdapter):
             text = text.replace(f"<#{channel.id}>", f"#{channel.name}")
         text = text.strip()
 
-        # 判断消息类型 + 提取图片
+        # 判断消息类型 + 提取图片 + 读取 txt 附件
         image_keys: list[str] = []
         msg_type = MessageType.TEXT
+        txt_parts: list[str] = []
         for attachment in message.attachments:
             content_type = attachment.content_type or ""
             if content_type.startswith("image/"):
                 image_keys.append(attachment.url)
                 msg_type = MessageType.IMAGE
+            elif (
+                content_type.startswith("text/plain")
+                or (attachment.filename or "").endswith(".txt")
+            ):
+                # Discord 大段文本自动转成 .txt 附件，下载还原为文本
+                result = await self._sender.download_attachment(attachment.url)
+                if result:
+                    raw_bytes, _ = result
+                    try:
+                        txt_parts.append(raw_bytes.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        txt_parts.append(raw_bytes.decode("utf-8", errors="replace"))
+        if txt_parts:
+            text = "\n".join(filter(None, [text] + txt_parts))
 
         # reply_to
         reply_to_id = ""
