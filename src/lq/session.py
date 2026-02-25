@@ -198,7 +198,7 @@ class Session:
         # 建立 tool_use_id -> tool_name 映射（从完整历史中查找）
         tool_name_map: dict[str, str] = {
             m["tool_use_id"]: m.get("tool_name", "?")
-            for m in self._messages
+            for m in self.messages
             if m.get("is_tool_use") and m.get("tool_use_id")
         }
         # 收集已处理的 tool_use_id（tool_result 随 tool_use 一起合并输出）
