@@ -56,10 +56,10 @@ class ToolLoopMixin:
         allow_nudge: bool = True,
     ) -> str:
         """_reply_with_tool_loop 的实际实现（已持锁）。"""
-        # 读取 show_thinking 配置（默认 True 保持兼容）
-        show_thinking = True
+        # 读取 show_thinking 配置（默认关闭）
+        show_thinking = False
         if self.config:
-            show_thinking = getattr(self.config, "show_thinking", True)
+            show_thinking = getattr(self.config, "show_thinking", False)
 
         all_tools = self._build_all_tools()
         tool_names = [t["name"] for t in all_tools]

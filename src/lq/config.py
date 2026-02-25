@@ -85,7 +85,7 @@ class LQConfig:
     recent_conversation_preview: int = 20  # 心跳自主行动时对话预览总条数上限
     backup_max_count: int = 10          # 最多保留几个备份
     backup_size_threshold: int = 524288 # 512KB，文件夹增量触发阈值
-    show_thinking: bool = True  # 是否输出工具调用记录和思考过程（False 则只输出正式对话）
+    show_thinking: bool = False  # 是否输出工具调用记录和思考过程（默认关闭，--show-thinking 开启）
 
     def __post_init__(self) -> None:
         if not self.slug:
@@ -114,7 +114,7 @@ class LQConfig:
         cfg.recent_conversation_preview = d.get("recent_conversation_preview", 20)
         cfg.backup_max_count = d.get("backup_max_count", 10)
         cfg.backup_size_threshold = d.get("backup_size_threshold", 524288)
-        cfg.show_thinking = d.get("show_thinking", True)  # 默认 True 保持兼容
+        cfg.show_thinking = d.get("show_thinking", False)
         ah = d.get("active_hours", [8, 23])
         cfg.active_hours = (ah[0], ah[1])
 
