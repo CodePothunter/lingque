@@ -222,7 +222,7 @@ FLUSH_BEFORE_COMPACTION = (
     "- 用户偏好和习惯\n"
     "- 重要的事实、决定和约定\n"
     "- 待办事项和承诺\n"
-    "- 使用工具完成的重要操作\n\n"
+    "- 工具调用中的关键事实（如搜索到的结果、创建的日程、写入的记忆内容等）\n\n"
     "仅输出需要记住的条目，每条一行，格式为 `- 内容`。如果没有需要记住的，输出「无」。\n\n"
     "对话内容：\n{conversation}"
 )
@@ -615,8 +615,8 @@ COMPACTION_DAILY_HEADER = "### 会话记忆提取\n{extracted}\n"
 # Flush Before Compaction: Message Role Labels
 # =====================================================================
 
-FLUSH_ROLE_TOOL_CALL = "[assistant/tool_call] 调用 {tool_name}"
-FLUSH_ROLE_TOOL_RESULT = "[tool_result] {content_preview}"
+FLUSH_ROLE_TOOL_CALL = "[tool_call] 调用工具 {tool_name}，参数: {input_preview}"
+FLUSH_ROLE_TOOL_RESULT = "[tool_result] ({tool_name}) {content_preview}"
 FLUSH_ROLE_DEFAULT = "[{role}] {content}"
 
 
