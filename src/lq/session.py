@@ -195,11 +195,28 @@ class Session:
             })
 
         # 格式化消息
+        # 建立 tool_use_id -> tool_name 映射（从完整历史中查找）
+        tool_name_map: dict[str, str] = {
+            m["tool_use_id"]: m.get("tool_name", "?")
+            for m in self._messages
+            if m.get("is_tool_use") and m.get("tool_use_id")
+        }
         # 收集已处理的 tool_use_id（tool_result 随 tool_use 一起合并输出）
         merged_tool_ids: set[str] = set()
         for m in selected:
             if m.get("is_tool_result"):
-                # tool_result 已在对应 tool_use 处合并输出，跳过
+                # 仅当对应 tool_use 已被合并输出时才跳过
+                if m.get("tool_use_id", "") in merged_tool_ids:
+                    continue
+                # 孤立 tool_result（对应 tool_use 被截断），作为独立消息输出
+                content = _content_to_text(m.get("content", ""))
+                content = re.sub(r"</?tool_result[^>]*>", "", content).strip()
+                if len(content) > 150:
+                    content = content[:147] + "..."
+                tid = m.get("tool_use_id", "")
+                tool_name = tool_name_map.get(tid, "工具")
+                summary = f"[工具 {tool_name} 的结果: {content}]"
+                result_msgs.append({"role": "user", "content": summary})
                 continue
 
             if m.get("is_tool_use"):

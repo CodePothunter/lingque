@@ -405,7 +405,7 @@ class MemoryManager:
             content = m.get("content", "")
             if m.get("is_tool_use"):
                 # 包含参数预览
-                input_preview = content[:200] if content else ""
+                input_preview = re.sub(r"</?[a-zA-Z_][a-zA-Z0-9_-]*[^>]*>", "", content).strip()[:200] if content else ""
                 lines.append(FLUSH_ROLE_TOOL_CALL.format(
                     tool_name=m.get('tool_name', '?'),
                     input_preview=input_preview,
@@ -414,9 +414,10 @@ class MemoryManager:
                 # 关联工具名，扩大预览到 300 字符
                 tid = m.get("tool_use_id", "")
                 tool_name = tool_name_map.get(tid, "?")
+                content_clean = re.sub(r"</?[a-zA-Z_][a-zA-Z0-9_-]*[^>]*>", "", content).strip()
                 lines.append(FLUSH_ROLE_TOOL_RESULT.format(
                     tool_name=tool_name,
-                    content_preview=content[:300],
+                    content_preview=content_clean[:300],
                 ))
             else:
                 lines.append(FLUSH_ROLE_DEFAULT.format(role=role, content=content))
