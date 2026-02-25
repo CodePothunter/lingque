@@ -31,7 +31,7 @@ Tengen AI 给你另一种可能：不发工资、不用休息、指哪打哪、�
 
 ## 灵雀是什么
 
-**灵雀（LingQue）= OpenClaw Plus = 会自己成长的 AI Agent 框架。**
+**灵雀（LingQue）= OpenClaw 工业升级版 = 会自己成长的 AI Agent 框架。**
 
 腾讯首席 AI 科学家、前 OpenAI 研究员、清华姚班天才少年**姚顺雨**说：
 
