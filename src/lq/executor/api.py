@@ -26,6 +26,14 @@ def _clean_output(text: str) -> str:
     text = text.replace("</think>", "")
     return text.strip()
 
+
+def _extract_text(content: list) -> str:
+    """从响应 content blocks 中提取文本，跳过 ThinkingBlock 等非文本块"""
+    for block in content:
+        if block.type == "text":
+            return block.text
+    return ""
+
 # 可重试的 HTTP 状态码
 RETRYABLE_STATUS = {429, 500, 502, 503, 529}
 MAX_RETRIES = 3
@@ -123,7 +131,7 @@ class DirectAPIExecutor:
             messages=[{"role": "user", "content": user_message}],
         )
         self._record_usage(resp, "reply")
-        text = _clean_output(resp.content[0].text)
+        text = _clean_output(_extract_text(resp.content))
         logger.debug("API 回复 (%d tokens): %s...", resp.usage.output_tokens, text[:80])
         return text
 
@@ -142,7 +150,7 @@ class DirectAPIExecutor:
             messages=messages,
         )
         self._record_usage(resp, "reply_with_history")
-        return _clean_output(resp.content[0].text)
+        return _clean_output(_extract_text(resp.content))
 
     async def quick_judge(self, prompt: str) -> str:
         """低成本快速判断（用于介入评估等）"""
@@ -153,7 +161,7 @@ class DirectAPIExecutor:
             messages=[{"role": "user", "content": prompt}],
         )
         self._record_usage(resp, "quick_judge")
-        return _clean_output(resp.content[0].text)
+        return _clean_output(_extract_text(resp.content))
 
     async def reply_with_tools(
         self,
