@@ -388,16 +388,36 @@ class MemoryManager:
     def flush_before_compaction(self, session_messages: list[dict]) -> str:
         """生成 prompt 让 LLM 提取需要持久化的信息。
 
-        改进版：包含工具调用记录，提供更完整的上下文。
+        改进版：工具调用行包含参数预览，工具结果行关联工具名，
+        让 LLM 能从工具交互中提取关键事实。
         """
+        # 先建立 tool_use_id -> tool_name 的映射
+        tool_name_map: dict[str, str] = {}
+        for m in session_messages:
+            if m.get("is_tool_use"):
+                tid = m.get("tool_use_id", "")
+                if tid:
+                    tool_name_map[tid] = m.get("tool_name", "?")
+
         lines = []
         for m in session_messages:
             role = m.get("role", "unknown")
             content = m.get("content", "")
             if m.get("is_tool_use"):
-                lines.append(FLUSH_ROLE_TOOL_CALL.format(tool_name=m.get('tool_name', '?')))
+                # 包含参数预览
+                input_preview = content[:200] if content else ""
+                lines.append(FLUSH_ROLE_TOOL_CALL.format(
+                    tool_name=m.get('tool_name', '?'),
+                    input_preview=input_preview,
+                ))
             elif m.get("is_tool_result"):
-                lines.append(FLUSH_ROLE_TOOL_RESULT.format(content_preview=content[:200]))
+                # 关联工具名，扩大预览到 300 字符
+                tid = m.get("tool_use_id", "")
+                tool_name = tool_name_map.get(tid, "?")
+                lines.append(FLUSH_ROLE_TOOL_RESULT.format(
+                    tool_name=tool_name,
+                    content_preview=content[:300],
+                ))
             else:
                 lines.append(FLUSH_ROLE_DEFAULT.format(role=role, content=content))
 

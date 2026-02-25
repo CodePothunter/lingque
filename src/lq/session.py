@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -194,9 +195,21 @@ class Session:
             })
 
         # 格式化消息
+        # 收集已处理的 tool_use_id（tool_result 随 tool_use 一起合并输出）
+        merged_tool_ids: set[str] = set()
         for m in selected:
-            # 跳过工具记录（它们只用于摘要提取，不直接发给 API）
-            if m.get("is_tool_use") or m.get("is_tool_result"):
+            if m.get("is_tool_result"):
+                # tool_result 已在对应 tool_use 处合并输出，跳过
+                continue
+
+            if m.get("is_tool_use"):
+                # 将 tool_use + tool_result 合并为一行摘要
+                tool_name = m.get("tool_name", "?")
+                tool_use_id = m.get("tool_use_id", "")
+                result_preview = self._find_tool_result_preview(tool_use_id, selected)
+                summary = f"[使用了工具 {tool_name}，结果: {result_preview}]"
+                result_msgs.append({"role": "assistant", "content": summary})
+                merged_tool_ids.add(tool_use_id)
                 continue
 
             content = self._format_message(m)
@@ -246,6 +259,20 @@ class Session:
             meta = " ".join(meta_parts)
             return f"<{TAG_MSG} {meta}>{content}</{TAG_MSG}>"
         return content
+
+    def _find_tool_result_preview(
+        self, tool_use_id: str, selected: list[dict],
+    ) -> str:
+        """在 selected 中查找匹配 tool_use_id 的 tool_result，返回结果预览。"""
+        for m in selected:
+            if m.get("is_tool_result") and m.get("tool_use_id") == tool_use_id:
+                content = _content_to_text(m.get("content", ""))
+                # 去掉 XML 标签包装，提取纯文本
+                content = re.sub(r"</?tool_result[^>]*>", "", content).strip()
+                if len(content) > 150:
+                    content = content[:147] + "..."
+                return content
+        return "（无结果）"
 
     # ── 压缩策略 ──
 
