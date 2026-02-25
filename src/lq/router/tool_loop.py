@@ -56,10 +56,10 @@ class ToolLoopMixin:
         allow_nudge: bool = True,
     ) -> str:
         """_reply_with_tool_loop 的实际实现（已持锁）。"""
-        # 读取 action_store 配置（默认 True 保持兼容）
-        action_store = True
+        # 读取 show_thinking 配置（默认 True 保持兼容）
+        show_thinking = True
         if self.config:
-            action_store = getattr(self.config, "action_store", True)
+            show_thinking = getattr(self.config, "show_thinking", True)
 
         all_tools = self._build_all_tools()
         tool_names = [t["name"] for t in all_tools]
@@ -78,8 +78,8 @@ class ToolLoopMixin:
 
             if resp.pending and resp.tool_calls:
                 # ── 推送中间思考文本给用户（斜体，表示内心世界）──
-                # 仅当 action_store=True 时输出
-                if action_store and resp.text and resp.text.strip():
+                # 仅当 show_thinking=True 时输出
+                if show_thinking and resp.text and resp.text.strip():
                     intermediate = self._CLEAN_RE.sub("", resp.text).strip()
                     if intermediate:
                         styled = "*" + intermediate.replace("\n", "*\n*") + "*"
@@ -87,8 +87,8 @@ class ToolLoopMixin:
 
                 # LLM 调用了工具 → 执行并继续
                 # ── 发送工具执行通知卡片 ──
-                # 仅当 action_store=True 时输出
-                if action_store:
+                # 仅当 show_thinking=True 时输出
+                if show_thinking:
                     tool_summaries = []
                     for tc in resp.tool_calls:
                         tool_summaries.append(self._tool_call_summary(tc["name"], tc["input"]))
