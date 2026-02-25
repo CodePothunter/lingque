@@ -56,6 +56,11 @@ class ToolLoopMixin:
         allow_nudge: bool = True,
     ) -> str:
         """_reply_with_tool_loop 的实际实现（已持锁）。"""
+        # 读取 show_thinking 配置（默认关闭）
+        show_thinking = False
+        if self.config:
+            show_thinking = getattr(self.config, "show_thinking", False)
+
         all_tools = self._build_all_tools()
         tool_names = [t["name"] for t in all_tools]
         logger.debug("工具循环开始: chat=%s 共 %d 个工具 %s", chat_id[-8:], len(all_tools), tool_names)
@@ -73,7 +78,8 @@ class ToolLoopMixin:
 
             if resp.pending and resp.tool_calls:
                 # ── 推送中间思考文本给用户（斜体，表示内心世界）──
-                if resp.text and resp.text.strip():
+                # 仅当 show_thinking=True 时输出
+                if show_thinking and resp.text and resp.text.strip():
                     intermediate = self._CLEAN_RE.sub("", resp.text).strip()
                     if intermediate:
                         styled = "*" + intermediate.replace("\n", "*\n*") + "*"
@@ -81,12 +87,14 @@ class ToolLoopMixin:
 
                 # LLM 调用了工具 → 执行并继续
                 # ── 发送工具执行通知卡片 ──
-                tool_summaries = []
-                for tc in resp.tool_calls:
-                    tool_summaries.append(self._tool_call_summary(tc["name"], tc["input"]))
-                await self._send_tool_notification(
-                    "\n".join(tool_summaries), chat_id, reply_to_message_id,
-                )
+                # 仅当 show_thinking=True 时输出
+                if show_thinking:
+                    tool_summaries = []
+                    for tc in resp.tool_calls:
+                        tool_summaries.append(self._tool_call_summary(tc["name"], tc["input"]))
+                    await self._send_tool_notification(
+                        "\n".join(tool_summaries), chat_id, reply_to_message_id,
+                    )
 
                 tool_results = []
                 for tc in resp.tool_calls:

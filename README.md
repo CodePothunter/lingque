@@ -166,6 +166,9 @@ uv run lq start @奶油 --adapter feishu,local
 uv run lq start @奶油 --adapter discord,local
 uv run lq start @奶油 --adapter feishu,discord,local
 
+# Enable tool call and thinking process output
+uv run lq start @奶油 --show-thinking
+
 # Background
 nohup uv run lq start @奶油 &
 uv run lq logs @奶油            # tail -f logs
@@ -183,7 +186,7 @@ uv run lq stop @奶油            # stop
 | Command | Description |
 |---------|-------------|
 | `uv run lq init --name NAME [--from-env .env]` | Initialize instance |
-| `uv run lq start @NAME [--adapter TYPE]` | Start (TYPE: `feishu`, `discord`, `local`, or comma-separated like `discord,local`) |
+| `uv run lq start @NAME [--adapter TYPE] [--show-thinking]` | Start (TYPE: `feishu`, `discord`, `local`, or comma-separated like `discord,local`). `--show-thinking` is a flag (off by default) that enables tool call and thinking process output |
 | `uv run lq stop @NAME` | Stop |
 | `uv run lq restart @NAME [--adapter TYPE]` | Restart |
 | `uv run lq list` | List all instances |
