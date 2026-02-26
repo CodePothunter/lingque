@@ -565,16 +565,22 @@ class DiscordAdapter(PlatformAdapter):
     @staticmethod
     def _convert_card_to_embed(card: dict) -> dict:
         """将标准 card 转为 Discord Embed。"""
+        from datetime import datetime, timezone
+        
         embed: dict[str, Any] = {}
 
         card_type = card.get("type", "")
         title = card.get("title", "")
         content = card.get("content", "") or card.get("message", "")
 
-        if title:
-            embed["title"] = title
-        if content:
-            embed["description"] = content
+        # info 类型：标准的信息卡片
+        if card_type == "info" or not card_type:
+            if title:
+                embed["title"] = title[:256]  # Discord 标题限制 256 字符
+            if content:
+                embed["description"] = content[:4096]  # Discord 描述限制 4096 字符
+            # 添加 timestamp
+            embed["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         # 颜色映射
         color_map = {
@@ -582,6 +588,7 @@ class DiscordAdapter(PlatformAdapter):
             "green": 0x2ECC71,
             "red": 0xE74C3C,
             "yellow": 0xF1C40F,
+            "orange": 0xE67E22,
             "purple": 0x9B59B6,
         }
         color = card.get("color", "blue")
@@ -592,12 +599,13 @@ class DiscordAdapter(PlatformAdapter):
             fields = []
             for event in card.get("events", []):
                 fields.append({
-                    "name": event.get("summary", "事件"),
-                    "value": f"{event.get('start_time', '')} - {event.get('end_time', '')}",
+                    "name": event.get("summary", "事件")[:256],
+                    "value": f"{event.get('start_time', '')} - {event.get('end_time', '')}"[:1024],
                     "inline": False,
                 })
             if fields:
                 embed["fields"] = fields
+            embed["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         # task_list 类型
         if card_type == "task_list":
@@ -606,10 +614,12 @@ class DiscordAdapter(PlatformAdapter):
                 status = "✅" if task.get("done") else "⬜"
                 lines.append(f"{status} {task.get('title', '')}")
             if lines:
-                embed["description"] = "\n".join(lines)
+                embed["description"] = "\n".join(lines)[:4096]
+            embed["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         # error 类型用红色
         if card_type == "error":
             embed["color"] = 0xE74C3C
+            embed["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         return embed
