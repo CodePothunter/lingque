@@ -381,6 +381,9 @@ class FeishuAdapter(PlatformAdapter):
         if self._sender.is_chat_left(chat_id):
             return
 
+        # 提取引用回复的 parent_id
+        parent_id = getattr(message, "parent_id", "") or ""
+
         msg = IncomingMessage(
             message_id=msg_id,
             chat_id=chat_id,
@@ -393,6 +396,7 @@ class FeishuAdapter(PlatformAdapter):
             mentions=mentions,
             is_mention_bot=is_mention_bot,
             image_keys=image_keys,
+            reply_to_id=parent_id,
             timestamp=int(time.time() * 1000),
             raw=message,
         )
@@ -627,6 +631,7 @@ class FeishuAdapter(PlatformAdapter):
                             sender_name=sender_name,
                             message_type=MessageType.TEXT,
                             text=msg.get("text", ""),
+                            reply_to_id=msg.get("parent_id", ""),
                             timestamp=int(msg.get("create_time", "0") or "0"),
                         )
                         self._queue.put_nowait({"event_type": "message", "message": polled_msg})

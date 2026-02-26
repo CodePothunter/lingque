@@ -13,7 +13,7 @@ from lq.executor.api import DirectAPIExecutor
 from lq.memory import MemoryManager
 from lq.platform import (
     PlatformAdapter, IncomingMessage, OutgoingMessage,
-    Reaction, CardAction, ChatType,
+    Reaction, CardAction, ChatType, SenderType,
 )
 from lq.prompts import PREAMBLE_STARTS, BOT_POLL_AT_REASON, SILENCE_MARKER
 
@@ -92,6 +92,8 @@ class MessageRouter(
         self._reply_cooldown_ts: dict[str, float] = {}  # chat_id → 上次回复完成的时间戳
         # 私聊锁忙时暂存的消息：chat_id → [{"text": str, "ts": float, "message_id": str, "sender_name": str}, ...]
         self._private_pending_while_busy: dict[str, list[dict]] = {}
+        # 话题归属：chat_id → OrderedDict{message_id → None}（按插入序淘汰）
+        self._addressed_topics: dict[str, OrderedDict[str, None]] = {}
         # 工具调用统计（per-tool success/fail）
         self._tool_stats: dict[str, dict[str, int]] = {}
         # 注入依赖
@@ -267,9 +269,11 @@ class MessageRouter(
         if msg.chat_type == ChatType.PRIVATE:
             await self._handle_private(msg)
         elif msg.chat_type == ChatType.GROUP:
-            self._bot_poll_count.pop(msg.chat_id, None)
-            self._bot_seen_ids.pop(msg.chat_id, None)
-            self._last_reply_per_chat.pop(msg.chat_id, None)
+            if msg.sender_type == SenderType.USER:
+                self._bot_poll_count.pop(msg.chat_id, None)
+                self._bot_seen_ids.pop(msg.chat_id, None)
+                self._last_reply_per_chat.pop(msg.chat_id, None)
+                self._addressed_topics.pop(msg.chat_id, None)
             await self._handle_group(msg)
 
     # ── 工具管理 ──

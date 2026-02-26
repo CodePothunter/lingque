@@ -193,6 +193,11 @@ GROUP_EVAL_PROMPT = (
     "如果你已经说过「安静」之类的话，不要再重复说。避免两个 bot 互相说「安静了」导致无限循环\n"
     "10. 当判断 should_intervene 为 false 时，如果后续仍生成了回复，"
     "回复内容应为 `[SILENCE]`（沉默标记），而不是「（安静等待）」等伪噪音\n"
+    "11. 话题归属：如果用户 @了另一个 bot 且对方已经回复（看到 ← 回复 某人），"
+    "这个话题已结束。不要介入，除非用户随后 @了你或提出了新问题。"
+    "另一个 bot 对用户指令的回复不是在跟你说话\n"
+    "12. 回复链判断：标注了「← 回复 XX」的消息是对之前某条消息的延续，"
+    "不是新话题。如果整条回复链都与你无关，不要介入\n"
     "{collab_context}\n\n"
     '仅输出 JSON: {{"should_intervene": true/false, "reason": "简短原因", "reply_to_message_id": "要回复的消息ID或null"}}'
 )
@@ -629,6 +634,7 @@ GROUP_MSG_SELF = "{name}（你自己）：{text}"
 GROUP_MSG_OTHER = "{name}：{text}"
 GROUP_MSG_WITH_ID_SELF = "[{message_id}] {name}（你自己）：{text}"
 GROUP_MSG_WITH_ID_OTHER = "[{message_id}] {name}：{text}"
+GROUP_MSG_REPLY_SUFFIX = " ← 回复 {reply_name}"
 GROUP_CONTEXT_HEADER = "\n群聊近期消息：\n{messages}"
 
 

@@ -516,6 +516,7 @@ class FeishuSender:
                     "sender_type": sender.get("sender_type", "user"),
                     "text": text,
                     "create_time": item.get("create_time", ""),
+                    "parent_id": item.get("parent_id", ""),
                     "_mentioned_names": mentioned_names,
                 })
             # 尝试从消息上下文推断未知 bot 的身份

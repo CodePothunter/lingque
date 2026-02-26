@@ -7,6 +7,7 @@ import json
 import logging
 import random
 import time
+from collections import OrderedDict
 from typing import Any
 
 from lq.buffer import MessageBuffer, rule_check
@@ -18,6 +19,7 @@ from lq.prompts import (
     GROUP_EVAL_PROMPT,
     GROUP_MSG_SELF, GROUP_MSG_OTHER,
     GROUP_MSG_WITH_ID_SELF, GROUP_MSG_WITH_ID_OTHER,
+    GROUP_MSG_REPLY_SUFFIX,
     GROUP_INTERVENE_SYSTEM_SUFFIX,
     SENDER_UNKNOWN, BOT_POLL_AT_REASON,
     BOT_SELF_INTRO_SYSTEM, BOT_SELF_INTRO_USER,
@@ -47,6 +49,8 @@ class GroupChatMixin:
                     "sender_name": msg.sender_name,
                     "message_id": msg.message_id,
                     "chat_id": chat_id,
+                    "reply_to_id": msg.reply_to_id,
+                    "sender_type": msg.sender_type,
                 })
             await self._handle_group_at(msg)
             return
@@ -73,12 +77,14 @@ class GroupChatMixin:
             "sender_name": msg.sender_name,
             "message_id": msg.message_id,
             "chat_id": chat_id,
+            "reply_to_id": msg.reply_to_id,
+            "sender_type": msg.sender_type,
         })
 
         # bot 消息限流：防止 bot 间无限对话循环
         if msg.sender_type == SenderType.BOT:
             count = self._bot_poll_count.get(chat_id, 0)
-            if count >= 5:
+            if count >= 2:
                 logger.debug("群 %s bot 消息已达上限，跳过评估", chat_id[-8:])
                 return
             self._bot_poll_count[chat_id] = count + 1
@@ -174,6 +180,9 @@ class GroupChatMixin:
             session = self.session_mgr.get_or_create(msg.chat_id)
             session.add_message("assistant", reply_text, sender_name="你")
 
+        if reply_text:
+            self._mark_topic_addressed(msg.chat_id, msg.message_id)
+
     # ── 缓冲区评估 + 介入 ──
 
     async def _evaluate_buffer(self, chat_id: str) -> None:
@@ -188,6 +197,11 @@ class GroupChatMixin:
 
         recent = buf.get_recent(10)
         if not recent:
+            return
+
+        # 话题归属检查：如果近期非自己的消息都属于已处理话题的引用链，跳过评估
+        if self._is_topic_exhausted(chat_id, recent):
+            logger.info("话题已被处理，跳过评估 %s", chat_id[-8:])
             return
 
         buf.mark_evaluated()
@@ -239,13 +253,19 @@ class GroupChatMixin:
         my_name = self.bot_name
         lines: list[str] = []
         has_my_reply = False
+        # 构建 msg_id → sender_name 映射，用于引用链展示
+        id_to_name = {m["message_id"]: m.get("sender_name", SENDER_UNKNOWN) for m in recent}
         for m in recent:
             name = m.get("sender_name", SENDER_UNKNOWN)
             if m.get("sender_id") == self.bot_open_id:
-                lines.append(GROUP_MSG_WITH_ID_SELF.format(message_id=m['message_id'], name=name, text=m['text']))
+                line = GROUP_MSG_WITH_ID_SELF.format(message_id=m['message_id'], name=name, text=m['text'])
                 has_my_reply = True
             else:
-                lines.append(GROUP_MSG_WITH_ID_OTHER.format(message_id=m['message_id'], name=name, text=m['text']))
+                line = GROUP_MSG_WITH_ID_OTHER.format(message_id=m['message_id'], name=name, text=m['text'])
+            reply_id = m.get("reply_to_id", "")
+            if reply_id and reply_id in id_to_name:
+                line += GROUP_MSG_REPLY_SUFFIX.format(reply_name=id_to_name[reply_id])
+            lines.append(line)
         conversation = "\n".join(lines)
 
         # 如果最后一条消息就是自己发的，不需要再次介入
@@ -347,6 +367,9 @@ class GroupChatMixin:
             session.add_message("assistant", reply_text, sender_name="你")
 
         if reply_text:
+            reply_to = judgment.get("reply_to_message_id")
+            if reply_to:
+                self._mark_topic_addressed(chat_id, reply_to)
             self._record_collab_event(
                 chat_id, "responded", self.bot_name,
                 judgment.get("reason", "")[:50],
@@ -357,6 +380,36 @@ class GroupChatMixin:
             rid = self._my_reaction_ids.pop(thinking_msg_id, "")
             if rid:
                 await self.adapter.stop_thinking(thinking_msg_id, rid)
+
+    # ── 话题归属 ──
+
+    def _mark_topic_addressed(self, chat_id: str, message_id: str) -> None:
+        """标记某条消息的话题已被处理（回复过），防止其他 bot 重复介入。"""
+        if chat_id not in self._addressed_topics:
+            self._addressed_topics[chat_id] = OrderedDict()
+        topics = self._addressed_topics[chat_id]
+        topics[message_id] = None
+        # 只保留最近 20 个（按插入顺序淘汰最旧的）
+        while len(topics) > 20:
+            topics.popitem(last=False)
+
+    def _is_topic_exhausted(self, chat_id: str, recent: list[dict]) -> bool:
+        """最近的非自己消息是否都属于已处理话题的引用链。"""
+        topics = self._addressed_topics.get(chat_id, {})
+        if not topics:
+            return False
+        found_other = False
+        # 从最后一条向前扫描，跳过自己的消息
+        for m in reversed(recent):
+            if m.get("sender_id") == self.bot_open_id:
+                continue
+            found_other = True
+            reply_id = m.get("reply_to_id", "")
+            if reply_id in topics:
+                continue  # 这条是回复已处理话题
+            return False  # 有非话题消息，不算 exhausted
+        # 如果没找到任何非自己的消息，不算 exhausted
+        return found_other
 
     # ── 协作事件记录 ──
 
@@ -451,6 +504,7 @@ class GroupChatMixin:
             # Bot 被移出群聊 → 清理内部状态
             self._thinking_signals.pop(chat_id, None)
             self.group_buffers.pop(chat_id, None)
+            self._addressed_topics.pop(chat_id, None)
             logger.info("Bot 已退出群 %s，清理完成", chat_id[-8:])
 
     async def _compact_session(self, session: Any) -> None:
