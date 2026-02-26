@@ -201,9 +201,16 @@ class ClaudeCodeExecutor:
             return {"success": False, "output": "", "error": "claude CLI 未安装"}
 
     def _build_env(self) -> dict[str, str]:
+        """构建子进程环境变量。
+        
+        不强制覆盖 ANTHROPIC_* 环境变量，让 claude CLI 使用其原生配置。
+        如果环境中已存在这些变量，保持不变；否则从 api_config 注入作为后备。
+        """
         env = os.environ.copy()
-        env["ANTHROPIC_API_KEY"] = self.api_config.api_key
-        if self.api_config.base_url:
+        # 只在环境变量不存在时才注入，优先使用环境配置
+        if "ANTHROPIC_API_KEY" not in env and self.api_config.api_key:
+            env["ANTHROPIC_API_KEY"] = self.api_config.api_key
+        if "ANTHROPIC_BASE_URL" not in env and self.api_config.base_url:
             env["ANTHROPIC_BASE_URL"] = self.api_config.base_url
         return env
 
