@@ -165,6 +165,9 @@ uv run lq start @奶油 --adapter feishu,local
 uv run lq start @奶油 --adapter discord,local
 uv run lq start @奶油 --adapter feishu,discord,local
 
+# 开启调试日志（默认 INFO）
+LQ_LOG_LEVEL=DEBUG uv run lq start @奶油
+
 # 后台运行
 nohup uv run lq start @奶油 &
 uv run lq logs @奶油            # tail -f 日志
@@ -575,6 +578,12 @@ conversation.py      — LocalAdapter（终端模式，双模式：gateway 模�
 | `recent_conversation_preview` | 心跳自主行动时对话预览总条数上限（默认 20） |
 | `groups[].note` | 群描述，帮助 LLM 判断是否介入 |
 | `groups[].eval_threshold` | 群聊触发评估的消息数 |
+
+**环境变量**
+
+| 变量 | 说明 |
+|------|------|
+| `LQ_LOG_LEVEL` | 日志级别覆盖（`DEBUG`、`INFO`、`WARNING`、`ERROR`），默认 `INFO` |
 
 </details>
 

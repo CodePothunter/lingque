@@ -1001,6 +1001,8 @@ class AssistantGateway:
         log_file = log_dir / "gateway.log"
 
         fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        level_name = os.environ.get("LQ_LOG_LEVEL", "INFO").upper()
+        level = getattr(logging, level_name, logging.INFO)
         handlers: list[logging.Handler] = [
             RotatingFileHandler(
                 log_file,
@@ -1010,12 +1012,13 @@ class AssistantGateway:
             ),
             logging.StreamHandler(sys.stderr),
         ]
-        logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers)
+        logging.basicConfig(level=level, format=fmt, handlers=handlers)
 
         # 压制第三方库的噪音日志
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("Lark").setLevel(logging.WARNING)
+        logging.getLogger("discord").setLevel(logging.WARNING)
 
     @property
     def _clean_shutdown_path(self) -> Path:

@@ -169,6 +169,9 @@ uv run lq start @奶油 --adapter feishu,discord,local
 # Enable tool call and thinking process output
 uv run lq start @奶油 --show-thinking
 
+# Enable debug logging (default: INFO)
+LQ_LOG_LEVEL=DEBUG uv run lq start @奶油
+
 # Background
 nohup uv run lq start @奶油 &
 uv run lq logs @奶油            # tail -f logs
@@ -579,6 +582,12 @@ Edit `~/.lq-{slug}/config.json`:
 | `recent_conversation_preview` | Max total preview lines for recent conversations in heartbeat prompt (default: 20) |
 | `groups[].note` | Group description, helps LLM decide whether to intervene |
 | `groups[].eval_threshold` | Message count to trigger group evaluation |
+
+**Environment Variables**
+
+| Variable | Description |
+|----------|-------------|
+| `LQ_LOG_LEVEL` | Log level override (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Default: `INFO` |
 
 </details>
 
