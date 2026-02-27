@@ -288,6 +288,11 @@ class ToolExecMixin:
                         return await self.tool_registry.execute(name, input_data, context)
                 return {"success": False, "error": ERR_UNKNOWN_TOOL.format(name=name)}
 
+        except KeyError as e:
+            missing_param = str(e).strip("'\"")
+            logger.warning("工具 %s 缺少必需参数：%s", name, missing_param)
+            return {"success": False, "error": f"工具 {name} 缺少必需参数：{missing_param}"}
+
         except Exception as e:
             logger.exception("工具执行失败: %s", name)
             return {"success": False, "error": str(e)}
