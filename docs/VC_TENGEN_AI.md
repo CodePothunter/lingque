@@ -199,13 +199,13 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A[\"👤 人类 CEO<br/>只做关键决策\"] --> B[\"🤖 产品设计<br/>分析需求 · 产出 PRD\"]
-    B --> C[\"🤖 开发<br/>vibe coding · 部署系统\"]
-    C --> D[\"🤖 运营<br/>每日报表 · 优化建议\"]
-    D -->|\"反馈优化\"| B
-    D -->|\"反馈优化\"| C
-    C --> E[\"🤖 售前<br/>更新商务材料\"]
-    E -->|\"市场反馈\"| B
+    A["人类 CEO<br/>只做关键决策"] --> B["产品设计 Agent<br/>分析需求 · 产出 PRD"]
+    B --> C["开发 Agent<br/>vibe coding · 部署系统"]
+    C --> D["运营 Agent<br/>每日报表 · 优化建议"]
+    D -->|"反馈优化"| B
+    D -->|"反馈优化"| C
+    C --> E["售前 Agent<br/>更新商务材料"]
+    E -->|"市场反馈"| B
 
     style A fill:#FFD700,color:#000
     style B fill:#2196F3,color:#fff
@@ -350,7 +350,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph BEFORE["❌ 传统催收：盲打"]
+    subgraph BEFORE["传统催收：盲打"]
         direction TB
         B1["早上 9 点开始<br/>按名单从头打到尾"]
         B2["客户不接 → 换下一个<br/>接了 → 照着话术念"]
@@ -358,13 +358,14 @@ flowchart LR
         B1 --> B2 --> B3
     end
 
-    subgraph AFTER["✅ Tengen Agent：精准触达"]
+    subgraph AFTER["Tengen Agent：精准触达"]
         direction TB
-        A1["分析客户数据<br/>预测'最可能还款'的时间"]
-        A1b["🧠 还款意愿预测<br/>评估意愿等级 · 匹配最优话术"]
+        A1["分析客户数据<br/>预测最可能还款的时间"]
+        A1b["还款意愿预测<br/>评估意愿等级 · 匹配最优话术"]
         A2["用客户母语沟通<br/>语气因人而异"]
         A3["承诺还款 → 自动跟进<br/>情绪激动 → 切换策略"]
-        A1 --> A1b --> A2 --> A3
+        A4["汲取全局知识<br/>自我进化更新"]
+        A1 --> A1b --> A2 --> A3 --> A4
     end
 
     BEFORE -.->|"替代"| AFTER
