@@ -215,7 +215,7 @@ class Session:
                     content = content[:147] + "..."
                 tid = m.get("tool_use_id", "")
                 tool_name = tool_name_map.get(tid, "工具")
-                summary = f"[工具 {tool_name} 的结果: {content}]"
+                summary = f"<tool_record tool=\"{tool_name}\" result=\"{content}\" />"
                 result_msgs.append({"role": "user", "content": summary})
                 continue
 
@@ -224,8 +224,8 @@ class Session:
                 tool_name = m.get("tool_name", "?")
                 tool_use_id = m.get("tool_use_id", "")
                 result_preview = self._find_tool_result_preview(tool_use_id, selected)
-                summary = f"[使用了工具 {tool_name}，结果: {result_preview}]"
-                result_msgs.append({"role": "assistant", "content": summary})
+                summary = f"<tool_record tool=\"{tool_name}\" result=\"{result_preview}\" />"
+                result_msgs.append({"role": "user", "content": summary})
                 merged_tool_ids.add(tool_use_id)
                 continue
 

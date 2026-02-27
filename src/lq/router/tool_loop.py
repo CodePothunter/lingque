@@ -8,10 +8,32 @@ import logging
 import time
 from typing import Any
 
+import re
+
 from lq.platform import OutgoingMessage
-from lq.prompts import ACTION_NUDGE, TOOL_USE_TRUNCATED_NUDGE
+from lq.prompts import ACTION_NUDGE, TOOL_USE_TRUNCATED_NUDGE, FAKE_TOOL_CALL_NUDGE
 
 logger = logging.getLogger(__name__)
+
+# 检测 LLM 把工具调用写成文本的模式
+# 匹配: [使用了 tool: xxx，参数: {...}] 或 [使用了工具 xxx，结果: {...}]
+_FAKE_TOOL_RE = re.compile(
+    r"\[使用了\s*(?:tool:|工具)\s*\w+[，,]\s*(?:参数|结果):"
+)
+
+# 用于从最终回复中剥离完整的假工具调用文本块
+_FAKE_TOOL_STRIP_RE = re.compile(
+    r"\[使用了\s*(?:tool:|工具)\s*\w+[，,]\s*(?:参数|结果):[^\]]*\]"
+)
+
+
+def _strip_fake_tool_text(text: str) -> str:
+    """移除回复中残留的假工具调用文本。"""
+    cleaned = _FAKE_TOOL_STRIP_RE.sub("", text).strip()
+    if not cleaned and text:
+        # 整条消息都是假工具调用，不应发送
+        logger.warning("整条回复均为假工具调用文本，已拦截: %s", text[:120])
+    return cleaned
 
 
 class ToolLoopMixin:
@@ -192,6 +214,23 @@ class ToolLoopMixin:
                 resp = await self.executor.reply_with_tools(
                     system, continued_messages, all_tools
                 )
+            elif (
+                resp.text
+                and nudge_count < 1
+                and _FAKE_TOOL_RE.search(resp.text)
+            ):
+                nudge_count += 1
+                logger.warning(
+                    "检测到假工具调用文本，催促实际调用 (%d/1) 原文: %s",
+                    nudge_count, resp.text[:120],
+                )
+                continued_messages = resp.messages + [
+                    {"role": "assistant", "content": resp.text},
+                    {"role": "user", "content": FAKE_TOOL_CALL_NUDGE},
+                ]
+                resp = await self.executor.reply_with_tools(
+                    system, continued_messages, all_tools
+                )
             else:
                 break
 
@@ -199,10 +238,16 @@ class ToolLoopMixin:
         if resp.text and not sent_to_current_chat:
             # 先清理 LLM 模仿的元数据标签，再做 transform
             cleaned = self._CLEAN_RE.sub("", resp.text).strip()
-            final = text_transform(cleaned) if text_transform else cleaned
-            logger.info("回复: %s", final[:80])
-            await self._send_reply(final, chat_id, reply_to_message_id)
-            resp.text = final
+            # 二次防护：清除残留的假工具调用文本
+            cleaned = _strip_fake_tool_text(cleaned)
+            if not cleaned:
+                logger.info("回复被清空（假工具调用），跳过发送")
+                resp.text = ""
+            else:
+                final = text_transform(cleaned) if text_transform else cleaned
+                logger.info("回复: %s", final[:80])
+                await self._send_reply(final, chat_id, reply_to_message_id)
+                resp.text = final
         elif sent_to_current_chat:
             logger.info("跳过最终回复: 已通过 send_message 发送到当前 chat")
 
