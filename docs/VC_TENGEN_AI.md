@@ -90,8 +90,8 @@ Tengen AI 给你另一种可能：不发工资、不用休息、指哪打哪、�
 
 ```mermaid
 flowchart LR
-    A["🇳🇬 尼日利亚 Agent<br/>3 个月实战经验"] -->|"复制记忆文件<br/>or 老 Agent 带教"| B["🇹🇿 坦桑尼亚 Agent<br/>第一天 = 带着经验上岗"]
-    A -->|"复制催收策略记忆"| C["🇬🇭 加纳 Agent<br/>冷启动即可用"]
+    A["尼日利亚 Agent<br/>3 个月实战经验"] -->|"复制记忆文件<br/>or 老 Agent 带教"| B["坦桑尼亚 Agent<br/>第一天 = 带着经验上岗"]
+    A -->|"复制催收策略记忆"| C["加纳 Agent<br/>冷启动即可用"]
 
     style A fill:#4CAF50,color:#fff
     style B fill:#2196F3,color:#fff
@@ -242,23 +242,23 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph USER["👤 用户接入层"]
+    subgraph USER["用户接入层"]
         U1["飞书"]
         U2["WhatsApp"]
         U3["USSD"]
         U4["API"]
     end
 
-    subgraph CORE["🧠 灵雀内核"]
+    subgraph CORE["灵雀内核"]
         direction TB
         ADAPTER["平台适配器<br/><i>一套代码，多端通用</i>"]
         ENGINE["对话引擎<br/><i>理解意图 · 调度工具</i>"]
-        HEARTBEAT["💓 心跳引擎<br/><i>自主学习 · 自我进化</i>"]
-        DRIFT["🛡️ 漂移检测<br/><i>安全阀：防止失控</i>"]
-        FTL["🔄 联邦迁移学习（内生）<br/><i>记忆可复制 · 老带新</i>"]
+        HEARTBEAT["心跳引擎<br/><i>自主学习 · 自我进化</i>"]
+        DRIFT["漂移检测<br/><i>安全阀：防止失控</i>"]
+        FTL["联邦迁移学习（内生）<br/><i>记忆可复制 · 老带新</i>"]
     end
 
-    subgraph MEMORY["📚 五层记忆"]
+    subgraph MEMORY["五层记忆"]
         direction LR
         S["SOUL"]
         M["MEMORY"]
@@ -267,7 +267,7 @@ flowchart TB
         P["PROGRESS"]
     end
 
-    subgraph TOOLS["🔧 工具层"]
+    subgraph TOOLS["工具层"]
         direction LR
         T1["搜索"]
         T2["代码"]
@@ -275,7 +275,7 @@ flowchart TB
         T4["自定义工具"]
     end
 
-    subgraph MODEL["☁️ 模型层（可替换）"]
+    subgraph MODEL["模型层（可替换）"]
         direction LR
         M1["Claude"]
         M2["GPT"]
@@ -332,8 +332,8 @@ flowchart TB
 flowchart TB
     subgraph REVENUE["收入双引擎"]
         direction LR
-        A["💳 席位订阅费<br/><i>按 Agent 实例数/月计费</i><br/><i>客户的确定性成本</i>"]
-        B["📈 ROI 价值分享<br/><i>客户省下的钱 / 多赚的钱</i><br/><i>我们从中提取比例</i>"]
+        A["席位订阅费<br/><i>按 Agent 实例数/月计费</i><br/><i>客户的确定性成本</i>"]
+        B["ROI 价值分享<br/><i>客户省下的钱 / 多赚的钱</i><br/><i>我们从中提取比例</i>"]
     end
 
     style A fill:#2196F3,color:#fff
@@ -438,14 +438,14 @@ sequenceDiagram
     DB-->>A: 返回风险评分
 
     alt 低风险：自动通过
-        A-->>C: ✅ 开户成功（3 分钟内）
+        A-->>C: 开户成功（3 分钟内）
     else 中风险：补充验证
         A-->>C: 请用豪萨语回答安全问题
         C->>A: 语音回答
         A->>A: 多方言语音核验
-        A-->>C: ✅ 开户成功
+        A-->>C: 开户成功
     else 高风险：转人工
-        A-->>C: ⚠️ 已转交人工审核
+        A-->>C: 已转交人工审核
         Note over A: 附带完整分析报告<br/>人工只需做最终判断
     end
 ```
@@ -520,11 +520,11 @@ Tesla 通过 AI 驱动的精准营销，将**单辆车的销售成本从 10,000 
 
 ```mermaid
 flowchart TB
-    MGR["🎯 Manager Agent<br/><i>全局调度，预算分配</i>"]
-    MGR --> STR["📊 Strategy Agent<br/>'CPM 上涨 20%，建议暂停 A 组<br/>将预算挪至 B 组'"]
-    MGR --> CRE["🎨 Creative Agent<br/>'收到，正在基于 B 组高转化图片<br/>生成 5 张变体'"]
-    MGR --> ANA["🔍 Analyst Agent<br/>'警报：素材 A 的 CTR 跌破 0.8%<br/>判定为素材衰退'"]
-    MGR --> BUY["🛒 Buyer Agent<br/>'已通过 API 上架新素材<br/>预计 15 分钟后过审'"]
+    MGR["Manager Agent<br/><i>全局调度，预算分配</i>"]
+    MGR --> STR["Strategy Agent<br/>'CPM 上涨 20%，建议暂停 A 组<br/>将预算挪至 B 组'"]
+    MGR --> CRE["Creative Agent<br/>'收到，正在基于 B 组高转化图片<br/>生成 5 张变体'"]
+    MGR --> ANA["Analyst Agent<br/>'警报：素材 A 的 CTR 跌破 0.8%<br/>判定为素材衰退'"]
+    MGR --> BUY["Buyer Agent<br/>'已通过 API 上架新素材<br/>预计 15 分钟后过审'"]
 
     style MGR fill:#E91E63,color:#fff
     style STR fill:#2196F3,color:#fff
@@ -539,10 +539,10 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    FB["📘 FB Ads<br/>CPA +20%"] --> SA["🧠 Smart Allocator<br/>全局最优解"]
-    TK["🎵 TikTok<br/>ROAS 2.5"] --> SA
-    GG["🔍 Google<br/>稳定"] --> SA
-    SA --> ACT["⚡ Action<br/>自动挪预算 FB → TikTok"]
+    FB["FB Ads<br/>CPA +20%"] --> SA["Smart Allocator<br/>全局最优解"]
+    TK["TikTok<br/>ROAS 2.5"] --> SA
+    GG["Google<br/>稳定"] --> SA
+    SA --> ACT["Action<br/>自动挪预算 FB --> TikTok"]
 
     style SA fill:#4CAF50,color:#fff
     style ACT fill:#2196F3,color:#fff
@@ -589,9 +589,9 @@ LLM 撰写文案 → Flux 生成图像 → 视频拼接 → 投放 → 读取数
 flowchart TB
     subgraph MOAT["护城河"]
         direction TB
-        T["🔧 技术壁垒<br/>灵雀自进化架构<br/>五层记忆 + 心跳机制 + 迁移学习 + 漂移检测"]
-        C["🤝 渠道壁垒<br/>传音手机 + 雄帝科技<br/>非洲市场深度绑定"]
-        D["📊 数据壁垒<br/>Agent 运行越久，记忆越深<br/>迁移成本随时间指数上升"]
+        T["技术壁垒<br/>灵雀自进化架构<br/>五层记忆 + 心跳机制 + 迁移学习 + 漂移检测"]
+        C["渠道壁垒<br/>传音手机 + 雄帝科技<br/>非洲市场深度绑定"]
+        D["数据壁垒<br/>Agent 运行越久，记忆越深<br/>迁移成本随时间指数上升"]
     end
 
     T --> C --> D
