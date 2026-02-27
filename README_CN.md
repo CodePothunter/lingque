@@ -95,6 +95,10 @@ uv sync
 
 # 如使用 Discord 适配器，需额外安装可选依赖：
 uv pip install -e '.[discord]'
+
+# 如使用浏览器自动化（browser_action 工具）：
+uv pip install -e '.[browser]'
+playwright install chromium
 ```
 
 ### 准备 `.env`
@@ -262,7 +266,9 @@ uv run lq stop @奶油            # 停止
 - **卡片消息** — 结构化信息展示（日程卡、任务卡、信息卡），由各适配器原生渲染
 - **自我认知** — 助理了解自己的架构，可读写自身配置文件
 - **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
-- **通用 Agent 能力** — 22 个内置工具，覆盖记忆、日历、消息、联网搜索、代码执行、文件读写、漂移检测、Claude Code 委托
+- **浏览器自动化** — 内置 `browser_action` 工具通过 CDP 操控 Chromium 浏览器：导航、点击、输入、截图、读取页面、执行 JS、滚动、保存/加载 cookies 实现登录态持久化。各实例可设置独立端口，支持多实例隔离
+- **图片消息** — `send_message` 支持在飞书和 Discord 上发送图片附件。配合 `browser_action screenshot`，助理可以截取网页并直接发送给用户
+- **通用 Agent 能力** — 26 个内置工具，覆盖记忆、日历、消息、联网搜索、浏览器自动化、代码执行、文件读写、漂移检测、Claude Code 委托
 - **多实例群聊协作** — 多个独立 bot 共存同一群聊，自动感知邻居、避免抢答，通过消息信号自主推断彼此身份并持久记忆
 - **心跳-对话联动** — 心跳自主行动（好奇心探索、自我进化）能感知近期对话内容，探索方向自然延续对话话题，而非凭空开辟无关方向
 - **Tool Loop 中途指令** — 用户在工具调用循环执行期间发来的消息会被注入当前 loop 上下文，LLM 可以即时调整行动计划，而非等整个 loop 跑完才处理
@@ -341,7 +347,7 @@ uv run lq stop @奶油            # 停止
 ---
 
 <details>
-<summary><strong>内置工具列表（22 个）</strong></summary>
+<summary><strong>内置工具列表（26 个）</strong></summary>
 
 **记忆与自我管理**
 
@@ -359,7 +365,7 @@ uv run lq stop @奶油            # 停止
 | `calendar_create_event` | 创建日程 |
 | `calendar_list_events` | 查询日历事件 |
 | `send_card` | 发送结构化卡片消息 |
-| `send_message` | 向任意会话发送文本消息 |
+| `send_message` | 向任意会话发送文本或图片消息 |
 | `schedule_message` | 定时发送消息 |
 
 **联网与信息获取**
@@ -368,6 +374,13 @@ uv run lq stop @奶油            # 停止
 |------|------|
 | `web_search` | 搜索互联网获取实时信息 |
 | `web_fetch` | 抓取并提取网页文本内容 |
+
+**浏览器自动化**
+
+| 工具 | 说明 |
+|------|------|
+| `browser_action` | 通过 CDP 操控 Chromium 浏览器——导航、点击、输入、截图、获取页面内容、执行 JS、滚动、等待元素、保存/加载 cookies |
+| `vision_analyze` | 分析图片内容（支持本地路径、URL、base64） |
 
 **代码与文件执行**
 
@@ -553,6 +566,7 @@ conversation.py      — LocalAdapter（终端模式，双模式：gateway 模�
   "heartbeat_interval": 3600,
   "active_hours": [8, 23],
   "cost_alert_daily": 5.0,
+  "browser_port": 9222,
   "groups": [
     {
       "chat_id": "oc_xxx",
@@ -576,6 +590,7 @@ conversation.py      — LocalAdapter（终端模式，双模式：gateway 模�
 | `active_hours` | 活跃时段 `[开始小时, 结束小时)` |
 | `cost_alert_daily` | 日消耗告警阈值（USD） |
 | `recent_conversation_preview` | 心跳自主行动时对话预览总条数上限（默认 20） |
+| `browser_port` | 浏览器自动化 CDP 端口（默认 `9222`）。同一台机器上多实例时需设置不同端口 |
 | `groups[].note` | 群描述，帮助 LLM 判断是否介入 |
 | `groups[].eval_threshold` | 群聊触发评估的消息数 |
 
@@ -605,7 +620,9 @@ src/lq/
 │   ├── tool_loop.py   # Agent 工具调用循环 + 审批机制 + loop 中途用户指令注入
 │   ├── tool_exec.py      # 工具执行分发 + 多模态内容
 │   ├── web_tools.py      # 联网搜索/抓取（MCP）
-│   └── runtime_tools.py  # Python 执行 + 文件读写 + 自身统计
+│   ├── runtime_tools.py  # Python 执行 + 文件读写 + 自身统计
+│   ├── browser_tools.py  # 浏览器自动化（Playwright CDP）
+│   └── vision_mcp.py     # 图片分析（视觉模型）
 ├── prompts.py          # 集中管理所有 prompt、工具描述、约束块
 ├── conversation.py     # 本地交互式聊天（lq chat / lq say）+ LocalAdapter
 ├── tools.py            # 自定义工具插件系统

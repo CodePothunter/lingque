@@ -97,6 +97,10 @@ uv sync
 
 # If using Discord adapter, also install the optional dependency:
 uv pip install -e '.[discord]'
+
+# If using browser automation (browser_action tool):
+uv pip install -e '.[browser]'
+playwright install chromium
 ```
 
 ### Prepare `.env`
@@ -266,7 +270,9 @@ In Discord, DM the bot or @mention it in a channel to chat.
 - **Card messages** — Structured information display (schedule cards, task cards, info cards), rendered natively by each adapter
 - **Self-awareness** — The assistant understands its own architecture, can read/write its config files
 - **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
-- **Generalized agent** — 22 built-in tools covering memory, calendar, messaging, web search, code execution, file I/O, drift detection, and Claude Code delegation
+- **Browser automation** — Built-in `browser_action` tool controls a Chromium browser via CDP: navigate, click, type, screenshot, read page content, execute JS, scroll, save/load cookies for session persistence. Each instance can use its own browser port for multi-instance isolation
+- **Image messaging** — `send_message` supports sending images as attachments on both Feishu and Discord. Combined with `browser_action screenshot`, the assistant can capture web pages and send them directly to users
+- **Generalized agent** — 26 built-in tools covering memory, calendar, messaging, web search, browser automation, code execution, file I/O, drift detection, and Claude Code delegation
 - **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
 - **Heartbeat-conversation linkage** — Autonomous heartbeat actions (curiosity exploration, self-evolution) are aware of recent conversations and naturally continue those topics instead of wandering off to unrelated directions
 - **Mid-loop instruction injection** — When a user sends a message while a tool-call loop is running, the new message is injected into the current loop context so the LLM can adjust its plan on the fly, rather than queuing it for later
@@ -345,7 +351,7 @@ Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
 ---
 
 <details>
-<summary><strong>Built-in Tools (22)</strong></summary>
+<summary><strong>Built-in Tools (26)</strong></summary>
 
 **Memory & Self-Management**
 
@@ -363,7 +369,7 @@ Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
 | `calendar_create_event` | Create a calendar event |
 | `calendar_list_events` | Query calendar events |
 | `send_card` | Send a structured card message |
-| `send_message` | Send a text message to any chat |
+| `send_message` | Send a text or image message to any chat |
 | `schedule_message` | Schedule a message to be sent at a future time |
 
 **Web & Information**
@@ -372,6 +378,13 @@ Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
 |------|-------------|
 | `web_search` | Search the internet for real-time information |
 | `web_fetch` | Fetch and extract text content from a URL |
+
+**Browser Automation**
+
+| Tool | Description |
+|------|-------------|
+| `browser_action` | Control a Chromium browser via CDP — navigate, click, type, screenshot, get page content, execute JS, scroll, wait for elements, save/load cookies |
+| `vision_analyze` | Analyze image content via vision model (local path, URL, or base64) |
 
 **Code & File Execution**
 
@@ -557,6 +570,7 @@ Edit `~/.lq-{slug}/config.json`:
   "heartbeat_interval": 3600,
   "active_hours": [8, 23],
   "cost_alert_daily": 5.0,
+  "browser_port": 9222,
   "groups": [
     {
       "chat_id": "oc_xxx",
@@ -580,6 +594,7 @@ Edit `~/.lq-{slug}/config.json`:
 | `active_hours` | Active hours `[start, end)` |
 | `cost_alert_daily` | Daily cost alert threshold (USD) |
 | `recent_conversation_preview` | Max total preview lines for recent conversations in heartbeat prompt (default: 20) |
+| `browser_port` | Chrome DevTools Protocol port for browser automation (default: `9222`). Set different ports for multiple instances on the same machine |
 | `groups[].note` | Group description, helps LLM decide whether to intervene |
 | `groups[].eval_threshold` | Message count to trigger group evaluation |
 
@@ -609,7 +624,9 @@ src/lq/
 │   ├── tool_loop.py   # Agentic tool-call loop + approval system + mid-loop user instruction injection
 │   ├── tool_exec.py      # Tool execution dispatch + multimodal content
 │   ├── web_tools.py      # Web search/fetch via MCP
-│   └── runtime_tools.py  # Python execution + file I/O + self-stats
+│   ├── runtime_tools.py  # Python execution + file I/O + self-stats
+│   ├── browser_tools.py  # Browser automation via Playwright CDP
+│   └── vision_mcp.py     # Image analysis via vision model
 ├── prompts.py          # Centralized prompts, tool descriptions, and constraint blocks
 ├── conversation.py     # Local interactive chat (lq chat / lq say) + LocalAdapter
 ├── tools.py            # Custom tool plugin system

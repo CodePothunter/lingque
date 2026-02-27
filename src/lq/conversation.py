@@ -171,7 +171,11 @@ class LocalAdapter(PlatformAdapter):
     async def send(self, message: OutgoingMessage) -> str | None:
         self._stop_spinner()
         self._clear_line()
-        if message.card:
+        if message.image_path:
+            _print_bot(self._bot_name, f"[图片: {message.image_path}]")
+            if message.text:
+                _print_bot(self._bot_name, message.text)
+        elif message.card:
             _print_card(self._bot_name, message.card)
         elif message.text:
             _print_bot(self._bot_name, message.text)

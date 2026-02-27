@@ -86,6 +86,7 @@ class LQConfig:
     backup_max_count: int = 10          # 最多保留几个备份
     backup_size_threshold: int = 524288 # 512KB，文件夹增量触发阈值
     show_thinking: bool = False  # 是否输出工具调用记录和思考过程（默认关闭，--show-thinking 开启）
+    browser_port: int = 9222  # Chrome DevTools Protocol 调试端口
 
     def __post_init__(self) -> None:
         if not self.slug:

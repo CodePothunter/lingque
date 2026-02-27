@@ -139,10 +139,12 @@ class ToolExecMixin:
                 target = input_data.get("chat_id", "")
                 if not _is_valid_chat_id(target):
                     target = chat_id  # LLM 给了无效或截断的 ID，回退到当前会话
-                text_to_send = input_data["text"]
-                msg_id = await self.adapter.send(
-                    OutgoingMessage(target, text_to_send)
-                )
+                text_to_send = input_data.get("text", "")
+                image_path = input_data.get("image_path", "")
+                msg = OutgoingMessage(target, text_to_send)
+                if image_path:
+                    msg.image_path = image_path
+                msg_id = await self.adapter.send(msg)
                 if msg_id:
                     return {"success": True, "message_id": msg_id}
                 return {"success": False, "error": RESULT_SEND_FAILED}
@@ -262,6 +264,9 @@ class ToolExecMixin:
                         for m in members
                     ],
                 }
+
+            elif name == "browser_action":
+                return await self._tool_browser_action(input_data)
 
             elif name == "vision_analyze":
                 return await self._tool_vision_analyze(

@@ -148,6 +148,54 @@ class FeishuSender:
         logger.debug("已回复: %s -> %s", message_id, msg_id)
         return msg_id
 
+    async def send_image(self, chat_id: str, image_path: str) -> str | None:
+        """上传本地图片到飞书并发送为图片消息，返回 message_id。"""
+        image_key = await self._upload_image(image_path)
+        if not image_key:
+            return None
+        id_type = _infer_receive_id_type(chat_id)
+        req = (
+            CreateMessageRequest.builder()
+            .receive_id_type(id_type)
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("image")
+                .content(json.dumps({"image_key": image_key}))
+                .build()
+            )
+            .build()
+        )
+        resp = await self.client.im.v1.message.acreate(req)
+        if resp.code != 0:
+            logger.error("发送图片消息失败: code=%d msg=%s", resp.code, resp.msg)
+            return None
+        return resp.data.message_id
+
+    async def _upload_image(self, image_path: str) -> str | None:
+        """上传图片到飞书，返回 image_key。"""
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient(timeout=30.0) as http:
+                with open(image_path, "rb") as f:
+                    resp = await http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/images",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"image_type": "message"},
+                        files={"image": f},
+                    )
+                resp.raise_for_status()
+                data = resp.json()
+            if data.get("code", 0) != 0:
+                logger.error("上传图片失败: code=%d msg=%s", data.get("code"), data.get("msg"))
+                return None
+            image_key = data.get("data", {}).get("image_key", "")
+            logger.debug("图片上传成功: %s -> %s", image_path, image_key)
+            return image_key
+        except Exception:
+            logger.exception("上传图片异常: %s", image_path)
+            return None
+
     async def send_card(self, chat_id: str, card_json: dict) -> str | None:
         """发送卡片消息"""
         id_type = _infer_receive_id_type(chat_id)

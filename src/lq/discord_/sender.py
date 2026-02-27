@@ -109,6 +109,43 @@ class DiscordSender:
             return msg_id
         return None
 
+    async def send_message_with_file(
+        self,
+        channel_id: str,
+        file_path: str,
+        content: str = "",
+        *,
+        reply_to: str = "",
+    ) -> str | None:
+        """发送带文件附件的消息（multipart/form-data），返回 message_id。"""
+        import os
+        url = f"{BASE_URL}/channels/{channel_id}/messages"
+        filename = os.path.basename(file_path)
+
+        payload: dict[str, Any] = {}
+        if content:
+            payload["content"] = content
+        if reply_to:
+            payload["message_reference"] = {"message_id": reply_to}
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http:
+                with open(file_path, "rb") as f:
+                    files = {"file": (filename, f)}
+                    # multipart 时不能用 Content-Type: application/json
+                    headers = {"Authorization": f"Bot {self._token}"}
+                    resp = await http.post(
+                        url, headers=headers, data=payload, files=files,
+                    )
+                resp.raise_for_status()
+                data = resp.json()
+                msg_id = data.get("id", "")
+                logger.debug("Discord 文件消息已发送: channel=%s msg_id=%s", channel_id, msg_id)
+                return msg_id
+        except Exception:
+            logger.exception("Discord 发送文件失败: channel=%s file=%s", channel_id, file_path)
+            return None
+
     async def edit_message(
         self, channel_id: str, message_id: str, content: str,
     ) -> bool:

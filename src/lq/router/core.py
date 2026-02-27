@@ -25,6 +25,7 @@ from .tool_exec import ToolExecMixin
 from .vision_mcp import VisionMCPMixin
 from .web_tools import WebToolsMixin
 from .runtime_tools import RuntimeToolsMixin
+from .browser_tools import BrowserToolsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class MessageRouter(
     VisionMCPMixin,
     WebToolsMixin,
     RuntimeToolsMixin,
+    BrowserToolsMixin,
 ):
     """消息路由核心：事件分发、回复锁与冷却、thinking 信号。
 
@@ -47,6 +49,7 @@ class MessageRouter(
     - ToolExecMixin       — 工具执行分发与多模态
     - WebToolsMixin       — 联网搜索、网页抓取
     - RuntimeToolsMixin   — 代码执行、文件读写、统计查询
+    - BrowserToolsMixin   — 浏览器操控（CDP 连接 Chromium）
     """
 
     REPLY_COOLDOWN: float = 8.0  # 回复后的冷却秒数

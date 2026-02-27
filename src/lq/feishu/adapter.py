@@ -156,6 +156,10 @@ class FeishuAdapter(PlatformAdapter):
         # @name → 飞书 <at> 标签
         text = self._convert_outgoing_mentions(text)
 
+        # 图片附件：上传并发送图片消息
+        if message.image_path:
+            return await self._sender.send_image(message.chat_id, message.image_path)
+
         if message.card:
             card_json = self._convert_standard_card(message.card)
             if message.reply_to:

@@ -277,6 +277,7 @@ SELF_AWARENESS_TEMPLATE = (
     "- 使用 write_memory 工具将跨聊天通用的重要信息写入全局长期记忆\n"
     "- 使用 write_chat_memory 工具将仅与当前对话相关的信息写入聊天专属记忆\n"
     "- 使用 create_custom_tool 工具创建新的自定义工具来扩展自身能力\n"
+    "- 使用 browser_action 工具操控浏览器浏览网页、截图、点击、输入等（需先启动 Chromium）\n"
     "- 使用 send_card 工具发送结构化卡片消息\n"
     "- 使用 run_claude_code 工具执行复杂编程任务（代码编写、文件操作、系统管理等）\n"
     "- 使用 run_bash 工具执行 shell 命令（查看系统状态、文件操作等）\n\n"
@@ -420,7 +421,10 @@ TOOL_DESC_DELETE_CUSTOM_TOOL = "删除一个自定义工具。"
 
 TOOL_DESC_TOGGLE_CUSTOM_TOOL = "启用或禁用一个自定义工具。"
 
-TOOL_DESC_SEND_MESSAGE = "主动发送一条纯文本消息到指定会话（chat_id）。用于主动联系用户、发送通知等。"
+TOOL_DESC_SEND_MESSAGE = (
+    "主动发送消息到指定会话（chat_id）。支持纯文本或图片。"
+    "发送图片时设置 image_path 为本地图片文件路径（如截图路径），text 可选作为图片说明。"
+)
 
 TOOL_DESC_SCHEDULE_MESSAGE = (
     "定时任务。到达指定时间后，你将被唤醒来执行 text 中描述的任务。"
@@ -513,7 +517,8 @@ TOOL_FIELD_DELETE_NAME = "要删除的工具名称"
 TOOL_FIELD_TOGGLE_NAME = "工具名称"
 TOOL_FIELD_TOGGLE_ENABLED = "true=启用, false=禁用"
 TOOL_FIELD_CHAT_ID = "目标会话 ID（用户私聊或群聊的 chat_id）"
-TOOL_FIELD_TEXT = "要发送的文本内容"
+TOOL_FIELD_TEXT = "要发送的文本内容（发送图片时可选，作为图片说明）"
+TOOL_FIELD_IMAGE_PATH = "本地图片文件路径（可选，设置后发送图片消息）"
 TOOL_FIELD_SCHEDULE_TEXT = "定时任务的指令——描述到时间后你要做什么（不会原文发送，而是由你执行）"
 TOOL_FIELD_SEND_AT = "计划发送时间，ISO 8601 格式且包含时区，如 2026-02-13T15:05:00+08:00"
 TOOL_FIELD_CC_PROMPT = "要执行的任务描述，尽量详细具体。Claude Code 会自主完成这个任务。"
@@ -531,6 +536,34 @@ TOOL_FIELD_FILE_PATH = "文件的绝对路径或相对于工作区的路径"
 TOOL_FIELD_FILE_MAX_LINES = "最大读取行数，默认 500"
 TOOL_FIELD_WRITE_PATH = "目标文件的绝对路径或相对于工作区的路径"
 TOOL_FIELD_WRITE_CONTENT = "要写入的文件内容"
+
+# Browser Action 工具
+TOOL_DESC_BROWSER_ACTION = (
+    "操控浏览器浏览网页、点击、输入、截图等。通过 CDP 连接本地 Chromium（localhost:9222）。"
+    "适用于需要真实浏览器交互的场景：浏览小红书等动态网站、填写表单、截图页面等。"
+    "使用前需确保浏览器已启动（可用 run_bash 启动，端口见 config.json 的 browser_port，默认 9222）。\n"
+    "截图工作流：screenshot 保存截图到工作区 → 用 vision_analyze 查看内容 → "
+    "用 send_message（设置 image_path）将截图发送给用户，或用文字描述。\n"
+    "Cookie 持久化：首次登录后用 save_cookies 保存登录态到工作区，"
+    "浏览器重启后用 load_cookies 恢复，无需重新登录。"
+)
+
+TOOL_FIELD_BROWSER_ACTION = (
+    "操作类型：navigate（打开URL）、get_content（获取页面文本）、screenshot（截图）、"
+    "click（点击元素）、type（输入文字）、evaluate（执行JS）、get_elements（查询元素列表）、"
+    "scroll（滚动页面）、wait（等待元素出现）、status（检查浏览器连接状态）、"
+    "save_cookies（保存当前浏览器 cookies 到文件）、load_cookies（从文件加载 cookies 到浏览器）"
+)
+TOOL_FIELD_BROWSER_COOKIE_PATH = "Cookie JSON 文件路径（可选，默认保存到工作区 browser_cookies.json）"
+TOOL_FIELD_BROWSER_URL = "要打开的完整 URL"
+TOOL_FIELD_BROWSER_SELECTOR = "CSS 选择器，用于定位页面元素（如 'body', '#main', '.post-item'）"
+TOOL_FIELD_BROWSER_TEXT = "要输入的文字内容"
+TOOL_FIELD_BROWSER_SCRIPT = "要执行的 JavaScript 代码"
+TOOL_FIELD_BROWSER_PATH = "截图保存路径（可选，默认保存到工作区目录）"
+TOOL_FIELD_BROWSER_MAX_COUNT = "最大返回元素数量（默认 20）"
+TOOL_FIELD_BROWSER_DIRECTION = "滚动方向：up 或 down"
+TOOL_FIELD_BROWSER_AMOUNT = "滚动像素数（默认 500）"
+TOOL_FIELD_BROWSER_TIMEOUT = "等待超时秒数（默认 10）"
 
 # Vision MCP 工具
 TOOL_DESC_VISION_ANALYZE = (

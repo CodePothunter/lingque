@@ -199,6 +199,15 @@ class DiscordAdapter(PlatformAdapter):
 
         text = message.text or ""
 
+        # 图片附件：优先走 multipart file upload
+        if message.image_path:
+            return await self._sender.send_message_with_file(
+                message.chat_id,
+                message.image_path,
+                content=text,
+                reply_to=message.reply_to,
+            )
+
         # card → Discord Embed
         embed = None
         if message.card:

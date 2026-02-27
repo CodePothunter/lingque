@@ -15,6 +15,13 @@ from lq.prompts import (
     TOOL_DESC_GET_MY_STATS, TOOL_FIELD_STATS_CATEGORY,
     TOOL_DESC_DETECT_DRIFT, TOOL_FIELD_DRIFT_DAYS,
     TOOL_DESC_LIST_CHAT_MEMBERS,
+    TOOL_DESC_BROWSER_ACTION,
+    TOOL_FIELD_BROWSER_ACTION, TOOL_FIELD_BROWSER_URL,
+    TOOL_FIELD_BROWSER_SELECTOR, TOOL_FIELD_BROWSER_TEXT,
+    TOOL_FIELD_BROWSER_SCRIPT, TOOL_FIELD_BROWSER_PATH,
+    TOOL_FIELD_BROWSER_MAX_COUNT, TOOL_FIELD_BROWSER_DIRECTION,
+    TOOL_FIELD_BROWSER_AMOUNT, TOOL_FIELD_BROWSER_TIMEOUT,
+    TOOL_FIELD_BROWSER_COOKIE_PATH,
     TOOL_FIELD_SECTION, TOOL_FIELD_CONTENT_MEMORY,
     TOOL_FIELD_CHAT_SECTION, TOOL_FIELD_CHAT_CONTENT,
     TOOL_FIELD_SUMMARY, TOOL_FIELD_START_TIME, TOOL_FIELD_END_TIME,
@@ -24,7 +31,8 @@ from lq.prompts import (
     TOOL_FIELD_TOOL_NAME, TOOL_FIELD_TOOL_CODE,
     TOOL_FIELD_VALIDATE_CODE, TOOL_FIELD_DELETE_NAME,
     TOOL_FIELD_TOGGLE_NAME, TOOL_FIELD_TOGGLE_ENABLED,
-    TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_SCHEDULE_TEXT, TOOL_FIELD_SEND_AT,
+    TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_IMAGE_PATH,
+    TOOL_FIELD_SCHEDULE_TEXT, TOOL_FIELD_SEND_AT,
     TOOL_FIELD_CC_PROMPT, TOOL_FIELD_WORKING_DIR, TOOL_FIELD_CC_TIMEOUT,
     TOOL_FIELD_BASH_COMMAND, TOOL_FIELD_BASH_TIMEOUT,
     TOOL_FIELD_SEARCH_QUERY, TOOL_FIELD_SEARCH_MAX_RESULTS,
@@ -236,8 +244,12 @@ TOOLS: list[dict] = [
                     "type": "string",
                     "description": TOOL_FIELD_TEXT,
                 },
+                "image_path": {
+                    "type": "string",
+                    "description": TOOL_FIELD_IMAGE_PATH,
+                },
             },
-            "required": ["chat_id", "text"],
+            "required": ["chat_id"],
         },
     },
     {
@@ -402,6 +414,70 @@ TOOLS: list[dict] = [
                 },
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "browser_action",
+        "description": TOOL_DESC_BROWSER_ACTION,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_ACTION,
+                    "enum": [
+                        "navigate", "get_content", "screenshot", "click",
+                        "type", "evaluate", "get_elements", "scroll",
+                        "wait", "status", "save_cookies", "load_cookies",
+                    ],
+                },
+                "url": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_URL,
+                },
+                "selector": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_SELECTOR,
+                },
+                "text": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_TEXT,
+                },
+                "script": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_SCRIPT,
+                },
+                "path": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_PATH,
+                },
+                "max_count": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_BROWSER_MAX_COUNT,
+                    "default": 20,
+                },
+                "direction": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_DIRECTION,
+                    "enum": ["up", "down"],
+                    "default": "down",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_BROWSER_AMOUNT,
+                    "default": 500,
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": TOOL_FIELD_BROWSER_TIMEOUT,
+                    "default": 10,
+                },
+                "cookie_path": {
+                    "type": "string",
+                    "description": TOOL_FIELD_BROWSER_COOKIE_PATH,
+                },
+            },
+            "required": ["action"],
         },
     },
     {

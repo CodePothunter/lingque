@@ -61,6 +61,7 @@ class OutgoingMessage:
     reply_to: str = ""
     mentions: list[Mention] = field(default_factory=list)
     card: dict | None = None
+    image_path: str = ""  # 本地图片文件路径，发送时作为附件
 
 
 @dataclass
