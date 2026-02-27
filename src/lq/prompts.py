@@ -933,6 +933,8 @@ TOOL_FIELD_STATS_CATEGORY = (
     "要查看的统计类别：today（今日统计）、month（本月统计）、capability（工具使用统计）"
 )
 
+TOOL_DESC_LIST_CHAT_MEMBERS = "查询当前群聊的成员列表（包含每人的 user_id 和显示名）。当你需要知道群里有谁、或需要获取某人的 user_id 时使用。"
+
 
 EVOLUTION_INIT_TEMPLATE = (
     "# 进化日志\n\n"

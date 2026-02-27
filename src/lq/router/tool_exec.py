@@ -253,6 +253,16 @@ class ToolExecMixin:
                     input_data.get("days", 1),
                 )
 
+            elif name == "list_chat_members":
+                members = await self.adapter.list_members(chat_id)
+                return {
+                    "success": True,
+                    "members": [
+                        {"user_id": m.user_id, "name": m.name, "is_bot": m.is_bot}
+                        for m in members
+                    ],
+                }
+
             elif name == "vision_analyze":
                 return await self._tool_vision_analyze(
                     input_data["image_source"],
