@@ -110,11 +110,15 @@ class ToolLoopMixin:
                         result.get("success", True),
                         result.get("error", ""),
                     )
-                    # 标记是否已通过 send_message 向当前 chat 发送过
-                    if tc["name"] == "send_message" and result.get("success"):
-                        target = tc["input"].get("chat_id", "")
-                        if not target or target == chat_id:
+                    # 标记是否已通过 send_message/send_card 向当前 chat 发送过
+                    if result.get("success"):
+                        if tc["name"] == "send_card":
+                            # send_card 始终发到当前会话
                             sent_to_current_chat = True
+                        elif tc["name"] == "send_message":
+                            target = tc["input"].get("chat_id", "")
+                            if not target or target == chat_id:
+                                sent_to_current_chat = True
                     result_str = json.dumps(result, ensure_ascii=False)
                     tool_results.append({
                         "tool_use_id": tc["id"],
