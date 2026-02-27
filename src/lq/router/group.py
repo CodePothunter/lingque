@@ -52,6 +52,8 @@ class GroupChatMixin:
                     "reply_to_id": msg.reply_to_id,
                     "sender_type": msg.sender_type,
                 })
+                # 持久化到 session 文件（observe_only，不影响 LLM 上下文）
+                self._log_group_message_to_session(msg)
             await self._handle_group_at(msg)
             return
 
@@ -81,6 +83,9 @@ class GroupChatMixin:
             "sender_type": msg.sender_type,
         })
 
+        # 持久化到 session 文件（observe_only，不影响 LLM 上下文）
+        self._log_group_message_to_session(msg)
+
         # bot 消息限流：防止 bot 间无限对话循环
         if msg.sender_type == SenderType.BOT:
             count = self._bot_poll_count.get(chat_id, 0)
@@ -97,6 +102,17 @@ class GroupChatMixin:
             logger.info("群聊缓冲 %d/%d，%ds 后超时评估", buf._new_count, buf.eval_threshold, int(buf.max_age_seconds))
             loop = asyncio.get_running_loop()
             buf.schedule_timeout(loop, lambda cid=chat_id: asyncio.ensure_future(self._evaluate_buffer(cid)))
+
+    def _log_group_message_to_session(self, msg: IncomingMessage) -> None:
+        """将群聊消息以 observe_only 方式写入 session 文件，仅用于持久化记录。"""
+        if not self.session_mgr or not msg.text:
+            return
+        session = self.session_mgr.get_or_create(msg.chat_id)
+        session.add_message(
+            "user", msg.text,
+            sender_name=msg.sender_name or SENDER_UNKNOWN,
+            observe_only=True,
+        )
 
     async def _handle_group_at(self, msg: IncomingMessage) -> None:
         """处理群聊 @at 消息 — 必须回复"""

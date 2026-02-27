@@ -94,11 +94,17 @@ class Session:
 
     # ── 消息管理 ──
 
-    def add_message(self, role: str, content: str | list, sender_name: str = "") -> None:
+    def add_message(
+        self, role: str, content: str | list,
+        sender_name: str = "", observe_only: bool = False,
+    ) -> None:
         """添加一条消息到历史。
 
         content 可以是纯文本字符串，也可以是 Anthropic content blocks 列表
         （如包含 image 和 text 的多模态内容）。
+
+        observe_only=True 的消息仅用于持久化记录（写入 session 文件），
+        不参与 LLM 上下文构建（get_messages 会跳过它们）。
         """
         msg: dict = {
             "role": role,
@@ -107,6 +113,8 @@ class Session:
         }
         if sender_name:
             msg["sender_name"] = sender_name
+        if observe_only:
+            msg["observe_only"] = True
         tokens = _estimate_content_tokens(content)
         msg["_tokens"] = tokens
         self.messages.append(msg)
@@ -169,8 +177,11 @@ class Session:
             budget -= summary_tokens
 
         # 从后往前收集消息，直到预算用完
+        # observe_only 消息仅用于持久化，不参与 LLM 上下文
         selected: list[dict] = []
         for msg in reversed(self.messages):
+            if msg.get("observe_only"):
+                continue
             msg_tokens = msg.get("_tokens", _estimate_content_tokens(msg.get("content", "")))
             if budget - msg_tokens < 0 and selected:
                 # 预算不够且已有消息，停止
