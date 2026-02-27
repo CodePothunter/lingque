@@ -124,6 +124,27 @@ class WebToolsMixin:
         await self._mcp_request("notifications/initialized", is_notification=True)
 
     async def _tool_web_search(self, query: str, max_results: int = 5) -> dict:
+        """搜索互联网：优先使用智谱 MCP，失败时自动降级到 DuckDuckGo"""
+        mcp_result = await self._tool_web_search_mcp(query, max_results)
+        if mcp_result.get("success"):
+            return mcp_result
+
+        # MCP 失败，尝试 DuckDuckGo 备用搜索
+        logger.info("MCP 搜索不可用（%s），尝试 DuckDuckGo 备用搜索", mcp_result.get("error", ""))
+        fallback_result = await self._tool_web_search_fallback(query, max_results)
+        if fallback_result.get("success"):
+            return fallback_result
+
+        # 两者均失败，合并错误信息
+        return {
+            "success": False,
+            "error": (
+                f"主搜索(MCP)失败: {mcp_result.get('error')}；"
+                f"备用搜索(DuckDuckGo)失败: {fallback_result.get('error')}"
+            ),
+        }
+
+    async def _tool_web_search_mcp(self, query: str, max_results: int = 5) -> dict:
         """通过智谱 MCP web-search-prime 搜索互联网"""
         try:
             # 首次调用需初始化 MCP 会话
@@ -185,6 +206,63 @@ class WebToolsMixin:
             logger.exception("MCP 联网搜索失败: %s", query)
             self._mcp_session_id = None  # 重置会话以便下次重新初始化
             return {"success": False, "error": f"搜索失败: {e}"}
+
+    async def _tool_web_search_fallback(self, query: str, max_results: int = 5) -> dict:
+        """使用 DuckDuckGo 作为备用搜索引擎（无需 API Key，自动继承代理配置）
+
+        duckduckgo-search >= 8.x 只提供同步 DDGS，通过 asyncio.to_thread 在线程池执行。
+        """
+        import asyncio
+        import os
+
+        proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("ALL_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("http_proxy")
+            or os.environ.get("all_proxy")
+        )
+
+        def _run_sync() -> list[dict]:
+            from duckduckgo_search import DDGS  # type: ignore[import]
+            kwargs: dict = {}
+            if proxy:
+                kwargs["proxy"] = proxy
+            return DDGS(**kwargs).text(query, max_results=max_results)
+
+        try:
+            raw = await asyncio.wait_for(
+                asyncio.to_thread(_run_sync),
+                timeout=15.0,
+            )
+            results = [
+                {
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                }
+                for r in (raw or [])
+            ]
+            return {
+                "success": True,
+                "query": query,
+                "results": results,
+                "count": len(results),
+                "engine": "duckduckgo",
+            }
+
+        except ImportError:
+            return {
+                "success": False,
+                "error": "DuckDuckGo 搜索库未安装，请运行: uv add duckduckgo-search",
+            }
+        except asyncio.TimeoutError:
+            logger.warning("DuckDuckGo 备用搜索超时: %s", query)
+            return {"success": False, "error": "DuckDuckGo 搜索超时（15s）"}
+        except Exception as e:
+            logger.warning("DuckDuckGo 备用搜索失败: %s — %s", query, e)
+            return {"success": False, "error": f"备用搜索失败: {e}"}
 
     @staticmethod
     def _parse_mcp_search_results(raw_text: str, max_results: int) -> list[dict]:
