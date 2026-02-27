@@ -15,15 +15,18 @@ from lq.config import APIConfig
 
 logger = logging.getLogger(__name__)
 
-# 清理模型输出中的推理标签（<think>...</think>）
+# 清理模型输出中的推理标签（<think>...</think> 及 GLM 的 <|TG|>...<|TC|>）
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_GLM_THINK_RE = re.compile(r"<\|TG\|>.*?<\|TC\|>", re.DOTALL)
 
 
 def _clean_output(text: str) -> str:
     """移除模型输出中的推理标签和残留片段"""
     text = _THINK_RE.sub("", text)
-    # 处理不完整的 </think> 标签（模型被截断时）
+    text = _GLM_THINK_RE.sub("", text)
+    # 处理不完整的残留标签（模型被截断时）
     text = text.replace("</think>", "")
+    text = text.replace("<|TG|>", "").replace("<|TC|>", "")
     return text.strip()
 
 
