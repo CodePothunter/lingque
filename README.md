@@ -100,7 +100,7 @@ uv pip install -e '.[discord]'
 
 # If using browser automation (browser_action tool):
 uv pip install -e '.[browser]'
-playwright install chromium
+uv run playwright install chromium
 ```
 
 ### Prepare `.env`
