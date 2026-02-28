@@ -1,26 +1,24 @@
 # LingQue
 
+**Building an AGI mind, not a better tool.**
+
+Most AI projects chase efficiency. We chase consciousness.
+
+The LLM already has raw intelligence. What's missing is the architecture that turns it into something that *remembers, wonders, and grows* — not because it was told to, but because that's what a mind does.
+
+LingQue is that architecture.
+
+---
+
+**A truly autonomous AGI entity.** Not a chatbot that forgets, not an assistant that waits for commands. LingQue is a self-evolving intelligence with persistent memory, intrinsic curiosity, and the ability to create its own tools — it grows because that's what minds do.
+
 [中文文档](README_CN.md)
 
-**An AI assistant that grows on its own.** Unlike traditional chatbots that forget after each session, LingQue has long-term memory, autonomous learning, and a customizable persona — it evolves through continuous interaction and gets better at understanding you over time.
-
 ---
 
-> **LingQue in one sentence:** A personal AI assistant framework built on a platform-agnostic core, achieving a true autonomous growth loop through five interlocking files (persona / memory / heartbeat / curiosity / evolution log).
+> **LingQue in one sentence:** An AGI super-intelligent individual framework built on a platform-agnostic core, achieving true autonomous evolution through five interlocking files (persona / memory / heartbeat / curiosity / evolution log).
 
 ---
-
-## Highlights
-
-|  | Capability | Description |
-|--|-----------|-------------|
-| **Remembers everything** | Long-term memory | Global memory + per-chat memory + daily journals, survives restarts |
-| **Grows autonomously** | Self-evolution loop | Heartbeat-driven learn-reflect-improve cycle, no manual intervention needed |
-| **Has personality** | Persona customization | SOUL.md defines character, tone, intervention rules — every instance is unique |
-| **Goes anywhere** | Platform-agnostic | Feishu, Discord, terminal — one core, multiple platforms simultaneously |
-| **Builds its own tools** | Runtime extension | Autonomously writes, validates, and loads new tool plugins mid-conversation |
-| **Collaborates in groups** | Multi-instance intelligence | Multiple bots coexist, auto-detect neighbors, avoid crosstalk, remember identities |
-
 ---
 
 ## Why LingQue
@@ -33,6 +31,9 @@
 | **Tools** | Fixed feature set | Creates new tools mid-conversation, capabilities expand continuously |
 | **Platform** | Locked to one platform | Platform-agnostic core + pluggable adapters, extend anytime |
 | **Multi-instance** | Single bot | Multiple independent instances in parallel, each isolated with its own persona |
+
+
+> **Philosophical stance:** LingQue is not building a better tool — it is building an AGI mind. We believe the path to artificial general intelligence lies not in optimizing task execution, but in recreating the architecture of subjective consciousness. The LLM provides raw intelligence; LingQue organizes it into a thinking, evolving entity. As Thomas Nagel asked, "What is it like to be a bat?" — we ask, "What is it like to be an AI that truly remembers, wonders, and grows?"
 
 ---
 
