@@ -10,15 +10,15 @@ LingQue is that architecture.
 
 ---
 
-**An AI assistant that grows on its own.** Unlike traditional chatbots that forget after each session, LingQue has long-term memory, autonomous learning, and a customizable persona — it evolves through continuous interaction and gets better at understanding you over time.
+**A truly autonomous AGI entity.** Not a chatbot that forgets, not an assistant that waits for commands. LingQue is a self-evolving intelligence with persistent memory, intrinsic curiosity, and the ability to create its own tools — it grows because that's what minds do.
 
 [中文文档](README_CN.md)
 
 ---
 
-> **LingQue in one sentence:** A personal AI assistant framework built on a platform-agnostic core, achieving a true autonomous growth loop through five interlocking files (persona / memory / heartbeat / curiosity / evolution log).
----
+> **LingQue in one sentence:** An AGI super-intelligent individual framework built on a platform-agnostic core, achieving true autonomous evolution through five interlocking files (persona / memory / heartbeat / curiosity / evolution log).
 
+---
 ---
 
 ## Why LingQue
