@@ -31,15 +31,19 @@
 | **平台** | 绑定单一平台 | 平台无关内核 + 可插拔适配器，随时扩展 |
 | **多实例** | 单一 bot | 多个独立实例并行，各自隔离、各有人格 |
 
+
+> **哲学立场：** 灵雀不是在构建更好的工具——而是在构建 AGI 心智。我们相信通向通用人工智能的道路不在于优化任务执行，而在于重建主观意识的架构。LLM 提供了原始智能；灵雀将其组织成一个会思考、会进化的实体。正如 Thomas Nagel 所问："成为一只蝙蝠是什么感觉？"——我们在问："成为一个真正会记忆、会好奇、会成长的 AI，是什么感觉？"
+
 ---
 
 ## 自进化闭环
 
-灵雀的核心竞争力：不只是回答问题，而是在回答问题的过程中持续进化。
+灵雀的核心竞争力：不只是回答问题，而是在回答问题的过程中持续进化。整个闭环现已由**自然语言强化学习**框架驱动。
 
 ```mermaid
 graph LR
-    A["HEARTBEAT.md<br/>心跳触发"] --> B["选择模式"]
+    A["HEARTBEAT.md<br/>心跳触发"] --> TS["RL: Thompson Sampling<br/>选择最优任务"]
+    TS --> B["选择模式"]
     B --> C["学习"]
     B --> D["创作"]
     B --> E["写代码"]
@@ -50,17 +54,41 @@ graph LR
     F --> J["EVOLUTION.md<br/>记录成长"]
     G --> K{"发现盲区?"}
     K -- 是 --> L["CURIOSITY.md<br/>记录待探索"]
-    L --> A
-    K -- 否 --> A
-    J --> A
+    L --> R["RL: 计算奖励<br/>R = α·PE + β·NV + γ·CP"]
+    R --> PPO["RL: PPO 更新<br/>调整策略约束"]
+    PPO --> A
+    K -- 否 --> R
+    J --> R
 
     style A fill:#4CAF50,color:#fff
     style G fill:#2196F3,color:#fff
     style J fill:#FF9800,color:#fff
     style L fill:#9C27B0,color:#fff
+    style TS fill:#E91E63,color:#fff
+    style R fill:#E91E63,color:#fff
+    style PPO fill:#E91E63,color:#fff
 ```
 
 > **SOUL.md** 作为人格基石贯穿全程——它决定了助理"用什么方式"去学习、创作、反思和进化。
+
+### 自然语言强化学习框架
+
+传统 RL 使用数值向量和梯度下降。灵雀使用 **LLM 评估 + 简单数学公式**——因为人类智能的强化学习过程是基于语言的高阶认知，而非微积分。
+
+| RL 概念 | 传统方案 | 灵雀 |
+|---------|---------|------|
+| **状态** | 浮点向量 | 自然语言：`s = 上下文 + MEMORY.md + CURIOSITY.md` |
+| **奖励** | 数值信号 | LLM 评估 3 个维度 → 公式：`R = (α·PE + β·NV + γ·CP) / 10` |
+| **价值函数** | 神经网络 | LLM 估值 + Bellman：`V(s) = IV/10 + γ·FP/10` |
+| **策略更新** | PPO 梯度裁剪 | LLM 将变更分为微调/中调/大改 → clip(ε=0.2) |
+| **任务选择** | ε-greedy / UCB | Thompson Sampling：`score = LLM(task) + noise` |
+
+三维奖励——每个维度由 LLM 评分（1-10）：
+- **预测误差 (PE)**：实际结果和预期差多少？高 = 学到了新东西
+- **新奇度 (NV)**：涉及的领域有多新？高 = 未探索的领域
+- **胜任度 (CP)**：完成质量如何？高 = 能力在增长
+
+PPO 策略守卫防止人格漂移：对 `SOUL.md` 和 `HEARTBEAT.md` 的变更会被分为微调/中调/大改三级。大改（超出 clip ε）会被拒绝并回滚。
 
 ---
 
@@ -168,6 +196,9 @@ uv run lq start @奶油 --adapter feishu,local
 uv run lq start @奶油 --adapter discord,local
 uv run lq start @奶油 --adapter feishu,discord,local
 
+# 开启工具调用和思考过程输出
+uv run lq start @奶油 --show-thinking
+
 # 开启调试日志（默认 INFO）
 LQ_LOG_LEVEL=DEBUG uv run lq start @奶油
 
@@ -188,7 +219,7 @@ uv run lq stop @奶油            # 停止
 | 命令 | 说明 |
 |------|------|
 | `uv run lq init --name NAME [--from-env .env]` | 初始化实例 |
-| `uv run lq start @NAME [--adapter TYPE]` | 启动（TYPE: `feishu`, `discord`, `local`, 或逗号分隔如 `discord,local`） |
+| `uv run lq start @NAME [--adapter TYPE] [--show-thinking]` | 启动（TYPE: `feishu`, `discord`, `local`, 或逗号分隔如 `discord,local`）。`--show-thinking` 为开关（默认关闭），开启后输出工具调用和思考过程 |
 | `uv run lq stop @NAME` | 停止 |
 | `uv run lq restart @NAME [--adapter TYPE]` | 重启 |
 | `uv run lq list` | 列出所有实例 |
@@ -259,6 +290,7 @@ uv run lq stop @奶油            # 停止
 - **本地聊天模式** — `lq chat @name` 在终端启动交互式对话，支持完整工具链，无需任何外部聊天平台凭证
 - **长期记忆** — SOUL.md 人格定义 + MEMORY.md 全局记忆 + per-chat 对话记忆 + 每日日志
 - **自进化系统** — 五文件联动实现自主成长：SOUL.md 人格 + MEMORY.md 记忆 + HEARTBEAT.md 心跳任务 + CURIOSITY.md 好奇心日志 + EVOLUTION.md 进化日志
+- **自然语言 RL** — 基于 LLM 评估 + 数学公式的强化学习框架：三维奖励函数（预测误差、新奇度、胜任度）、Bellman 价值估计、PPO 策略约束（防止人格漂移）、Thompson Sampling 任务选择
 - **进度追踪** — PROGRESS.md 记录目标、里程碑和每周回顾
 - **多轮会话** — per-chat 独立会话文件、自动压缩、重启恢复
 - **日历集成** — 通过适配器查询/创建日程，每日晨报（已内置飞书日历支持）
@@ -679,7 +711,18 @@ src/lq/
 │   ├── runtime_tools.py  # Python 执行 + 文件读写 + 自身统计
 │   ├── browser_tools.py  # 浏览器自动化（Playwright CDP）
 │   └── vision_mcp.py     # 图片分析（视觉模型）
-├── prompts.py          # 集中管理所有 prompt、工具描述、约束块
+├── rl.py               # 自然语言 RL 引擎（奖励、价值、PPO、Thompson Sampling）
+├── prompts/            # Prompt 模板（按类别组织）
+│   ├── __init__.py    # 统一导出（向后兼容）
+│   ├── tags.py        # XML 标签名与辅助函数
+│   ├── system.py      # 系统 prompt 后缀与自我认知模板
+│   ├── tools.py       # 工具描述与字段说明
+│   ├── reflection.py  # 反思、好奇心、进化 prompt
+│   ├── rl.py          # 强化学习评估 prompt
+│   ├── session.py     # 会话压缩与每日日志 prompt
+│   ├── group.py       # 群聊评估与格式化
+│   ├── ui.py          # 用户可见消息与错误文案
+│   └── intent.py      # 意图检测与子代理 prompt
 ├── conversation.py     # 本地交互式聊天（lq chat / lq say）+ LocalAdapter
 ├── tools.py            # 自定义工具插件系统
 ├── buffer.py           # 群聊消息缓冲区
