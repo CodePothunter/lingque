@@ -39,11 +39,12 @@ LingQue is that architecture.
 
 ## Self-Evolution Loop
 
-LingQue's core differentiator: it doesn't just answer questions — it continuously evolves in the process.
+LingQue's core differentiator: it doesn't just answer questions — it continuously evolves in the process. The entire loop is now driven by a **Natural Language Reinforcement Learning** framework.
 
 ```mermaid
 graph LR
-    A["HEARTBEAT.md<br/>Heartbeat trigger"] --> B["Choose mode"]
+    A["HEARTBEAT.md<br/>Heartbeat trigger"] --> TS["RL: Thompson Sampling<br/>Select best task"]
+    TS --> B["Choose mode"]
     B --> C["Learn"]
     B --> D["Create"]
     B --> E["Code"]
@@ -54,17 +55,41 @@ graph LR
     F --> J["EVOLUTION.md<br/>Record growth"]
     G --> K{"Knowledge gap?"}
     K -- Yes --> L["CURIOSITY.md<br/>Log for exploration"]
-    L --> A
-    K -- No --> A
-    J --> A
+    L --> R["RL: Compute Reward<br/>R = α·PE + β·NV + γ·CP"]
+    R --> PPO["RL: PPO Update<br/>Adjust policy constraints"]
+    PPO --> A
+    K -- No --> R
+    J --> R
 
     style A fill:#4CAF50,color:#fff
     style G fill:#2196F3,color:#fff
     style J fill:#FF9800,color:#fff
     style L fill:#9C27B0,color:#fff
+    style TS fill:#E91E63,color:#fff
+    style R fill:#E91E63,color:#fff
+    style PPO fill:#E91E63,color:#fff
 ```
 
 > **SOUL.md** serves as the persona foundation throughout — it determines *how* the assistant learns, creates, reflects, and evolves.
+
+### Natural Language RL Framework
+
+Traditional RL uses numerical vectors and gradient descent. LingQue uses **LLM evaluation + simple math** — because human intelligence does RL through language-based cognition, not calculus.
+
+| RL Concept | Traditional | LingQue |
+|-----------|-------------|---------|
+| **State** | Float vectors | Natural language: `s = context + MEMORY.md + CURIOSITY.md` |
+| **Reward** | Numerical signal | LLM evaluates 3 dimensions → formula: `R = (α·PE + β·NV + γ·CP) / 10` |
+| **Value Function** | Neural network | LLM estimates + Bellman: `V(s) = IV/10 + γ·FP/10` |
+| **Policy Update** | PPO gradient clip | LLM classifies changes as micro/mid/major → clip(ε=0.2) |
+| **Task Selection** | ε-greedy / UCB | Thompson Sampling: `score = LLM(task) + noise` |
+
+Three reward dimensions — each scored 1-10 by the LLM:
+- **Prediction Error (PE)**: How much did the result differ from expectations? High = learned something new
+- **Novelty (NV)**: How new is the domain/information? High = unexplored territory
+- **Competence (CP)**: How well was the task executed? High = growing mastery
+
+The PPO policy guard prevents personality drift: changes to `SOUL.md` and `HEARTBEAT.md` are classified as micro/mid/major adjustments. Major changes (exceeding clip ε) are rejected and rolled back.
 
 ---
 
@@ -265,6 +290,7 @@ In Discord, DM the bot or @mention it in a channel to chat.
 - **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
 - **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log)
+- **Natural Language RL** — Reinforcement learning framework using LLM evaluation + mathematical formulas: three-dimensional reward function (prediction error, novelty, competence), Bellman value estimation, PPO policy constraints (personality drift prevention), and Thompson Sampling for task selection
 - **Progress tracking** — PROGRESS.md records goals, milestones, and weekly reviews
 - **Multi-turn sessions** — Per-chat session files, auto-compaction, restart recovery
 - **Calendar integration** — Query/create calendar events via adapter, daily briefings (Feishu calendar supported out-of-box)
@@ -685,7 +711,18 @@ src/lq/
 │   ├── runtime_tools.py  # Python execution + file I/O + self-stats
 │   ├── browser_tools.py  # Browser automation via Playwright CDP
 │   └── vision_mcp.py     # Image analysis via vision model
-├── prompts.py          # Centralized prompts, tool descriptions, and constraint blocks
+├── rl.py               # Natural Language RL engine (reward, value, PPO, Thompson Sampling)
+├── prompts/            # Prompt templates organized by category
+│   ├── __init__.py    # Unified re-exports for backward compatibility
+│   ├── tags.py        # XML tag names and helpers
+│   ├── system.py      # System prompt suffixes and self-awareness templates
+│   ├── tools.py       # Tool descriptions and field descriptions
+│   ├── reflection.py  # Reflection, curiosity, evolution prompts
+│   ├── rl.py          # Reinforcement learning evaluation prompts
+│   ├── session.py     # Session compaction and daily log prompts
+│   ├── group.py       # Group chat evaluation and formatting
+│   ├── ui.py          # User-facing messages and error strings
+│   └── intent.py      # Intent detection and subagent prompts
 ├── conversation.py     # Local interactive chat (lq chat / lq say) + LocalAdapter
 ├── tools.py            # Custom tool plugin system
 ├── buffer.py           # Group chat message buffer

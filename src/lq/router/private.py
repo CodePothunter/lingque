@@ -255,11 +255,11 @@ class PrivateChatMixin:
     # ── 自我反思 + 好奇心信号 ──
 
     async def _reflect_on_reply(self, chat_id: str, reply_text: str) -> None:
-        """轻量级 LLM 调用，对刚发出的回复做质量自评 + 好奇心信号检测"""
+        """轻量级 LLM 调用，对刚发出的回复做质量自评 + 好奇心信号检测 + RL 奖励"""
         try:
             prompt = REFLECTION_WITH_CURIOSITY_PROMPT.format(reply=reply_text[:500])
             reflection = await self.executor.reply_with_history(
-                "", [{"role": "user", "content": prompt}], max_tokens=200,
+                "", [{"role": "user", "content": prompt}], max_tokens=300,
             )
             reflection = reflection.strip()
             if reflection:
@@ -267,8 +267,38 @@ class PrivateChatMixin:
                 self._append_reflection(chat_id, reflection)
                 # 从 JSON 提取好奇心信号
                 self._extract_curiosity_from_reflection(reflection, "私聊反思", chat_id)
+                # 从 JSON 提取 RL 奖励信号（零额外 LLM 调用）
+                self._extract_rl_reward_from_reflection(reflection, reply_text[:100])
         except Exception:
             logger.debug("自我反思失败", exc_info=True)
+
+    def _extract_rl_reward_from_reflection(
+        self, reflection: str, reply_summary: str,
+    ) -> None:
+        """从反思 JSON 中提取 RL 三维评分并记录奖励信号（零额外 LLM 调用）"""
+        rl_learner = getattr(self, "_rl_learner", None)
+        if not rl_learner:
+            return
+
+        from json_repair import repair_json
+
+        try:
+            data = repair_json(reflection, return_objects=True)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+
+        pe = data.get("prediction_error")
+        nv = data.get("novelty")
+        cp = data.get("competence")
+        if pe is not None and nv is not None and cp is not None:
+            try:
+                rl_learner.record_reward_from_reflection(
+                    int(pe), int(nv), int(cp), reply_summary,
+                )
+            except (ValueError, TypeError):
+                logger.debug("RL 评分解析失败: pe=%s, nv=%s, cp=%s", pe, nv, cp)
 
     def _append_reflection(self, chat_id: str, reflection: str) -> None:
         """将反思结果追加到当日反思日志"""

@@ -19,6 +19,7 @@ CST = timezone(timedelta(hours=8))
 from lq.backup import BackupManager
 from lq.config import LQConfig
 from lq.evolution import EvolutionEngine
+from lq.rl import ReinforcementLearner
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.executor.cc_experience import CCExperienceStore
@@ -391,6 +392,17 @@ class AssistantGateway:
         # 标记本次启动（清除 clean shutdown 标记，在 _cleanup 中重新写入）
         self._clean_shutdown_path.unlink(missing_ok=True)
 
+        # 初始化强化学习引擎
+        self._rl_learner = ReinforcementLearner(self.home, executor=executor)
+        router._rl_learner = self._rl_learner  # type: ignore[attr-defined]
+        logger.info(
+            "RL 引擎已加载: 策略v%d (%s), 奖励历史 %d 条, 基线 %.3f",
+            self._rl_learner.policy.version,
+            self._rl_learner.policy.constraint_level,
+            self._rl_learner.reward_count,
+            self._rl_learner.policy.baseline_reward,
+        )
+
         # 配置心跳回调
         heartbeat = HeartbeatRunner(
             self.config.heartbeat_interval,
@@ -735,6 +747,24 @@ class AssistantGateway:
             reflections_summary = self._get_reflections_summary()
             tool_stats_summary = self._get_tool_stats_summary(router)
 
+            # ── RL: Thompson Sampling 任务选择 ──
+            rl_summary = ""
+            selected_task_hint = ""
+            if self._rl_learner:
+                rl_summary = self._rl_learner.get_rl_summary()
+                # 从 CURIOSITY.md 和 EVOLUTION.md 提取候选任务
+                candidate_tasks = self._extract_candidate_tasks(curiosity_md, evolution_md)
+                if candidate_tasks:
+                    selected, scores = await self._rl_learner.select_task_thompson(candidate_tasks)
+                    if selected:
+                        selected_task_hint = (
+                            f"## RL 推荐任务\n"
+                            f"Thompson Sampling 推荐你优先处理:\n"
+                            f"**{selected}**\n"
+                            f"（评分: {scores.get(selected, 0):.1f} / 候选 {len(candidate_tasks)} 个）\n"
+                            f"这是基于价值函数和探索-利用平衡的建议，你可以参考但不必强制遵守。"
+                        )
+
             # ── 读取开发规范 ──
             contributing_rules = "（未配置 CONTRIBUTING.md）"
             contributing_path = self.home / "CONTRIBUTING.md"
@@ -745,6 +775,8 @@ class AssistantGateway:
             system = router.memory.build_context()
             system += "\n\n" + CURIOSITY_EXPLORE_PROMPT.format(
                 recent_conversations=recent_conversations,
+                rl_summary=rl_summary,
+                selected_task_hint=selected_task_hint,
                 signals=signals_text,
                 curiosity_md=curiosity_md,
                 evolution_md=evolution_md,
@@ -763,9 +795,17 @@ class AssistantGateway:
             chat_id = self._owner_chat_id or "autonomous"
             messages = [{"role": "user", "content": "请根据你的好奇心决定下一步行动。"}]
 
-            # 记录行动前的文件状态用于变更检测
+            # 记录行动前的文件状态用于变更检测 + PPO 策略守卫
             old_curiosity = curiosity_md
             old_evolution = evolution_md
+            old_soul = ""
+            old_heartbeat = ""
+            soul_path = self.home / "SOUL.md"
+            heartbeat_path = self.home / "HEARTBEAT.md"
+            if soul_path.exists():
+                old_soul = soul_path.read_text(encoding="utf-8")
+            if heartbeat_path.exists():
+                old_heartbeat = heartbeat_path.read_text(encoding="utf-8")
 
             # 进化守护：如果可能执行进化，先保存 checkpoint
             if self._evolution and remaining_today > 0 and self._evolution.source_root:
@@ -803,6 +843,22 @@ class AssistantGateway:
                 # （如果执行了进化，保留 checkpoint 等下次启动验证）
                 if self._evolution and not did_evolve:
                     self._evolution.clear_checkpoint()
+
+                # ── RL: 奖励计算 + PPO 更新 ──
+                if self._rl_learner:
+                    action_source = "evolution" if did_evolve else "exploration"
+                    action_desc = selected_task_hint[:200] if selected_task_hint else result_clean[:200]
+                    try:
+                        await self._rl_learner.compute_reward(
+                            action_desc, result_clean[:500], source=action_source,
+                        )
+                    except Exception:
+                        logger.debug("RL 奖励计算失败", exc_info=True)
+
+                # ── RL: PPO 策略守卫（检测 SOUL/HEARTBEAT 变更）──
+                if self._rl_learner:
+                    await self._rl_policy_guard(soul_path, old_soul, "SOUL.md")
+                    await self._rl_policy_guard(heartbeat_path, old_heartbeat, "HEARTBEAT.md")
 
                 # 检测好奇心日志变化（保持原有的改进建议通知逻辑）
                 new_curiosity = curiosity_path.read_text(encoding="utf-8")
@@ -842,6 +898,63 @@ class AssistantGateway:
                 await self._compact_evolution_log(router)
         except Exception:
             logger.exception("EVOLUTION.md 压缩失败")
+
+    @staticmethod
+    def _extract_candidate_tasks(curiosity_md: str, evolution_md: str) -> list[str]:
+        """从 CURIOSITY.md 和 EVOLUTION.md 中提取候选任务列表（纯正则，不调 LLM）"""
+        import re as _re
+        tasks: list[str] = []
+
+        # CURIOSITY.md: 「当前兴趣」部分的列表项
+        m = _re.search(r"##\s*当前兴趣\s*\n(.*?)(?:\n##|\Z)", curiosity_md, _re.DOTALL)
+        if m:
+            for line in m.group(1).strip().splitlines():
+                line = line.strip()
+                if line.startswith("- ") and len(line) > 4:
+                    tasks.append(line[2:].strip())
+
+        # EVOLUTION.md: 「待办」部分的列表项
+        m = _re.search(r"##\s*待办\s*\n(.*?)(?:\n##|\Z)", evolution_md, _re.DOTALL)
+        if m:
+            for line in m.group(1).strip().splitlines():
+                line = line.strip()
+                if line.startswith("- ") and len(line) > 4:
+                    tasks.append(f"[进化] {line[2:].strip()}")
+
+        return tasks[:15]  # 限制候选数量
+
+    async def _rl_policy_guard(
+        self, file_path: Path, old_content: str, filename: str,
+    ) -> None:
+        """PPO 策略守卫：检测核心文件变更并评估是否允许"""
+        if not file_path.exists():
+            return
+        new_content = file_path.read_text(encoding="utf-8")
+        if new_content == old_content:
+            return
+
+        # 计算变更摘要
+        old_lines = set(old_content.splitlines())
+        new_lines = set(new_content.splitlines())
+        added = new_lines - old_lines
+        removed = old_lines - new_lines
+        change_desc = f"新增 {len(added)} 行, 删除 {len(removed)} 行"
+        if added:
+            change_desc += f"\n新增内容片段: {' | '.join(list(added)[:3])}"
+
+        allowed, change_type, reason = await self._rl_learner.evaluate_policy_change(
+            change_desc, filename,
+        )
+
+        if not allowed:
+            # 大改被拒绝 → 回滚
+            logger.warning(
+                "PPO 策略守卫回滚 %s 变更: %s (%s)",
+                filename, change_type, reason,
+            )
+            file_path.write_text(old_content, encoding="utf-8")
+        else:
+            logger.info("PPO 策略守卫允许 %s 变更: %s", filename, change_type)
 
     async def _compact_evolution_log(self, router: MessageRouter) -> None:
         """用 LLM 摘要归档 EVOLUTION.md 中的旧条目。"""
