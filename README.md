@@ -1,6 +1,10 @@
 # LingQue
 
+**Building an AGI mind, not a better tool.**
+
 [中文文档](README_CN.md)
+
+Most AI assistants are designed to execute tasks efficiently. LingQue takes a different path: we believe the key to artificial general intelligence lies not in optimizing execution, but in recreating the architecture of subjective consciousness. The LLM provides raw intelligence; LingQue organizes it into a thinking, remembering, evolving entity.
 
 **An AI assistant that grows on its own.** Unlike traditional chatbots that forget after each session, LingQue has long-term memory, autonomous learning, and a customizable persona — it evolves through continuous interaction and gets better at understanding you over time.
 
@@ -24,6 +28,16 @@
 ---
 
 ## Why LingQue
+
+| | Traditional ChatBot | LingQue |
+|--|---------------------|---------|
+| **Memory** | Forgets after session ends | Global + per-chat long-term memory, persists across sessions |
+| **Growth** | Starts from scratch every time | Heartbeat-driven autonomous learn-reflect-evolve cycle |
+| **Persona** | Generic assistant tone | SOUL.md gives full control over identity, personality, communication style |
+| **Tools** | Fixed feature set | Creates new tools mid-conversation, capabilities expand continuously |
+| **Platform** | Locked to one platform | Platform-agnostic core + pluggable adapters, extend anytime |
+| **Multi-instance** | Single bot | Multiple independent instances in parallel, each isolated with its own persona |
+
 
 > **Philosophical stance:** LingQue is not building a better tool — it is building an AGI mind. We believe the path to artificial general intelligence lies not in optimizing task execution, but in recreating the architecture of subjective consciousness. The LLM provides raw intelligence; LingQue organizes it into a thinking, evolving entity. As Thomas Nagel asked, "What is it like to be a bat?" — we ask, "What is it like to be an AI that truly remembers, wonders, and grows?"
 
