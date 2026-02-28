@@ -393,7 +393,7 @@ Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
 |------|-------------|
 | `run_python` | Execute Python code snippets for calculations and data processing |
 | `run_bash` | Execute shell commands |
-| `run_claude_code` | Delegate complex tasks to Claude Code subprocess (see [note below](#claude-code-nesting-caveat)) |
+| `run_claude_code` | Delegate complex tasks to Claude Code via Agent SDK — interactive execution with streaming progress, tiered approval, experience memory, and session resume (see [details below](#claude-code-integration)) |
 | `read_file` | Read files from the filesystem |
 | `write_file` | Write/create files on the filesystem |
 
@@ -414,26 +414,82 @@ Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
 | `get_my_stats` | Query own runtime statistics and API usage |
 | `detect_drift` | Scan recent replies for behavioral drift against SOUL.md rules |
 
-### Claude Code Nesting Caveat
+### Claude Code Integration
 
-The `run_claude_code` tool delegates complex tasks (multi-file edits, git operations, codebase analysis) to a Claude Code subprocess. However, **it cannot run inside an existing Claude Code session**. The executor checks for the `CLAUDECODE=1` environment variable and refuses to start if detected, to prevent infinite nesting.
+The `run_claude_code` tool delegates complex tasks (multi-file edits, git operations, codebase analysis) to Claude Code. It uses the **Claude Agent SDK** for interactive, observable execution — not a fire-and-forget subprocess.
 
-This means if you launch your instance from within a Claude Code terminal session:
+#### How It Works
 
-```bash
-# Inside a Claude Code session — CLAUDECODE=1 is inherited
-uv run lq start @name          # ❌ run_claude_code will always fail
+```
+User: "refactor the auth module"
+  → LingQue invokes run_claude_code(prompt="refactor the auth module")
+    → ClaudeCodeSession (Agent SDK) starts a CC session
+      → CC reads files, edits code, runs tests...
+      → Each tool call goes through tiered approval
+      → Progress reports are sent to the chat in batches
+      → On completion, experience is recorded for future reference
+    → Result returned to LingQue with cost, files modified, session ID
 ```
 
-Every `run_claude_code` call will fail with `检测到嵌套 Claude Code 会话，无法启动子进程`. The assistant will silently fall back to using `run_bash` + `write_file` instead, which works but loses Claude Code's multi-step reasoning capabilities.
+#### Tiered Approval
 
-**Fix**: start your instance outside of Claude Code so the environment variable is not inherited:
+Every CC tool call is classified by risk level:
+
+| Risk | Tools | Approval |
+|------|-------|----------|
+| **Safe** | `Read`, `Glob`, `Grep`, `WebSearch` | Auto-allow |
+| **Normal** | `Write`, `Edit`, `Bash` (standard commands) | LLM fast-judge (checks if action matches original task intent) |
+| **Dangerous** | `git push`, `rm -rf`, `chmod`, `sudo`, writes outside workspace | Human approval via interactive card (120s timeout, auto-deny) |
+
+If the LLM judge returns "UNCERTAIN", the operation is escalated to human approval.
+
+#### Experience Memory
+
+Each execution is recorded to `~/.lq-{slug}/cc_experience/{date}.jsonl`:
+
+- Full trace: tools used, files modified, costs, errors, approval decisions
+- Lessons extracted by LLM: actionable takeaways for next time
+- On subsequent similar tasks, past experience is injected into the prompt
+
+#### Memory Integration
+
+CC sessions receive the assistant's full knowledge context:
+
+| Source | Injected As | Content |
+|--------|------------|---------|
+| `SOUL.md` | System prompt append | Persona, behavioral preferences |
+| `MEMORY.md` | System prompt append | Project knowledge, technical decisions |
+| Chat memory | System prompt append | Per-user interaction history |
+| CC experience | Task prompt | Lessons from similar past executions |
+| Conversation | Task prompt | Recent chat context |
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `prompt` | string | *(required)* | Task description |
+| `working_dir` | string | workspace | Working directory |
+| `timeout` | integer | 300 | Timeout in seconds |
+| `resume_session` | string | `""` | CC session ID to resume a previous session |
+| `max_budget_usd` | number | 0.5 | Cost cap for this execution (USD) |
+
+#### Progress Reports
+
+During execution, the chat receives batched progress updates (every 3 tool calls or 10 seconds) and a completion report with success/failure status, cost, and modified files.
+
+#### Session Resume
+
+Each execution returns a `session_id`. Pass it as `resume_session` in a subsequent call to continue the same CC conversation with full context preserved.
+
+#### Fallback
+
+If `claude-agent-sdk` is not installed, the tool automatically falls back to the legacy subprocess mode (`claude --print`). The nesting guard (`CLAUDECODE=1` env var) still applies — start your instance outside of Claude Code to avoid it:
 
 ```bash
-# From a regular shell — no CLAUDECODE env var
-uv run lq start @name          # ✅ run_claude_code works normally
+# From a regular shell
+uv run lq start @name          # ✅ run_claude_code works
 
-# Or use nohup / systemd / tmux to detach from the Claude Code session
+# Or detach from Claude Code session
 nohup uv run lq start @name &  # ✅ also works
 ```
 
@@ -595,6 +651,7 @@ Edit `~/.lq-{slug}/config.json`:
 | `active_hours` | Active hours `[start, end)` |
 | `cost_alert_daily` | Daily cost alert threshold (USD) |
 | `recent_conversation_preview` | Max total preview lines for recent conversations in heartbeat prompt (default: 20) |
+| `cc_max_budget_usd` | Claude Code per-execution cost cap in USD (default: `0.5`) |
 | `browser_port` | Chrome DevTools Protocol port for browser automation (default: `9222`). Set different ports for multiple instances on the same machine |
 | `groups[].note` | Group description, helps LLM decide whether to intervene |
 | `groups[].eval_threshold` | Message count to trigger group evaluation |
@@ -646,7 +703,9 @@ src/lq/
 │   └── multi.py        # MultiAdapter (composite adapter for multi-platform mode)
 ├── executor/
 │   ├── api.py          # Anthropic API (with retry + tool use)
-│   └── claude_code.py  # Claude Code subprocess
+│   ├── claude_code.py  # Claude Code subprocess (legacy fallback)
+│   ├── cc_session.py   # Claude Code Agent SDK session (interactive execution + tiered approval)
+│   └── cc_experience.py # CC execution experience store (JSONL persistence + similarity search)
 ├── feishu/
 │   ├── adapter.py      # FeishuAdapter (PlatformAdapter impl, wraps sender + listener)
 │   ├── listener.py     # WebSocket event receiver (internal to adapter)

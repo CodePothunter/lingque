@@ -86,6 +86,7 @@ class LQConfig:
     backup_max_count: int = 10          # 最多保留几个备份
     backup_size_threshold: int = 524288 # 512KB，文件夹增量触发阈值
     show_thinking: bool = False  # 是否输出工具调用记录和思考过程（默认关闭，--show-thinking 开启）
+    cc_max_budget_usd: float = 0.5  # Claude Code 单次执行成本上限 (USD)
     browser_port: int = 9222  # Chrome DevTools Protocol 调试端口
 
     def __post_init__(self) -> None:
@@ -116,6 +117,7 @@ class LQConfig:
         cfg.backup_max_count = d.get("backup_max_count", 10)
         cfg.backup_size_threshold = d.get("backup_size_threshold", 524288)
         cfg.show_thinking = d.get("show_thinking", False)
+        cfg.cc_max_budget_usd = d.get("cc_max_budget_usd", 0.5)
         ah = d.get("active_hours", [8, 23])
         cfg.active_hours = (ah[0], ah[1])
 

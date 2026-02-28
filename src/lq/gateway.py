@@ -21,6 +21,8 @@ from lq.config import LQConfig
 from lq.evolution import EvolutionEngine
 from lq.executor.api import DirectAPIExecutor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
+from lq.executor.cc_experience import CCExperienceStore
+from lq.executor.cc_session import ClaudeCodeSession
 from lq.heartbeat import HeartbeatRunner
 from lq.memory import MemoryManager
 from lq.platform import PlatformAdapter, OutgoingMessage, IncomingMessage, ChatType, SenderType, MessageType
@@ -336,6 +338,23 @@ class AssistantGateway:
         router.stats = stats
         router.cc_executor = cc_executor
         router.bash_executor = bash_executor
+
+        # 初始化 CC SDK 交互式执行器
+        try:
+            import claude_agent_sdk  # noqa: F401
+            experience_store = CCExperienceStore(self.home)
+            cc_session = ClaudeCodeSession(
+                workspace=self.home,
+                api_config=self.config.api,
+                adapter=adapter,
+                experience_store=experience_store,
+                memory=memory,
+                executor=executor,
+            )
+            router.cc_session = cc_session
+            logger.info("CC SDK 交互式执行器已加载")
+        except ImportError:
+            logger.info("claude-agent-sdk 未安装，CC 使用旧版子进程模式")
         router.tool_registry = tool_registry
         self._router = router
         logger.info("会话管理器已加载（含 Claude Code + Bash 执行器）")

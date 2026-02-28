@@ -196,14 +196,28 @@ class ToolExecMixin:
                 return {"success": True, "message": RESULT_SCHEDULE_OK.format(send_at=send_at_str)}
 
             elif name == "run_claude_code":
-                if not self.cc_executor:
+                if self.cc_session:
+                    # SDK 模式（优先）
+                    cc_result = await self.cc_session.execute(
+                        prompt=input_data["prompt"],
+                        chat_id=chat_id,
+                        context=self._build_cc_context(chat_id),
+                        working_dir=input_data.get("working_dir", ""),
+                        timeout=input_data.get("timeout", 300),
+                        max_budget_usd=input_data.get("max_budget_usd", 0.5),
+                        session_id=input_data.get("resume_session") or None,
+                    )
+                    return cc_result.to_dict()
+                elif self.cc_executor:
+                    # 旧模式（降级）
+                    result = await self.cc_executor.execute_with_context(
+                        prompt=input_data["prompt"],
+                        working_dir=input_data.get("working_dir", ""),
+                        timeout=input_data.get("timeout", 300),
+                    )
+                    return result
+                else:
                     return {"success": False, "error": ERR_CC_NOT_LOADED}
-                result = await self.cc_executor.execute_with_context(
-                    prompt=input_data["prompt"],
-                    working_dir=input_data.get("working_dir", ""),
-                    timeout=input_data.get("timeout", 300),
-                )
-                return result
 
             elif name == "run_bash":
                 if not self.bash_executor:
@@ -291,6 +305,27 @@ class ToolExecMixin:
         except Exception as e:
             logger.exception("工具执行失败: %s", name)
             return {"success": False, "error": str(e)}
+
+    def _build_cc_context(self, chat_id: str) -> str:
+        """构建 CC 执行的对话上下文摘要"""
+        if not self.session_mgr:
+            return ""
+        try:
+            session = self.session_mgr.get_or_create(chat_id)
+            messages = session.get_messages()
+            if not messages:
+                return ""
+            # 取最近 5 条消息作为上下文
+            recent = messages[-5:]
+            lines: list[str] = []
+            for m in recent:
+                role = m.get("role", "?")
+                content = m.get("content", "")
+                if isinstance(content, str) and content:
+                    lines.append(f"{role}: {content[:200]}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     # ── 多模态内容构建 ──
 

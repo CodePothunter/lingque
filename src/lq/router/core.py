@@ -104,6 +104,7 @@ class MessageRouter(
         self.calendar: Any = None
         self.stats: Any = None
         self.cc_executor: Any = None
+        self.cc_session: Any = None  # ClaudeCodeSession (SDK 模式)
         self.bash_executor: Any = None
         self.tool_registry: Any = None
         self.post_processor: Any = None
@@ -382,8 +383,12 @@ class MessageRouter(
         card_type = action.value.get("type", "")
         if card_type == "approval":
             approval_id = action.value.get("id", "")
-            status = "approved" if action.action_type == "confirm" else "rejected"
+            approved = action.action_type == "confirm"
+            status = "approved" if approved else "rejected"
             self._update_approval_status(approval_id, status)
+            # CC session 审批回调
+            if self.cc_session and approval_id.startswith("cc_"):
+                self.cc_session.resolve_approval(approval_id, approved)
             logger.info("审批 %s: %s (操作者: %s)", approval_id, status, op_id)
             return
 

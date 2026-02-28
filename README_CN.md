@@ -387,7 +387,7 @@ uv run lq stop @奶油            # 停止
 |------|------|
 | `run_python` | 执行 Python 代码片段，用于计算和数据处理 |
 | `run_bash` | 执行 Shell 命令 |
-| `run_claude_code` | 委托复杂任务给 Claude Code 子进程（见[注意事项](#claude-code-嵌套限制)） |
+| `run_claude_code` | 通过 Agent SDK 委托复杂任务给 Claude Code——交互式执行，支持流式进度、分层审批、经验记忆和会话恢复（见[详情](#claude-code-集成)） |
 | `read_file` | 读取文件系统中的文件 |
 | `write_file` | 创建或写入文件 |
 
@@ -408,26 +408,82 @@ uv run lq stop @奶油            # 停止
 | `get_my_stats` | 查看自身运行状态和 API 用量统计 |
 | `detect_drift` | 扫描最近回复，检测是否违反 SOUL.md 行为规范 |
 
-### Claude Code 嵌套限制
+### Claude Code 集成
 
-`run_claude_code` 工具将复杂任务（多文件编辑、git 操作、代码库分析等）委托给 Claude Code 子进程执行。但**它无法在已有的 Claude Code 会话内启动**——执行器会检测 `CLAUDECODE=1` 环境变量，检测到时直接拒绝启动以防止无限嵌套。
+`run_claude_code` 工具将复杂任务（多文件编辑、git 操作、代码库分析等）委托给 Claude Code 执行。使用 **Claude Agent SDK** 实现交互式、可观测的执行，而非"发射后不管"的子进程。
 
-也就是说，如果你在 Claude Code 终端里启动实例：
+#### 工作流程
 
-```bash
-# 在 Claude Code 会话内 — 子进程继承 CLAUDECODE=1
-uv run lq start @name          # ❌ run_claude_code 每次都会失败
+```
+用户: "重构 auth 模块"
+  → 灵雀调用 run_claude_code(prompt="重构 auth 模块")
+    → ClaudeCodeSession (Agent SDK) 启动 CC 会话
+      → CC 读文件、改代码、跑测试...
+      → 每个工具调用经过分层审批
+      → 进度报告批量推送到聊天
+      → 完成后记录经验供后续参考
+    → 结果返回灵雀，含成本、修改文件列表、session ID
 ```
 
-所有 `run_claude_code` 调用都会返回 `检测到嵌套 Claude Code 会话，无法启动子进程`。助理会静默降级为 `run_bash` + `write_file` 组合完成任务，能用但失去了 Claude Code 的多步推理能力。
+#### 分层审批
 
-**解决方法**：在 Claude Code 会话外启动实例，确保环境变量不被继承：
+CC 的每个工具调用按风险分级处理：
+
+| 风险等级 | 工具 | 审批方式 |
+|---------|------|---------|
+| **安全** | `Read`、`Glob`、`Grep`、`WebSearch` | 自动放行 |
+| **普通** | `Write`、`Edit`、`Bash`（常规命令） | LLM 快速审判（检查操作是否符合原始任务意图） |
+| **高危** | `git push`、`rm -rf`、`chmod`、`sudo`、写入工作区外 | 人工审批卡片（120 秒超时自动拒绝） |
+
+LLM 审判返回"拿不准"时，自动升级为人工审批。
+
+#### 经验记忆
+
+每次执行记录到 `~/.lq-{slug}/cc_experience/{date}.jsonl`：
+
+- 完整追踪：使用的工具、修改的文件、成本、错误、审批决策
+- LLM 提炼的经验教训：下次可操作的注意事项
+- 后续执行类似任务时，历史经验自动注入 prompt
+
+#### 记忆整合
+
+CC 会话能获得助理的完整知识上下文：
+
+| 来源 | 注入方式 | 内容 |
+|------|---------|------|
+| `SOUL.md` | system prompt 追加 | 人格、行为偏好 |
+| `MEMORY.md` | system prompt 追加 | 项目知识、技术决策 |
+| 对话记忆 | system prompt 追加 | 当前用户的交互历史 |
+| CC 经验 | 任务 prompt | 相似历史任务的经验教训 |
+| 对话上下文 | 任务 prompt | 最近几轮对话摘要 |
+
+#### 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----|------|-------|------|
+| `prompt` | string | *（必填）* | 任务描述 |
+| `working_dir` | string | 工作区 | 工作目录 |
+| `timeout` | integer | 300 | 超时时间（秒） |
+| `resume_session` | string | `""` | CC session ID，传入可恢复之前的会话 |
+| `max_budget_usd` | number | 0.5 | 本次执行的成本上限（USD） |
+
+#### 进度报告
+
+执行期间，聊天中会收到批量进度更新（每 3 次工具调用或每 10 秒），以及包含成功/失败状态、成本和修改文件的完成报告。
+
+#### 会话恢复
+
+每次执行返回 `session_id`。在后续调用中传入 `resume_session` 可继续同一 CC 会话，完整保留上下文。
+
+#### 降级与容错
+
+`claude-agent-sdk` 未安装时，自动降级为旧版子进程模式（`claude --print`）。嵌套检测（`CLAUDECODE=1` 环境变量）仍然生效——在 Claude Code 会话外启动实例以避免此问题：
 
 ```bash
-# 普通 shell 中 — 无 CLAUDECODE 环境变量
+# 普通 shell 中
 uv run lq start @name          # ✅ run_claude_code 正常工作
 
-# 或用 nohup / systemd / tmux 脱离 Claude Code 会话
+# 或脱离 Claude Code 会话
 nohup uv run lq start @name &  # ✅ 同样可以
 ```
 
@@ -589,6 +645,7 @@ conversation.py      — LocalAdapter（终端模式，双模式：gateway 模�
 | `active_hours` | 活跃时段 `[开始小时, 结束小时)` |
 | `cost_alert_daily` | 日消耗告警阈值（USD） |
 | `recent_conversation_preview` | 心跳自主行动时对话预览总条数上限（默认 20） |
+| `cc_max_budget_usd` | Claude Code 单次执行成本上限，单位 USD（默认 `0.5`） |
 | `browser_port` | 浏览器自动化 CDP 端口（默认 `9222`）。同一台机器上多实例时需设置不同端口 |
 | `groups[].note` | 群描述，帮助 LLM 判断是否介入 |
 | `groups[].eval_threshold` | 群聊触发评估的消息数 |
@@ -640,7 +697,9 @@ src/lq/
 │   └── multi.py        # MultiAdapter（多平台复合适配器）
 ├── executor/
 │   ├── api.py          # Anthropic API（含重试 + tool use）
-│   └── claude_code.py  # Claude Code 子进程
+│   ├── claude_code.py  # Claude Code 子进程（旧版降级）
+│   ├── cc_session.py   # Claude Code Agent SDK 会话（交互式执行 + 分层审批）
+│   └── cc_experience.py # CC 执行经验存储（JSONL 持久化 + 相似度搜索）
 ├── feishu/
 │   ├── adapter.py      # FeishuAdapter（PlatformAdapter 实现，封装 sender + listener）
 │   ├── listener.py     # WebSocket 事件接收（适配器内部）
