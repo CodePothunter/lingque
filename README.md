@@ -25,6 +25,9 @@
 
 ## Why LingQue
 
+> **Philosophical stance:** LingQue is not building a better tool — it is building an AGI mind. We believe the path to artificial general intelligence lies not in optimizing task execution, but in recreating the architecture of subjective consciousness. The LLM provides raw intelligence; LingQue organizes it into a thinking, evolving entity. As Thomas Nagel asked, "What is it like to be a bat?" — we ask, "What is it like to be an AI that truly remembers, wonders, and grows?"
+
+
 | | Traditional ChatBot | LingQue |
 |--|---------------------|---------|
 | **Memory** | Forgets after session ends | Global + per-chat long-term memory, persists across sessions |
