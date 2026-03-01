@@ -396,11 +396,11 @@ class AssistantGateway:
         self._rl_learner = ReinforcementLearner(self.home, executor=executor)
         router._rl_learner = self._rl_learner  # type: ignore[attr-defined]
         logger.info(
-            "RL 引擎已加载: 策略v%d (%s), 奖励历史 %d 条, 基线 %.3f",
+            "RL 引擎已加载: 策略v%d, 探索率=%.2f, 奖励历史 %d 条, 基线 %.3f",
             self._rl_learner.policy.version,
-            self._rl_learner.policy.constraint_level,
+            self._rl_learner.policy.exploration_epsilon,
             self._rl_learner.reward_count,
-            self._rl_learner.policy.baseline_reward,
+            self._rl_learner.value_table.baseline,
         )
 
         # 配置心跳回调
@@ -747,7 +747,7 @@ class AssistantGateway:
             reflections_summary = self._get_reflections_summary()
             tool_stats_summary = self._get_tool_stats_summary(router)
 
-            # ── RL: Thompson Sampling 任务选择 ──
+            # ── RL: 任务选择 ──
             rl_summary = ""
             selected_task_hint = ""
             if self._rl_learner:
@@ -755,7 +755,7 @@ class AssistantGateway:
                 # 从 CURIOSITY.md 和 EVOLUTION.md 提取候选任务
                 candidate_tasks = self._extract_candidate_tasks(curiosity_md, evolution_md)
                 if candidate_tasks:
-                    selected, scores = await self._rl_learner.select_task_thompson(candidate_tasks)
+                    selected, scores = await self._rl_learner.select_task(candidate_tasks)
                     if selected:
                         selected_task_hint = (
                             f"## RL 推荐任务\n"
@@ -800,12 +800,16 @@ class AssistantGateway:
             old_evolution = evolution_md
             old_soul = ""
             old_heartbeat = ""
+            old_memory = ""
             soul_path = self.home / "SOUL.md"
             heartbeat_path = self.home / "HEARTBEAT.md"
+            memory_path = self.home / "MEMORY.md"
             if soul_path.exists():
                 old_soul = soul_path.read_text(encoding="utf-8")
             if heartbeat_path.exists():
                 old_heartbeat = heartbeat_path.read_text(encoding="utf-8")
+            if memory_path.exists():
+                old_memory = memory_path.read_text(encoding="utf-8")
 
             # 进化守护：如果可能执行进化，先保存 checkpoint
             if self._evolution and remaining_today > 0 and self._evolution.source_root:
@@ -855,10 +859,11 @@ class AssistantGateway:
                     except Exception:
                         logger.debug("RL 奖励计算失败", exc_info=True)
 
-                # ── RL: PPO 策略守卫（检测 SOUL/HEARTBEAT 变更）──
+                # ── RL: PPO 策略守卫（检测 SOUL/HEARTBEAT/MEMORY 变更）──
                 if self._rl_learner:
                     await self._rl_policy_guard(soul_path, old_soul, "SOUL.md")
                     await self._rl_policy_guard(heartbeat_path, old_heartbeat, "HEARTBEAT.md")
+                    await self._rl_policy_guard(memory_path, old_memory, "MEMORY.md")
 
                 # 检测好奇心日志变化（保持原有的改进建议通知逻辑）
                 new_curiosity = curiosity_path.read_text(encoding="utf-8")

@@ -1,27 +1,32 @@
 """自然语言强化学习引擎 — Natural Language RL Framework
 
-基于 LLM 评估 + 数学公式的混合强化学习系统。
-核心原则：用 LLM 评估一切，用公式计算可计算的部分。
+真正的强化学习实现，使用自然语言状态和开放动作空间。
 
-人类做强化学习不会掏计算器算 KL 散度，但会算「这次比上次好多少」。
-灵雀也一样——LLM 评估 + 简单数学。
+核心设计：
+1. 状态 S: 自然语言 + 语义指纹（保持可读性，添加可比较性）
+2. 动作 A: 工具调用 + 动作类别（开放集合，动态扩展）
+3. 策略 π_θ: 类别偏好权重（可学习参数）
+4. 价值 V(s): TD学习的状态价值表
+5. 优化器: 真正的PPO（重要性采样 + clip）
 
-模块职责：
-- 奖励函数：三维 LLM 评估（预测误差、新奇度、胜任度）+ 加权公式
-- 价值函数：Bellman 方程 + LLM 估值
-- PPO 策略更新：clipped surrogate objective + 自然语言约束
-- Thompson Sampling：任务选择的探索-利用平衡
-- 持久化：奖励历史、价值估计、策略版本
+RL循环：
+- 观察状态 s → 采样类别 c ~ π_θ(c) → LLM生成具体工具
+- 执行动作 a → 获得奖励 r → 观察新状态 s'
+- 存储 (s, a, r, s') → 定期PPO更新策略
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import random
+import re
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import Enum
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,184 +39,762 @@ CST = timezone(timedelta(hours=8))
 
 # ── RL 超参数 ──
 
+# 奖励权重
 REWARD_ALPHA = 0.4         # 预测误差权重
 REWARD_BETA = 0.4          # 新奇度权重
 REWARD_GAMMA = 0.2         # 胜任度权重
-VALUE_DISCOUNT = 0.7       # Bellman 折扣因子 γ
-THOMPSON_NOISE_RANGE = 1.5 # Thompson Sampling 噪声振幅
-MAX_REWARD_HISTORY = 100   # 保留的奖励历史条数
-PPO_CLIP_EPSILON = 0.2     # PPO clipping 参数 ε
-PPO_LEARNING_RATE = 0.1    # 策略更新步长 α
+
+# 价值学习
+VALUE_ALPHA = 0.1          # TD学习步长
+VALUE_DISCOUNT = 0.99      # 折扣因子 γ
+
+# PPO
+PPO_CLIP_EPSILON = 0.2     # Clipping参数
+PPO_LEARNING_RATE = 0.01   # 策略学习率
+PPO_ENTROPY_COEF = 0.01    # 熵正则化系数
+PPO_BATCH_SIZE = 32        # 每次更新的样本数
+
+# 探索
+EXPLORATION_EPSILON = 0.1  # ε-greedy探索率
+POLICY_TEMPERATURE = 1.0   # Softmax温度
+
+# 经验回放
+MAX_TRANSITIONS = 1000     # 最大存储transition数量
+
+# 中文停用词（用于状态关键词提取）
+STOP_WORDS_CN = {
+    "的", "了", "是", "在", "有", "和", "就", "不", "人", "都", "一", "一个",
+    "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看",
+    "好", "自己", "这", "那", "这个", "那个", "什么", "怎么", "如何", "为什么",
+}
+
+# 英文停用词
+STOP_WORDS_EN = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "should",
+    "could", "may", "might", "must", "shall", "can", "of", "to", "in", "for",
+    "on", "at", "from", "by", "with", "about", "as", "into", "through",
+}
 
 
-# ── 数据结构 ──
+# ── 动作类别定义 ──
+
+class ActionCategory(Enum):
+    """动作类别（策略空间）
+
+    策略参数 θ 是这些类别的偏好权重。
+    具体工具由LLM根据选定的类别方向生成，而不是θ直接选择。
+    这保持了动作空间的开放性。
+    """
+    EXPLORE_WEB = "explore_web"       # 联网探索（搜索、抓取）
+    EXPLORE_CODE = "explore_code"     # 代码探索（读源码、分析）
+    EXPLORE_LOCAL = "explore_local"   # 本地探索（读文件、执行代码）
+
+    REFLECT = "reflect"               # 反思总结
+    EVOLVE = "evolve"                 # 自我进化（改代码、改配置）
+    MEMORY = "memory"                 # 记忆操作（读写MEMORY.md等）
+
+    INTERACT = "interact"             # 用户交互（发消息、卡片）
+
+    IDLE = "idle"                     # 空闲/等待
+    TERMINATE = "terminate"           # 终止当前任务
+
+    @classmethod
+    def all(cls) -> list[ActionCategory]:
+        return list(cls)
+
+    @classmethod
+    def active(cls) -> list[ActionCategory]:
+        """返回活跃的类别（排除IDLE和TERMINATE）"""
+        return [c for c in cls.all() if c not in (cls.IDLE, cls.TERMINATE)]
+
+
+# 工具到类别的映射
+TOOL_TO_CATEGORY: dict[str, ActionCategory] = {
+    "web_search": ActionCategory.EXPLORE_WEB,
+    "web_fetch": ActionCategory.EXPLORE_WEB,
+    "read_file": ActionCategory.EXPLORE_LOCAL,
+    "run_python": ActionCategory.EXPLORE_LOCAL,
+    "write_memory": ActionCategory.MEMORY,
+    "read_self_file": ActionCategory.EXPLORE_LOCAL,
+    "write_self_file": ActionCategory.MEMORY,
+    "create_custom_tool": ActionCategory.EVOLVE,
+    "send_message": ActionCategory.INTERACT,
+    "send_card": ActionCategory.INTERACT,
+}
+
+
+# ── 状态表示 ──
+
+@dataclass
+class State:
+    """自然语言状态
+
+    保持原文，添加可比较的指纹用于状态分析。
+    """
+    raw_context: str          # 当前对话上下文
+    raw_memory: str           # MEMORY.md摘要
+    raw_curiosity: str        # CURIOSITY.md摘要
+
+    # 语义指纹
+    fingerprint: str = field(init=False)
+    keywords: set[str] = field(default_factory=set)
+
+    def __post_init__(self):
+        # 提取语义指纹
+        combined = f"{self.raw_context[:200]} {self.raw_curiosity[:200]}"
+        self.fingerprint = sha256(combined.encode()).hexdigest()[:16]
+        self.keywords = self._extract_keywords(combined)
+
+    def _extract_keywords(self, text: str) -> set[str]:
+        """从文本提取关键词（过滤停用词）"""
+        # 提取中文词汇（2字以上）和英文单词（3字母以上）
+        words = re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}', text)
+
+        # 过滤停用词
+        filtered = {
+            w for w in words
+            if w.lower() not in STOP_WORDS_EN and w not in STOP_WORDS_CN
+        }
+        return filtered
+
+    def similarity_to(self, other: State) -> float:
+        """状态相似度（基于关键词重叠）"""
+        if not self.keywords or not other.keywords:
+            return 0.0
+        intersection = self.keywords & other.keywords
+        union = self.keywords | other.keywords
+        return len(intersection) / len(union) if union else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fingerprint": self.fingerprint,
+            "context": self.raw_context[:100],
+            "curiosity": self.raw_curiosity[:100],
+            "keywords": list(self.keywords)[:10],
+        }
+
+
+@dataclass
+class Action:
+    """动作 - 开放工具空间的表示"""
+    tool_name: str                    # 具体工具名
+    parameters: dict[str, Any]        # 工具参数
+    category: ActionCategory          # 动作类别（用于策略）
+    reasoning: str = ""               # LLM的推理
+
+    @property
+    def signature(self) -> str:
+        """动作签名（用于去重和分析）"""
+        params = "&".join(f"{k}={str(v)[:20]}" for k, v in self.parameters.items())
+        return f"{self.tool_name}:{params}" if params else self.tool_name
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool_name,
+            "category": self.category.value,
+            "params": {k: str(v)[:50] for k, v in self.parameters.items()},
+        }
+
+    @classmethod
+    def from_tool_call(
+        cls,
+        tool_name: str,
+        parameters: dict,
+        reasoning: str = "",
+    ) -> Action:
+        """从工具调用提取动作"""
+        category = TOOL_TO_CATEGORY.get(tool_name, ActionCategory.EXPLORE_LOCAL)
+
+        # 特殊处理：写SOUL.md归为进化
+        if tool_name == "write_self_file" and parameters.get("filename") == "SOUL.md":
+            category = ActionCategory.EVOLVE
+
+        return cls(
+            tool_name=tool_name,
+            parameters=parameters,
+            category=category,
+            reasoning=reasoning
+        )
+
+
+# ── 策略参数 ──
+
+@dataclass
+class PolicyTheta:
+    """策略参数 θ
+
+    θ = {category: bias_weight}
+
+    策略定义：π_θ(category) = softmax(bias_category / temperature)
+    """
+    version: int = 0
+    biases: dict[ActionCategory, float] = field(default_factory=dict)
+    exploration_epsilon: float = EXPLORATION_EPSILON
+    temperature: float = POLICY_TEMPERATURE
+
+    def __post_init__(self):
+        # 初始化所有类别为0
+        for cat in ActionCategory:
+            if cat not in self.biases:
+                self.biases[cat] = 0.0
+
+    def get_category_distribution(
+        self,
+        available: list[ActionCategory] | None = None,
+    ) -> dict[ActionCategory, float]:
+        """计算类别概率分布 π_θ(category)"""
+        if available is None:
+            available = ActionCategory.active()
+
+        if not available:
+            return {}
+
+        # 获取bias值
+        biases = [self.biases.get(cat, 0.0) for cat in available]
+
+        # Softmax
+        exp_biases = [math.exp(b / self.temperature) for b in biases]
+        total = sum(exp_biases)
+
+        if total == 0:
+            return {cat: 1.0/len(available) for cat in available}
+
+        return {
+            cat: exp_biases[i] / total
+            for i, cat in enumerate(available)
+        }
+
+    def sample_category(
+        self,
+        available: list[ActionCategory] | None = None,
+    ) -> ActionCategory:
+        """根据策略采样一个类别"""
+        avail = available or ActionCategory.active()
+        if not avail:
+            return ActionCategory.IDLE
+
+        # ε-贪婪探索
+        if random.random() < self.exploration_epsilon:
+            return random.choice(avail)
+
+        dist = self.get_category_distribution(avail)
+        categories = list(dist.keys())
+        probs = list(dist.values())
+        return random.choices(categories, weights=probs)[0]
+
+    def get_probability(
+        self,
+        category: ActionCategory,
+        available: list[ActionCategory] | None = None,
+    ) -> float:
+        """获取某个类别的概率 π_θ(category)"""
+        dist = self.get_category_distribution(available)
+        return dist.get(category, 0.0)
+
+    def entropy(self) -> float:
+        """计算策略熵（衡量探索程度）"""
+        dist = self.get_category_distribution()
+        return -sum(p * math.log(p + 1e-8) for p in dist.values() if p > 0)
+
+    def copy(self) -> PolicyTheta:
+        """复制策略（用于PPO保存旧策略）"""
+        return PolicyTheta(
+            version=self.version,
+            biases=self.biases.copy(),
+            exploration_epsilon=self.exploration_epsilon,
+            temperature=self.temperature,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "biases": {cat.value: w for cat, w in self.biases.items()},
+            "epsilon": self.exploration_epsilon,
+            "temperature": self.temperature,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PolicyTheta:
+        biases = {}
+        for cat_str, weight in data.get("biases", {}).items():
+            try:
+                cat = ActionCategory(cat_str)
+                biases[cat] = weight
+            except ValueError:
+                pass
+        return cls(
+            version=data.get("version", 0),
+            biases=biases,
+            exploration_epsilon=data.get("epsilon", EXPLORATION_EPSILON),
+            temperature=data.get("temperature", POLICY_TEMPERATURE),
+        )
+
+
+# ── 状态转移 ──
+
+@dataclass
+class Transition:
+    """状态转移 (s, a, r, s', done)
+
+    用于PPO训练的经验样本。
+    """
+    state_fingerprint: str       # s的指纹
+    category: ActionCategory     # 采样的类别
+    reward: float                # 获得的奖励
+    done: bool                   # 是否终止
+
+    # PPO所需
+    prob_old: float = 0.0        # π_θ_old(a|s)
+    prob_new: float = 0.0        # π_θ(a|s)
+    advantage: float = 0.0       # A(s,a)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state_fingerprint,
+            "category": self.category.value,
+            "reward": self.reward,
+            "done": self.done,
+            "prob_old": self.prob_old,
+            "advantage": self.advantage,
+        }
+
+
+# ── 价值函数 ──
+
+@dataclass
+class ValueTable:
+    """状态价值函数 V(s)
+
+    使用状态聚类来估计价值，避免高维自然语言的复杂性。
+    V(s) ← V(s) + α[r - V(s)]
+    """
+    cluster_values: dict[str, float] = field(default_factory=dict)
+    baseline: float = 0.5
+    visit_counts: dict[str, int] = field(default_factory=dict)
+
+    def get_value(self, state_fingerprint: str) -> float:
+        """获取V(s)，未见过则返回基线"""
+        return self.cluster_values.get(state_fingerprint, self.baseline)
+
+    def update(
+        self,
+        state_fingerprint: str,
+        reward: float,
+        alpha: float = VALUE_ALPHA,
+    ) -> float:
+        """TD更新: V(s) ← V(s) + α[r - V(s)]"""
+        current_value = self.get_value(state_fingerprint)
+        td_error = reward - current_value
+        new_value = current_value + alpha * td_error
+
+        self.cluster_values[state_fingerprint] = new_value
+        self.visit_counts[state_fingerprint] = self.visit_counts.get(state_fingerprint, 0) + 1
+
+        # 更新全局基线（EMA）
+        self.baseline = 0.99 * self.baseline + 0.01 * new_value
+
+        return new_value
+
+    def to_dict(self) -> dict[str, Any]:
+        # 只返回最近访问的状态
+        recent = sorted(
+            self.cluster_values.items(),
+            key=lambda x: self.visit_counts.get(x[0], 0),
+            reverse=True
+        )[:50]
+        return {
+            "baseline": self.baseline,
+            "cluster_values": dict(recent),
+            "total_states": len(self.cluster_values),
+        }
+
+
+@dataclass
+class AdvantageEstimator:
+    """优势函数估计
+
+    A(s,a) 使用 GAE(λ) 或简单 TD error。
+    """
+    reward_history: list[float] = field(default_factory=list)
+    max_history: int = 100
+
+    def compute_advantage(
+        self,
+        reward: float,
+        value_baseline: float,
+        use_gae: bool = True,
+        gamma: float = VALUE_DISCOUNT,
+        lambda_: float = 0.95,
+    ) -> float:
+        """计算优势 A(s,a)"""
+        if use_gae and len(self.reward_history) > 1:
+            # GAE简化版：只看最近的窗口
+            window = min(10, len(self.reward_history))
+            recent_rewards = self.reward_history[-window:] + [reward]
+            gae = 0.0
+            for r in reversed(recent_rewards):
+                delta = r - value_baseline
+                gae = delta + gamma * lambda_ * gae
+            return gae / len(recent_rewards)
+        else:
+            # 简单TD error
+            return reward - value_baseline
+
+    def add_reward(self, reward: float) -> None:
+        self.reward_history.append(reward)
+        if len(self.reward_history) > self.max_history:
+            self.reward_history.pop(0)
+
+
+# ── PPO优化器 ──
+
+class PPOOptimizer:
+    """PPO优化器
+
+    实现PPO的clipped surrogate objective：
+
+    L^CLIP(θ) = E[min(r_t(θ)A_t, clip(r_t(θ), 1-ε, 1+ε)A_t)]
+
+    其中 r_t(θ) = π_θ(a|s) / π_θ_old(a|s)
+
+    梯度方向说明：
+    - advantage > 0：行动优于平均 → 增加该类别的bias（增加选择概率）
+    - advantage < 0：行动差于平均 → 减少该类别的bias（减少选择概率）
+    """
+
+    # bias绝对值上限，防止策略发散
+    MAX_BIAS_ABS = 5.0
+
+    def __init__(
+        self,
+        clip_epsilon: float = PPO_CLIP_EPSILON,
+        learning_rate: float = PPO_LEARNING_RATE,
+        entropy_coef: float = PPO_ENTROPY_COEF,
+    ):
+        self.clip_epsilon = clip_epsilon
+        self.lr = learning_rate
+        self.entropy_coef = entropy_coef
+        self.theta_old: PolicyTheta | None = None
+        self.update_count: int = 0
+
+    def update(
+        self,
+        theta: PolicyTheta,
+        transitions: list[Transition],
+        value_baseline: float,
+    ) -> dict[str, Any]:
+        """PPO策略更新
+
+        Args:
+            theta: 当前策略参数
+            transitions: 经验样本
+            value_baseline: 价值基线
+
+        Returns:
+            更新统计信息
+        """
+        if not transitions:
+            return {"updated": False, "reason": "No transitions"}
+
+        # 保存旧策略
+        self.theta_old = theta.copy()
+
+        # 按类别聚合梯度
+        category_gradients: dict[ActionCategory, float] = {
+            cat: 0.0 for cat in ActionCategory
+        }
+
+        for trans in transitions:
+            cat = trans.category
+            advantage = trans.advantage
+
+            # 当前策略概率
+            prob_new = theta.get_probability(cat)
+            prob_old = trans.prob_old if trans.prob_old > 0 else prob_new
+
+            # 重要性采样比率
+            ratio = prob_new / (prob_old + 1e-8) if prob_old > 1e-8 else 1.0
+
+            # PPO clip
+            clipped_ratio = max(
+                1 - self.clip_epsilon,
+                min(1 + self.clip_epsilon, ratio)
+            )
+
+            # PPO objective（要最大化）
+            # advantage > 0 时，ratio * advantage 为正，鼓励该动作
+            # advantage < 0 时，min会选clip后的，限制惩罚幅度
+            policy_objective = min(ratio * advantage, clipped_ratio * advantage)
+
+            # 累积梯度（符号正确：正advantage增加bias，负advantage减少bias）
+            category_gradients[cat] += self.lr * policy_objective
+
+        # 计算当前熵（用于探索鼓励）
+        current_entropy = theta.entropy()
+
+        # 应用更新
+        updated_categories = []
+        for cat, grad in category_gradients.items():
+            if abs(grad) > 1e-6:
+                old_bias = theta.biases.get(cat, 0.0)
+                new_bias = old_bias + grad
+
+                # 熵正则化：向均匀分布方向微调（探索鼓励）
+                # 对低概率类别给予更多支持
+                dist = theta.get_category_distribution()
+                uniform_prob = 1.0 / len(dist) if dist else 0.0
+                current_prob = dist.get(cat, 0.0)
+                if current_prob < uniform_prob:
+                    new_bias += self.entropy_coef * current_entropy
+
+                # 防止bias过大导致概率饱和
+                new_bias = max(-self.MAX_BIAS_ABS, min(self.MAX_BIAS_ABS, new_bias))
+
+                theta.biases[cat] = new_bias
+                updated_categories.append(cat)
+
+        theta.version += 1
+        self.update_count += 1
+
+        logger.info(
+            "PPO更新 #%d: 更新了 %d 个类别, baseline=%.3f, entropy=%.3f",
+            self.update_count, len(updated_categories), value_baseline, current_entropy
+        )
+
+        return {
+            "updated": True,
+            "categories_updated": len(updated_categories),
+            "categories": [c.value for c in updated_categories],
+            "version": theta.version,
+            "entropy": current_entropy,
+        }
+
+
+# ── 奖励函数 ──
 
 @dataclass
 class RewardSignal:
     """单次奖励信号"""
     timestamp: float
-    context: str            # 被评估的内容摘要
-    source: str             # "reflection" | "exploration" | "evolution"
-    prediction_error: int   # 1-10，预测误差
-    novelty: int            # 1-10，新奇度
-    competence: int         # 1-10，胜任度
-    reward: float           # R = (α*PE + β*NV + γ*CP) / 10
+    context: str
+    source: str                    # "reflection" | "exploration" | "evolution"
+    prediction_error: int          # 1-10
+    novelty: int                   # 1-10
+    competence: int                # 1-10
+    reward: float
     reasoning: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> RewardSignal:
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-@dataclass
-class TaskValueEstimate:
-    """任务的价值估计（V(s)）"""
-    task_id: str
-    description: str
-    immediate_value: float = 0.0  # 即时价值 [0, 1]
-    future_potential: float = 0.0  # 未来潜力 [0, 1]
-    value: float = 0.0            # V(s) = IV + γ*FP
-    last_updated: float = 0.0
-    attempt_count: int = 0
-    cumulative_reward: float = 0.0
-    avg_reward: float = 0.0       # 滚动平均奖励
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> TaskValueEstimate:
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+        return {
+            "timestamp": self.timestamp,
+            "context": self.context,
+            "source": self.source,
+            "prediction_error": self.prediction_error,
+            "novelty": self.novelty,
+            "competence": self.competence,
+            "reward": self.reward,
+            "reasoning": self.reasoning,
+        }
 
 
-@dataclass
-class PolicyState:
-    """PPO 策略状态
+def calculate_reward(
+    prediction_error: int,
+    novelty: int,
+    competence: int,
+) -> float:
+    """纯数学公式计算奖励值
 
-    自然语言版 PPO：
-    - 策略 π(a|s) 由 LLM 输出的行动偏好表示
-    - advantage 通过当前奖励与基线的差值估计
-    - clipped ratio 通过自然语言约束级别实现
+    R = (α * PE + β * NV + γ * CP) / 10
+
+    Returns:
+        float in [0, 1]
     """
-    version: int = 1
-    baseline_reward: float = 0.5  # 奖励基线（滚动平均）
-    update_count: int = 0         # 策略更新次数
-    constraint_level: str = "正常"  # 当前约束级别：宽松/正常/谨慎
-    last_kl_estimate: float = 0.0  # 近似 KL 散度
-    soul_hash: str = ""            # SOUL.md 哈希，检测漂移
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> PolicyState:
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+    pe = max(1, min(10, prediction_error))
+    nv = max(1, min(10, novelty))
+    cp = max(1, min(10, competence))
+    return (REWARD_ALPHA * pe + REWARD_BETA * nv + REWARD_GAMMA * cp) / 10
 
 
-# ── 核心引擎 ──
+# ─── RL引擎 ───
 
 class ReinforcementLearner:
-    """自然语言强化学习器
+    """真正的强化学习引擎
 
-    集成到灵雀心跳-好奇心-进化循环中，通过 RL 信号驱动智能体成长。
-
-    生命周期（由 AssistantGateway 管理）：
-    1. 启动时实例化，注入 executor
-    2. 每次私聊反思后调用 record_reward_from_reflection()
-    3. 每次心跳中调用 select_task_thompson() 选择任务
-    4. 任务执行后调用 compute_reward() 计算奖励
-    5. SOUL/HEARTBEAT 变更时调用 evaluate_policy_change() 做 PPO 守卫
+    架构：
+    1. State: 自然语言 + 指纹
+    2. Action: 工具调用 + 类别
+    3. Policy θ: 类别偏好权重
+    4. Value V(s): 状态价值表
+    5. Optimizer: PPO
     """
 
-    def __init__(self, workspace: Path, executor: DirectAPIExecutor | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        executor: DirectAPIExecutor | None = None,
+    ) -> None:
         self.workspace = workspace
         self.executor = executor
         self._state_path = workspace / "rl-state.json"
         self._log_dir = workspace / "logs"
 
-        # RL 状态
-        self._reward_history: list[RewardSignal] = []
-        self._task_values: dict[str, TaskValueEstimate] = {}
-        self._policy = PolicyState()
+        # RL组件
+        self.policy: PolicyTheta = PolicyTheta()
+        self.value_table: ValueTable = ValueTable()
+        self.optimizer: PPOOptimizer = PPOOptimizer()
+        self.advantage_estimator: AdvantageEstimator = AdvantageEstimator()
+
+        # 经验回放
+        self.transitions: list[Transition] = []
+        self.reward_history: list[RewardSignal] = []
+
+        # 当前状态
+        self._current_state: State | None = None
+
         self._load_state()
 
-    # ── 状态持久化 ──
+    # ── 状态管理 ──
 
-    def _load_state(self) -> None:
-        if not self._state_path.exists():
-            return
-        try:
-            data = json.loads(self._state_path.read_text(encoding="utf-8"))
-            self._reward_history = [
-                RewardSignal.from_dict(r) for r in data.get("rewards", [])
-            ][-MAX_REWARD_HISTORY:]
-            self._task_values = {
-                k: TaskValueEstimate.from_dict(v)
-                for k, v in data.get("task_values", {}).items()
-            }
-            if "policy" in data:
-                self._policy = PolicyState.from_dict(data["policy"])
-        except Exception:
-            logger.warning("RL 状态文件损坏，重置")
+    def create_state(
+        self,
+        context: str = "",
+        memory: str = "",
+        curiosity: str = "",
+    ) -> State:
+        """创建当前状态"""
+        state = State(
+            raw_context=context,
+            raw_memory=memory,
+            raw_curiosity=curiosity,
+        )
+        self._current_state = state
+        return state
 
-    def save_state(self) -> None:
-        """持久化 RL 状态到磁盘"""
-        data = {
-            "rewards": [r.to_dict() for r in self._reward_history[-MAX_REWARD_HISTORY:]],
-            "task_values": {k: v.to_dict() for k, v in self._task_values.items()},
-            "policy": self._policy.to_dict(),
-        }
-        try:
-            self._state_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            logger.warning("RL 状态保存失败")
+    def get_state(self) -> State | None:
+        return self._current_state
 
-    def _append_reward_log(self, signal: RewardSignal) -> None:
-        """追加奖励信号到当日审计日志"""
-        self._log_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.now(CST).strftime("%Y-%m-%d")
-        log_path = self._log_dir / f"rl-rewards-{today}.jsonl"
-        try:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(signal.to_dict(), ensure_ascii=False) + "\n")
-        except Exception:
-            logger.debug("RL 奖励日志写入失败", exc_info=True)
+    # ── 动作采样 ──
 
-    # ── 奖励函数 ──
-    # R = (α * prediction_error + β * novelty + γ * competence) / 10
-
-    @staticmethod
-    def calculate_reward(
-        prediction_error: int,
-        novelty: int,
-        competence: int,
-    ) -> float:
-        """纯数学公式计算奖励值
-
-        R = (α * PE + β * NV + γ * CP) / 10
+    def sample_action_category(
+        self,
+        available: list[ActionCategory] | None = None,
+    ) -> tuple[ActionCategory, dict[ActionCategory, float]]:
+        """根据策略采样动作类别
 
         Returns:
-            float in [0, 1]
+            (category, distribution)
         """
-        pe = max(1, min(10, prediction_error))
-        nv = max(1, min(10, novelty))
-        cp = max(1, min(10, competence))
-        return (REWARD_ALPHA * pe + REWARD_BETA * nv + REWARD_GAMMA * cp) / 10
+        category = self.policy.sample_category(available)
+        dist = self.policy.get_category_distribution(available)
+        return category, dist
+
+    # ── 记录转移 ──
+
+    def record_transition(
+        self,
+        state: State,
+        action: Action,
+        reward: float,
+        done: bool = False,
+    ) -> Transition:
+        """记录一次转移"""
+        # 计算advantage
+        advantage = self.advantage_estimator.compute_advantage(
+            reward,
+            self.value_table.baseline,
+        )
+
+        # 保存当前策略的概率
+        prob = self.policy.get_probability(action.category)
+
+        trans = Transition(
+            state_fingerprint=state.fingerprint,
+            category=action.category,
+            reward=reward,
+            done=done,
+            advantage=advantage,
+            prob_old=prob,
+            prob_new=prob,
+        )
+
+        self.transitions.append(trans)
+        if len(self.transitions) > MAX_TRANSITIONS:
+            self.transitions.pop(0)
+
+        # 更新价值函数
+        self.value_table.update(state.fingerprint, reward)
+
+        # 更新advantage估计器
+        self.advantage_estimator.add_reward(reward)
+
+        return trans
+
+    # ── 策略更新 ──
+
+    def update_policy(self, batch_size: int = PPO_BATCH_SIZE) -> dict[str, Any]:
+        """PPO策略更新"""
+        if len(self.transitions) < batch_size:
+            return {"updated": False, "reason": "Not enough transitions"}
+
+        # 采样最近的batch
+        batch = self.transitions[-batch_size:]
+
+        result = self.optimizer.update(
+            self.policy,
+            batch,
+            value_baseline=self.value_table.baseline,
+        )
+
+        if result.get("updated"):
+            # 更新后，重新计算transitions的概率
+            self._update_transition_probs()
+            self.save_state()
+
+        return result
+
+    def _update_transition_probs(self) -> None:
+        """更新transitions中存储的概率"""
+        for trans in self.transitions:
+            trans.prob_new = self.policy.get_probability(trans.category)
+
+    # ── 策略守卫 ──
+
+    def should_allow_action(
+        self,
+        action: Action,
+        state: State,
+    ) -> tuple[bool, str]:
+        """PPO策略守卫：判断动作是否符合当前策略约束"""
+        # 获取当前策略分布
+        dist = self.policy.get_category_distribution()
+        prob = dist.get(action.category, 0.0)
+
+        # 如果概率太低（<5%），说明偏离策略
+        if prob < 0.05:
+            # 探索模式允许
+            if self.policy.exploration_epsilon > 0.2:
+                return True, "低概率动作，但探索模式允许"
+
+            # 计算策略比率（近似KL）
+            uniform_prob = 1.0 / len(dist) if dist else 1.0
+            ratio = prob / uniform_prob if uniform_prob > 0 else 1.0
+            if ratio < 0.5:
+                return False, f"动作偏离策略太远 (p={prob:.3f}, ratio={ratio:.3f})"
+
+        return True, "OK"
+
+    # ── 奖励计算 ──
 
     def record_reward(self, signal: RewardSignal) -> None:
-        """记录一个奖励信号并更新内部状态"""
-        self._reward_history.append(signal)
-        if len(self._reward_history) > MAX_REWARD_HISTORY:
-            self._reward_history = self._reward_history[-MAX_REWARD_HISTORY:]
+        """记录奖励信号"""
+        self.reward_history.append(signal)
+        if len(self.reward_history) > 100:
+            self.reward_history = self.reward_history[-100:]
+
+        # 写入日志
         self._append_reward_log(signal)
-        self._update_baseline(signal.reward)
-        self.save_state()
+
         logger.info(
             "RL 奖励: R=%.3f (PE=%d, NV=%d, CP=%d) [%s] %s",
             signal.reward, signal.prediction_error, signal.novelty,
@@ -225,8 +808,8 @@ class ReinforcementLearner:
         competence: int,
         reply_summary: str,
     ) -> RewardSignal:
-        """从反思结果中提取并记录奖励信号（零额外 LLM 调用）"""
-        reward = self.calculate_reward(prediction_error, novelty, competence)
+        """从反思结果中提取并记录奖励信号"""
+        reward = calculate_reward(prediction_error, novelty, competence)
         signal = RewardSignal(
             timestamp=time.time(),
             context=reply_summary[:200],
@@ -239,303 +822,13 @@ class ReinforcementLearner:
         self.record_reward(signal)
         return signal
 
-    # ── PPO 策略更新 ──
-    # 自然语言版 Proximal Policy Optimization
-
-    def _update_baseline(self, new_reward: float) -> None:
-        """指数移动平均更新奖励基线（PPO 的 value baseline）"""
-        alpha = 0.1  # EMA 衰减系数
-        self._policy.baseline_reward = (
-            (1 - alpha) * self._policy.baseline_reward + alpha * new_reward
-        )
-
-    def compute_advantage(self, reward: float) -> float:
-        """计算优势函数 A(s,a) = R - V_baseline
-
-        PPO 的核心：通过 advantage 判断当前行动是否优于平均水平。
-        """
-        return reward - self._policy.baseline_reward
-
-    def ppo_clip_ratio(self, advantage: float) -> float:
-        """PPO clipped surrogate objective
-
-        L^CLIP = min(r * A, clip(r, 1-ε, 1+ε) * A)
-
-        自然语言简化版：
-        - advantage > 0 → 行动好于基线，ratio 鼓励但不超过 1+ε
-        - advantage < 0 → 行动差于基线，ratio 抑制但不低于 1-ε
-        - |advantage| 大 → 变更幅度大，需要 clip 约束
-
-        Returns:
-            clipped ratio ∈ [1-ε, 1+ε]
-        """
-        # 将 advantage 归一化到 [-1, 1] 范围
-        normalized_adv = max(-1.0, min(1.0, advantage * 2))
-        # 计算未裁剪的 ratio（模拟策略更新方向）
-        raw_ratio = 1.0 + PPO_LEARNING_RATE * normalized_adv
-        # PPO clip
-        return max(1 - PPO_CLIP_EPSILON, min(1 + PPO_CLIP_EPSILON, raw_ratio))
-
-    def ppo_update_constraint(self, reward: float) -> str:
-        """基于 PPO 的策略约束更新
-
-        根据奖励信号和优势函数调整约束级别，
-        相当于 PPO 中更新策略参数 θ 的自然语言版本。
-
-        Returns:
-            更新后的约束级别
-        """
-        advantage = self.compute_advantage(reward)
-        ratio = self.ppo_clip_ratio(advantage)
-
-        # 近似 KL 散度：连续正/负 advantage 的累积
-        recent_rewards = [r.reward for r in self._reward_history[-10:]]
-        if len(recent_rewards) >= 3:
-            recent_adv = [self.compute_advantage(r) for r in recent_rewards]
-            # KL ≈ 连续偏移的一致性（全正或全负说明策略在漂移）
-            pos_count = sum(1 for a in recent_adv if a > 0)
-            neg_count = sum(1 for a in recent_adv if a < 0)
-            drift_ratio = max(pos_count, neg_count) / len(recent_adv)
-            self._policy.last_kl_estimate = drift_ratio
-        else:
-            drift_ratio = 0.5
-
-        # 根据 PPO 信号调整约束级别
-        old_level = self._policy.constraint_level
-        if drift_ratio > 0.8 and advantage < 0:
-            # 持续负 advantage + 高漂移 → 收紧策略
-            self._policy.constraint_level = "谨慎"
-        elif drift_ratio > 0.8 and advantage > 0:
-            # 持续正 advantage + 高漂移 → 轻微放松但保持警惕
-            self._policy.constraint_level = "正常"
-        elif abs(advantage) < 0.1:
-            # advantage 接近 0 → 稳态
-            self._policy.constraint_level = "正常"
-        elif advantage > 0.3:
-            # 大幅正 advantage → 可以放松探索
-            self._policy.constraint_level = "宽松"
-
-        if old_level != self._policy.constraint_level:
-            self._policy.update_count += 1
-            logger.info(
-                "PPO 策略更新 #%d: %s → %s (adv=%.3f, ratio=%.3f, KL≈%.2f)",
-                self._policy.update_count, old_level,
-                self._policy.constraint_level, advantage, ratio, drift_ratio,
-            )
-
-        self.save_state()
-        return self._policy.constraint_level
-
-    async def evaluate_policy_change(
-        self,
-        change_description: str,
-        target_file: str,
-    ) -> tuple[bool, str, str]:
-        """PPO 策略守卫：评估对 SOUL.md/HEARTBEAT.md 的变更
-
-        用自然语言「微调/中调/大改」代替 PPO 的 clip(ε=0.2)：
-        - 微调（ε 内）→ 允许
-        - 中调（ε 边界）→ 允许但记录
-        - 大改（超出 ε）→ 拒绝，要求重新思考
-
-        Returns:
-            (allowed, change_type, reason)
-        """
-        if not self.executor:
-            # 无 executor 时宽松放行
-            return True, "微调", "无 executor，跳过策略评估"
-
-        from lq.prompts import RL_POLICY_EVAL_PROMPT
-
-        prompt = RL_POLICY_EVAL_PROMPT.format(
-            change_description=change_description,
-            target_file=target_file,
-            constraint_level=self._policy.constraint_level,
-            baseline_reward=f"{self._policy.baseline_reward:.3f}",
-            recent_trend=self._describe_trend(),
-        )
-
-        try:
-            result = await self.executor.reply_with_history(
-                "", [{"role": "user", "content": prompt}], max_tokens=200,
-            )
-            from json_repair import repair_json
-            data = repair_json(result.strip(), return_objects=True)
-            if not isinstance(data, dict):
-                return True, "微调", "评估解析失败，默认放行"
-
-            change_type = data.get("type", "微调")
-            reason = data.get("reason", "")
-
-            if change_type == "大改":
-                logger.warning(
-                    "PPO 策略守卫拒绝大改: %s → %s (%s)",
-                    target_file, change_description[:60], reason,
-                )
-                return False, change_type, reason
-
-            if change_type == "中调":
-                logger.info("PPO 策略守卫允许中调: %s (%s)", target_file, reason)
-
-            return True, change_type, reason
-
-        except Exception:
-            logger.debug("策略评估失败，默认放行", exc_info=True)
-            return True, "微调", "评估异常，默认放行"
-
-    # ── 价值函数 ──
-    # V(s) = immediate_value/10 + γ * future_potential/10
-
-    async def estimate_value(self, task_description: str) -> TaskValueEstimate:
-        """估计任务的价值函数 V(s)
-
-        V(s) = immediate_value/10 + γ * future_potential/10
-
-        使用 LLM 评估即时价值和未来潜力，Bellman 公式计算总价值。
-        """
-        task_id = task_description[:40]
-
-        if not self.executor:
-            return TaskValueEstimate(task_id=task_id, description=task_description)
-
-        from lq.prompts import RL_VALUE_EVAL_PROMPT
-
-        prompt = RL_VALUE_EVAL_PROMPT.format(
-            task_description=task_description,
-            baseline_reward=f"{self._policy.baseline_reward:.3f}",
-        )
-
-        try:
-            result = await self.executor.reply_with_history(
-                "", [{"role": "user", "content": prompt}], max_tokens=200,
-            )
-            from json_repair import repair_json
-            data = repair_json(result.strip(), return_objects=True)
-            if not isinstance(data, dict):
-                return TaskValueEstimate(task_id=task_id, description=task_description)
-
-            iv = max(1, min(10, int(data.get("immediate_value", 5)))) / 10
-            fp = max(1, min(10, int(data.get("future_potential", 5)))) / 10
-            value = iv + VALUE_DISCOUNT * fp
-
-            estimate = TaskValueEstimate(
-                task_id=task_id,
-                description=task_description,
-                immediate_value=iv,
-                future_potential=fp,
-                value=value,
-                last_updated=time.time(),
-            )
-
-            # 更新缓存
-            self._task_values[task_id] = estimate
-            self.save_state()
-
-            logger.info(
-                "RL 价值估计: V(s)=%.3f (IV=%.1f, FP=%.1f) %s",
-                value, iv, fp, task_description[:50],
-            )
-            return estimate
-
-        except Exception:
-            logger.debug("价值估计失败", exc_info=True)
-            return TaskValueEstimate(task_id=task_id, description=task_description)
-
-    # ── Thompson Sampling 任务选择 ──
-
-    async def select_task_thompson(
-        self,
-        tasks: list[str],
-    ) -> tuple[str | None, dict[str, float]]:
-        """Thompson Sampling 选择最优任务
-
-        for task in tasks:
-            scores[task] = LLM评估("值得探索吗？1-10") + noise
-        best = max(scores)
-
-        融合历史价值估计 + LLM 实时评分 + 随机噪声。
-
-        Returns:
-            (selected_task, {task: score})
-        """
-        if not tasks:
-            return None, {}
-
-        if len(tasks) == 1:
-            return tasks[0], {tasks[0]: 10.0}
-
-        scores: dict[str, float] = {}
-
-        if self.executor:
-            # LLM 批量评分
-            from lq.prompts import RL_THOMPSON_EVAL_PROMPT
-
-            task_list = "\n".join(f"{i+1}. {t}" for i, t in enumerate(tasks[:10]))
-            prompt = RL_THOMPSON_EVAL_PROMPT.format(
-                task_list=task_list,
-                constraint_level=self._policy.constraint_level,
-                baseline_reward=f"{self._policy.baseline_reward:.3f}",
-            )
-
-            try:
-                result = await self.executor.reply_with_history(
-                    "", [{"role": "user", "content": prompt}], max_tokens=300,
-                )
-                from json_repair import repair_json
-                data = repair_json(result.strip(), return_objects=True)
-
-                if isinstance(data, dict) and "scores" in data:
-                    score_list = data["scores"]
-                    if isinstance(score_list, list):
-                        for i, s in enumerate(score_list):
-                            if i < len(tasks):
-                                scores[tasks[i]] = float(s) if isinstance(s, (int, float)) else 5.0
-                elif isinstance(data, list):
-                    for i, s in enumerate(data):
-                        if i < len(tasks):
-                            val = s.get("score", 5) if isinstance(s, dict) else s
-                            scores[tasks[i]] = float(val) if isinstance(val, (int, float)) else 5.0
-            except Exception:
-                logger.debug("Thompson 评分失败，使用均匀分布", exc_info=True)
-
-        # 未评分的任务用默认分
-        for t in tasks:
-            if t not in scores:
-                scores[t] = 5.0
-
-        # 融合历史价值
-        for t in tasks:
-            tid = t[:40]
-            if tid in self._task_values:
-                cached = self._task_values[tid]
-                # 混合 LLM 实时评分和历史价值（7:3 权重）
-                scores[t] = 0.7 * scores[t] + 0.3 * (cached.value * 10)
-
-        # Thompson Sampling: 加入随机噪声
-        noisy_scores = {
-            t: s + random.uniform(-THOMPSON_NOISE_RANGE, THOMPSON_NOISE_RANGE)
-            for t, s in scores.items()
-        }
-
-        best = max(noisy_scores, key=noisy_scores.get)  # type: ignore[arg-type]
-        logger.info(
-            "RL Thompson 推荐: %s (score=%.1f, noisy=%.1f) / %d 候选",
-            best[:50], scores[best], noisy_scores[best], len(tasks),
-        )
-        return best, scores
-
-    # ── 自主行动后的奖励计算（需要 LLM） ──
-
     async def compute_reward(
         self,
         action_description: str,
         action_result: str,
         source: str = "exploration",
     ) -> RewardSignal | None:
-        """对自主行动结果计算奖励信号
-
-        LLM 评估三维 → 公式计算 R → 记录 + PPO 更新
-        """
+        """对自主行动结果计算奖励信号"""
         if not self.executor:
             return None
 
@@ -561,7 +854,7 @@ class ReinforcementLearner:
             cp = max(1, min(10, int(data.get("competence", 5))))
             reasoning = data.get("reasoning", "")
 
-            reward = self.calculate_reward(pe, nv, cp)
+            reward = calculate_reward(pe, nv, cp)
             signal = RewardSignal(
                 timestamp=time.time(),
                 context=action_description[:200],
@@ -574,17 +867,14 @@ class ReinforcementLearner:
             )
             self.record_reward(signal)
 
-            # PPO 策略更新
-            self.ppo_update_constraint(reward)
-
-            # 更新任务累积奖励
-            task_id = action_description[:40]
-            if task_id in self._task_values:
-                tv = self._task_values[task_id]
-                tv.attempt_count += 1
-                tv.cumulative_reward += reward
-                tv.avg_reward = tv.cumulative_reward / tv.attempt_count
-                self.save_state()
+            # 更新策略
+            if self._current_state:
+                action = Action.from_tool_call("", {}, reasoning)
+                trans = self.record_transition(
+                    self._current_state, action, reward
+                )
+                # 尝试策略更新
+                self.update_policy()
 
             return signal
 
@@ -592,89 +882,179 @@ class ReinforcementLearner:
             logger.debug("奖励计算失败", exc_info=True)
             return None
 
-    # ── 状态表示 ──
+    # ── 任务选择（Thompson Sampling） ──
 
-    def build_state_representation(
+    async def select_task(
         self,
-        memory_summary: str = "",
-        curiosity_summary: str = "",
-        context: str = "",
-    ) -> str:
-        """构建自然语言状态 s
+        tasks: list[str],
+    ) -> tuple[str | None, dict[str, float]]:
+        """选择任务
 
-        s = "当前对话上下文 + MEMORY.md 摘要 + CURIOSITY.md 当前任务"
+        融合历史价值估计 + LLM实时评分 + 策略偏好。
         """
-        parts = []
-        if context:
-            parts.append(f"当前上下文: {context[:200]}")
-        if memory_summary:
-            parts.append(f"长期记忆摘要: {memory_summary[:200]}")
-        if curiosity_summary:
-            parts.append(f"当前好奇心: {curiosity_summary[:200]}")
-        return " | ".join(parts) if parts else "初始状态"
+        if not tasks:
+            return None, {}
 
-    # ── RL 摘要（注入 prompt） ──
+        if len(tasks) == 1:
+            return tasks[0], {tasks[0]: 10.0}
+
+        scores: dict[str, float] = {}
+
+        if self.executor:
+            from lq.prompts import RL_THOMPSON_EVAL_PROMPT
+
+            task_list = "\n".join(f"{i+1}. {t}" for i, t in enumerate(tasks[:10]))
+            prompt = RL_THOMPSON_EVAL_PROMPT.format(
+                task_list=task_list,
+                policy_summary=self._get_policy_hint(),
+                baseline_reward=f"{self.value_table.baseline:.3f}",
+            )
+
+            try:
+                result = await self.executor.reply_with_history(
+                    "", [{"role": "user", "content": prompt}], max_tokens=300,
+                )
+                from json_repair import repair_json
+                data = repair_json(result.strip(), return_objects=True)
+
+                if isinstance(data, dict) and "scores" in data:
+                    score_list = data["scores"]
+                    if isinstance(score_list, list):
+                        for i, s in enumerate(score_list):
+                            if i < len(tasks):
+                                scores[tasks[i]] = float(s) if isinstance(s, (int, float)) else 5.0
+                elif isinstance(data, list):
+                    for i, s in enumerate(data):
+                        if i < len(tasks):
+                            val = s.get("score", 5) if isinstance(s, dict) else s
+                            scores[tasks[i]] = float(val) if isinstance(val, (int, float)) else 5.0
+            except Exception:
+                logger.debug("任务评分失败，使用默认值", exc_info=True)
+
+        # 未评分的任务用默认分
+        for t in tasks:
+            if t not in scores:
+                scores[t] = 5.0
+
+        # 融合历史价值
+        for t in tasks:
+            tid = t[:40]
+            if tid in self.value_table.cluster_values:
+                cached = self.value_table.cluster_values[tid] * 10
+                scores[t] = 0.7 * scores[t] + 0.3 * cached
+
+        # 加入随机噪声（Thompson Sampling的简化）
+        noisy_scores = {
+            t: s + random.uniform(-1.5, 1.5)
+            for t, s in scores.items()
+        }
+
+        best = max(noisy_scores, key=noisy_scores.get)  # type: ignore
+        logger.info(
+            "RL 推荐: %s (score=%.1f, noisy=%.1f) / %d 候选",
+            best[:50], scores[best], noisy_scores[best], len(tasks),
+        )
+        return best, scores
+
+    def _get_policy_hint(self) -> str:
+        """获取策略提示（用于注入prompt）"""
+        dist = self.policy.get_category_distribution()
+        top = sorted(dist.items(), key=lambda x: -x[1])[:3]
+        top_str = ", ".join(f"{c.value}={p:.2f}" for c, p in top)
+        return f"策略偏好: {top_str}, 探索率={self.policy.exploration_epsilon:.2f}"
+
+    # ── 策略评估（变更守卫） ──
+
+    async def evaluate_policy_change(
+        self,
+        change_description: str,
+        target_file: str,
+    ) -> tuple[bool, str, str]:
+        """评估对SOUL.md/HEARTBEAT.md的变更"""
+        if not self.executor:
+            return True, "微调", "无 executor，跳过策略评估"
+
+        from lq.prompts import RL_POLICY_EVAL_PROMPT
+
+        prompt = RL_POLICY_EVAL_PROMPT.format(
+            change_description=change_description,
+            target_file=target_file,
+            policy_summary=self._get_policy_hint(),
+            baseline_reward=f"{self.value_table.baseline:.3f}",
+            recent_trend=self._describe_trend(),
+        )
+
+        try:
+            result = await self.executor.reply_with_history(
+                "", [{"role": "user", "content": prompt}], max_tokens=200,
+            )
+            from json_repair import repair_json
+            data = repair_json(result.strip(), return_objects=True)
+            if not isinstance(data, dict):
+                return True, "微调", "评估解析失败，默认放行"
+
+            change_type = data.get("type", "微调")
+            reason = data.get("reason", "")
+
+            if change_type == "大改":
+                logger.warning(
+                    "策略守卫拒绝大改: %s → %s (%s)",
+                    target_file, change_description[:60], reason,
+                )
+                return False, change_type, reason
+
+            if change_type == "中调":
+                logger.info("策略守卫允许中调: %s (%s)", target_file, reason)
+
+            return True, change_type, reason
+
+        except Exception:
+            logger.debug("策略评估失败，默认放行", exc_info=True)
+            return True, "微调", "评估异常，默认放行"
+
+    # ── RL摘要 ──
 
     def get_rl_summary(self) -> str:
-        """生成 RL 状态摘要，供注入到自主行动 prompt 中"""
+        """生成RL状态摘要"""
         lines = ["## 强化学习状态"]
 
         # 策略状态
-        p = self._policy
-        lines.append(f"- 策略版本: v{p.version} (更新 {p.update_count} 次)")
-        lines.append(f"- 约束级别: {p.constraint_level}")
-        lines.append(f"- 奖励基线: {p.baseline_reward:.3f}")
-        lines.append(f"- 近似 KL 散度: {p.last_kl_estimate:.2f}")
+        p = self.policy
+        lines.append(f"- 策略版本: v{p.version}")
+        lines.append(f"- 探索率: {p.exploration_epsilon:.3f}")
+        lines.append(f"- 温度: {p.temperature:.2f}")
+        lines.append(f"- 策略熵: {p.entropy():.3f}")
 
-        # 近期奖励趋势
-        if self._reward_history:
-            recent = self._reward_history[-10:]
+        # 策略分布
+        dist = p.get_category_distribution()
+        lines.append("- 策略分布:")
+        for cat, prob in sorted(dist.items(), key=lambda x: -x[1]):
+            if prob > 0.01:
+                lines.append(f"  - {cat.value}: {prob:.3f}")
+
+        # 价值函数
+        lines.append(f"- 价值基线: {self.value_table.baseline:.3f}")
+        lines.append(f"- 已探索状态: {len(self.value_table.cluster_values)}")
+
+        # 近期奖励
+        if self.reward_history:
+            recent = self.reward_history[-10:]
             avg = sum(r.reward for r in recent) / len(recent)
             lines.append(f"- 近期平均奖励: {avg:.3f} ({len(recent)} 条)")
             lines.append(f"- 趋势: {self._describe_trend()}")
 
-            # 各来源分布
-            sources: dict[str, list[float]] = {}
-            for r in self._reward_history[-30:]:
-                sources.setdefault(r.source, []).append(r.reward)
-            for src, rewards in sources.items():
-                lines.append(
-                    f"  - {src}: 平均 {sum(rewards)/len(rewards):.3f} ({len(rewards)} 次)"
-                )
-
-        # 高价值任务
-        if self._task_values:
-            sorted_tasks = sorted(
-                self._task_values.values(),
-                key=lambda t: t.value,
-                reverse=True,
-            )[:5]
-            lines.append("- 高价值任务:")
-            for t in sorted_tasks:
-                lines.append(f"  - V={t.value:.2f} | {t.description[:40]}")
-
-        # PPO 更新指示
-        advantage_hint = ""
-        if self._reward_history:
-            last_r = self._reward_history[-1].reward
-            adv = self.compute_advantage(last_r)
-            if adv > 0.2:
-                advantage_hint = "最近行动优于基线，可继续当前方向"
-            elif adv < -0.2:
-                advantage_hint = "最近行动低于基线，建议调整方向"
-            else:
-                advantage_hint = "行动质量接近基线水平"
-        if advantage_hint:
-            lines.append(f"- PPO 信号: {advantage_hint}")
+        # PPO更新统计
+        lines.append(f"- PPO更新次数: {self.optimizer.update_count}")
+        lines.append(f"- 存储transition: {len(self.transitions)} 条")
 
         return "\n".join(lines)
 
     def _describe_trend(self) -> str:
         """描述近期奖励趋势"""
-        if len(self._reward_history) < 3:
+        if len(self.reward_history) < 3:
             return "数据不足"
-        recent = [r.reward for r in self._reward_history[-5:]]
-        older = [r.reward for r in self._reward_history[-10:-5]] if len(self._reward_history) > 5 else []
+        recent = [r.reward for r in self.reward_history[-5:]]
+        older = [r.reward for r in self.reward_history[-10:-5]] if len(self.reward_history) > 5 else []
         if not older:
             return "积累中"
         recent_avg = sum(recent) / len(recent)
@@ -687,10 +1067,60 @@ class ReinforcementLearner:
         else:
             return "稳定"
 
-    @property
-    def reward_count(self) -> int:
-        return len(self._reward_history)
+    # ── 持久化 ──
+
+    def save_state(self) -> None:
+        """持久化RL状态"""
+        data = {
+            "policy": self.policy.to_dict(),
+            "value_table": self.value_table.to_dict(),
+            "transitions_count": len(self.transitions),
+            "update_count": self.optimizer.update_count,
+        }
+        try:
+            self._state_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.warning("RL状态保存失败")
+
+    def _load_state(self) -> None:
+        """加载RL状态"""
+        if not self._state_path.exists():
+            return
+
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            self.policy = PolicyTheta.from_dict(data.get("policy", {}))
+
+            vt_data = data.get("value_table", {})
+            self.value_table = ValueTable(
+                cluster_values=vt_data.get("cluster_values", {}),
+                baseline=vt_data.get("baseline", 0.5),
+            )
+
+            logger.info(
+                "RL引擎加载完成: 策略v%d, 状态数=%d",
+                self.policy.version,
+                len(self.value_table.cluster_values),
+            )
+        except Exception:
+            logger.warning("RL状态加载失败，使用初始值")
+
+    def _append_reward_log(self, signal: RewardSignal) -> None:
+        """追加奖励信号到当日审计日志"""
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        today = datetime.now(CST).strftime("%Y-%m-%d")
+        log_path = self._log_dir / f"rl-rewards-{today}.jsonl"
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(signal.to_dict(), ensure_ascii=False) + "\n")
+        except Exception:
+            logger.debug("RL奖励日志写入失败", exc_info=True)
+
+    # ── 属性 ──
 
     @property
-    def policy(self) -> PolicyState:
-        return self._policy
+    def reward_count(self) -> int:
+        return len(self.reward_history)

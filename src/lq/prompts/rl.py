@@ -24,29 +24,12 @@ RL_REWARD_EVAL_PROMPT = (
     "只输出 JSON，不要其他文字。"
 )
 
-# 任务价值评估（Bellman）
-# {task_description}, {baseline_reward}
-RL_VALUE_EVAL_PROMPT = (
-    "请评估以下任务的价值。\n\n"
-    "任务: {task_description}\n"
-    "当前奖励基线: {baseline_reward}\n\n"
-    "请从两个角度评估（各 1-10 整数），用 JSON 回复：\n"
-    "```json\n"
-    '{{"immediate_value": 5, "future_potential": 5, "reasoning": "简述理由"}}\n'
-    "```\n\n"
-    "- **immediate_value**（即时价值）：完成这个任务本身能带来多少价值？\n"
-    "  1=几乎没有，10=非常有价值\n"
-    "- **future_potential**（未来潜力）：从这个任务出发，未来能探索/发展多少？\n"
-    "  1=死路一条，10=打开一片新天地\n\n"
-    "只输出 JSON，不要其他文字。"
-)
-
-# Thompson Sampling 批量任务评分
-# {task_list}, {constraint_level}, {baseline_reward}
+# 任务选择评分（融合策略偏好）
+# {task_list}, {policy_summary}, {baseline_reward}
 RL_THOMPSON_EVAL_PROMPT = (
     "你面前有以下候选任务，请为每个任务评估其探索价值。\n\n"
     "候选任务:\n{task_list}\n\n"
-    "当前策略约束: {constraint_level}\n"
+    "当前RL策略状态: {policy_summary}\n"
     "奖励基线: {baseline_reward}\n\n"
     "请为每个任务打分（1-10），用 JSON 回复：\n"
     "```json\n"
@@ -56,17 +39,18 @@ RL_THOMPSON_EVAL_PROMPT = (
     "- 与你的好奇心和成长方向的匹配度\n"
     "- 预期能带来的学习收益\n"
     "- 完成难度与你当前能力的匹配\n"
-    "- 对用户和自身的长期价值\n\n"
+    "- 对用户和自身的长期价值\n"
+    "- 与当前策略偏好的契合度\n\n"
     "只输出 JSON，不要其他文字。"
 )
 
 # PPO 策略守卫（变更评估）
-# {change_description}, {target_file}, {constraint_level}, {baseline_reward}, {recent_trend}
+# {change_description}, {target_file}, {policy_summary}, {baseline_reward}, {recent_trend}
 RL_POLICY_EVAL_PROMPT = (
     "一个自主行动想要修改你的核心文件，请评估这个变更的幅度。\n\n"
     "目标文件: {target_file}\n"
     "变更内容: {change_description}\n"
-    "当前策略约束: {constraint_level}\n"
+    "当前策略状态: {policy_summary}\n"
     "奖励基线: {baseline_reward}\n"
     "近期趋势: {recent_trend}\n\n"
     "请判断这个变更的类型，用 JSON 回复：\n"
