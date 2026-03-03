@@ -292,12 +292,68 @@ class ToolExecMixin:
                 # 尝试自定义工具注册表
                 if self.tool_registry and self.tool_registry.has_tool(name):
                     import httpx
+                    
+                    # 构建可调用函数包装，供自定义工具使用
+                    async def _ctx_send_message(chat_id: str, text: str = "", image_path: str = "") -> dict:
+                        from lq.platform import OutgoingMessage
+                        msg = OutgoingMessage(chat_id, text)
+                        if image_path:
+                            msg.image_path = image_path
+                        msg_id = await self.adapter.send(msg)
+                        return {"success": bool(msg_id), "message_id": msg_id}
+
+                    async def _ctx_run_bash(command: str, working_dir: str = "", timeout: int = 60) -> dict:
+                        if not self.bash_executor:
+                            return {"success": False, "error": "Bash executor not loaded"}
+                        return await self.bash_executor.execute(command=command, working_dir=working_dir, timeout=timeout)
+
+                    async def _ctx_run_claude_code(prompt: str, working_dir: str = "", timeout: int = 300, max_budget_usd: float = 0.5, resume_session: str = "") -> dict:
+                        if self.cc_session:
+                            cc_result = await self.cc_session.execute(
+                                prompt=prompt, chat_id=chat_id, context=self._build_cc_context(chat_id),
+                                working_dir=working_dir, timeout=timeout, max_budget_usd=max_budget_usd,
+                                session_id=resume_session or None,
+                            )
+                            return cc_result.to_dict()
+                        elif self.cc_executor:
+                            return await self.cc_executor.execute_with_context(prompt=prompt, working_dir=working_dir, timeout=timeout)
+                        return {"success": False, "error": "Claude Code executor not loaded"}
+
+                    async def _ctx_schedule_message(chat_id: str, text: str, send_at: str) -> dict:
+                        return await self._execute_tool("schedule_message", {"chat_id": chat_id, "text": text, "send_at": send_at}, chat_id)
+
+                    async def _ctx_read_self_file(filename: str) -> dict:
+                        content = self.memory.read_self_file(filename)
+                        return {"success": True, "content": content or ""}
+
+                    async def _ctx_write_self_file(filename: str, content: str) -> dict:
+                        self.memory.write_self_file(filename, content)
+                        return {"success": True, "message": f"File {filename} updated"}
+
+                    async def _ctx_write_memory(section: str, content: str) -> dict:
+                        self.memory.update_memory(section, content)
+                        return {"success": True, "message": "Memory updated"}
+
+                    async def _ctx_write_chat_memory(chat_id: str, section: str, content: str) -> dict:
+                        self.memory.update_chat_memory(chat_id, section, content)
+                        return {"success": True, "message": "Chat memory updated"}
+
                     async with httpx.AsyncClient() as http_client:
                         context = {
+                            "sender": "system",
+                            "chat_id": chat_id,
                             "adapter": self.adapter,
                             "memory": self.memory,
                             "calendar": self.calendar,
                             "http": http_client,
+                            "send_message": _ctx_send_message,
+                            "run_bash": _ctx_run_bash,
+                            "run_claude_code": _ctx_run_claude_code,
+                            "schedule_message": _ctx_schedule_message,
+                            "read_self_file": _ctx_read_self_file,
+                            "write_self_file": _ctx_write_self_file,
+                            "write_memory": _ctx_write_memory,
+                            "write_chat_memory": _ctx_write_chat_memory,
                         }
                         return await self.tool_registry.execute(name, input_data, context)
                 return {"success": False, "error": ERR_UNKNOWN_TOOL.format(name=name)}
