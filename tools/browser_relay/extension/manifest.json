@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "LingQue Browser Relay",
+  "version": "1.0.0",
+  "description": "Connect local browser to LingQue Agent for remote control",
+  "permissions": ["debugger", "tabs", "activeTab"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": ["<all_urls>"]
+}
