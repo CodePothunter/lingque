@@ -293,7 +293,7 @@ TOOLS: list[dict] = [
                 "timeout": {
                     "type": "integer",
                     "description": TOOL_FIELD_CC_TIMEOUT,
-                    "default": 300,
+                    "default": 1800,
                 },
                 "resume_session": {
                     "type": "string",
@@ -327,7 +327,7 @@ TOOLS: list[dict] = [
                 "timeout": {
                     "type": "integer",
                     "description": TOOL_FIELD_BASH_TIMEOUT,
-                    "default": 60,
+                    "default": 600,
                 },
             },
             "required": ["command"],
