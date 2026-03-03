@@ -85,8 +85,24 @@ class WebToolsMixin:
             payload["params"] = params
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(mcp_url, json=payload, headers=headers)
-            resp.raise_for_status()
+            try:
+                resp = await client.post(mcp_url, json=payload, headers=headers)
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                error_detail: dict[str, Any] = {
+                    "status_code": e.response.status_code,
+                    "request_url": str(e.request.url),
+                    "method": e.request.method,
+                }
+                try:
+                    error_detail["response_body"] = e.response.json()
+                except Exception:
+                    error_detail["response_body"] = e.response.text[:500]
+                logger.error("MCP HTTP 请求失败：%d - %s", e.response.status_code, error_detail)
+                raise
+            except httpx.RequestError as e:
+                logger.error("MCP 网络请求失败：%s - %s", type(e).__name__, e)
+                raise
 
             # 缓存 session ID
             sid = resp.headers.get("mcp-session-id")
@@ -129,8 +145,17 @@ class WebToolsMixin:
             # 首次调用需初始化 MCP 会话
             try:
                 await self._ensure_mcp_session()
-            except Exception:
+            except Exception as e:
+                if hasattr(e, "response") and hasattr(e.response, "status_code"):
+                    status = e.response.status_code
+                    if status == 401:
+                        error_msg = f"MCP API 认证失败 (HTTP {status}): 请检查 API Key 是否有效"
+                    else:
+                        error_msg = f"MCP 服务不可用 (HTTP {status})"
+                    logger.error("MCP 会话初始化失败：%d - %s", status, error_msg)
+                    return {"success": False, "error": error_msg}
                 # 会话可能已过期，重置后重试
+                logger.warning("MCP 会话初始化失败，重置后重试：%s", e)
                 self._mcp_session_id = None
                 await self._ensure_mcp_session()
 
@@ -142,7 +167,7 @@ class WebToolsMixin:
             if not resp or "result" not in resp:
                 # 会话过期时服务器可能返回错误，重置重试一次
                 if resp and resp.get("error"):
-                    logger.warning("MCP 搜索返回错误，重置会话重试: %s", resp["error"])
+                    logger.warning("MCP 搜索返回错误，重置会话重试：%s", resp["error"])
                     self._mcp_session_id = None
                     await self._ensure_mcp_session()
                     resp = await self._mcp_request("tools/call", {
@@ -154,7 +179,7 @@ class WebToolsMixin:
                 error_msg = (resp or {}).get("error", {})
                 if isinstance(error_msg, dict):
                     error_msg = error_msg.get("message", "未知错误")
-                return {"success": False, "error": f"MCP 搜索失败: {error_msg}"}
+                return {"success": False, "error": f"MCP 搜索失败：{error_msg}"}
 
             # 解析 MCP 工具返回的 content 列表
             content_blocks = resp["result"].get("content", [])
@@ -182,9 +207,16 @@ class WebToolsMixin:
             }
 
         except Exception as e:
-            logger.exception("MCP 联网搜索失败: %s", query)
+            logger.exception("MCP 联网搜索失败：%s", query)
             self._mcp_session_id = None  # 重置会话以便下次重新初始化
-            return {"success": False, "error": f"搜索失败: {e}"}
+            if hasattr(e, "response") and hasattr(e.response, "status_code"):
+                status = e.response.status_code
+                error_detail = f"HTTP {status} 认证失败" if status == 401 else f"HTTP {status} 错误"
+                return {"success": False, "error": f"MCP 搜索 {error_detail}: 请检查 API Key 配置"}
+            elif isinstance(e, ValueError):
+                return {"success": False, "error": str(e)}
+            else:
+                return {"success": False, "error": f"MCP 搜索异常：{type(e).__name__}: {e}"}
 
     @staticmethod
     def _parse_mcp_search_results(raw_text: str, max_results: int) -> list[dict]:
