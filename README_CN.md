@@ -298,6 +298,7 @@ uv run lq stop @奶油            # 停止
 - **自我认知** — 助理了解自己的架构，可读写自身配置文件
 - **自主工具创建** — 助理可在对话中编写、验证、加载新工具插件
 - **浏览器自动化** — 内置 `browser_action` 工具通过 CDP 操控 Chromium 浏览器：导航、点击、输入、截图、读取页面、执行 JS、滚动、保存/加载 cookies 实现登录态持久化。各实例可设置独立端口，支持多实例隔离
+- **Browser Relay（远程浏览器）** — `browser_relay` 自定义工具通过 Chrome 扩展 + WebSocket 中继服务器操控用户本地真实 Chrome 浏览器，绕过 headless 检测。支持导航、点击（CSS 选择器或文字匹配）、输入（含 contenteditable 元素）、截图、获取页面内容、执行 JS、滚动。使用 CDP 鼠标事件模拟真实用户操作
 - **图片消息** — `send_message` 支持在飞书和 Discord 上发送图片附件。配合 `browser_action screenshot`，助理可以截取网页并直接发送给用户
 - **通用 Agent 能力** — 26 个内置工具，覆盖记忆、日历、消息、联网搜索、浏览器自动化、代码执行、文件读写、漂移检测、Claude Code 委托
 - **多实例群聊协作** — 多个独立 bot 共存同一群聊，自动感知邻居、避免抢答，通过消息信号自主推断彼此身份并持久记忆
@@ -411,6 +412,7 @@ uv run lq stop @奶油            # 停止
 | 工具 | 说明 |
 |------|------|
 | `browser_action` | 通过 CDP 操控 Chromium 浏览器——导航、点击、输入、截图、获取页面内容、执行 JS、滚动、等待元素、保存/加载 cookies |
+| `browser_relay` | 通过中继操控用户本地真实 Chrome 浏览器——导航、点击（选择器/文字匹配）、输入（含 contenteditable）、截图、获取内容、执行 JS、滚动。通过 Chrome 扩展 + WebSocket 中继绕过 headless 检测 |
 | `vision_analyze` | 分析图片内容（支持本地路径、URL、base64） |
 
 **代码与文件执行**
@@ -711,6 +713,8 @@ src/lq/
 │   ├── runtime_tools.py  # Python 执行 + 文件读写 + 自身统计
 │   ├── browser_tools.py  # 浏览器自动化（Playwright CDP）
 │   └── vision_mcp.py     # 图片分析（视觉模型）
+├── tools/
+│   └── browser_relay.py  # Browser Relay 自定义工具（Chrome 扩展 + WebSocket 中继）
 ├── rl.py               # 自然语言 RL 引擎（奖励、价值、PPO、Thompson Sampling）
 ├── prompts/            # Prompt 模板（按类别组织）
 │   ├── __init__.py    # 统一导出（向后兼容）

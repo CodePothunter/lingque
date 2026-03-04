@@ -298,6 +298,7 @@ In Discord, DM the bot or @mention it in a channel to chat.
 - **Self-awareness** — The assistant understands its own architecture, can read/write its config files
 - **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
 - **Browser automation** — Built-in `browser_action` tool controls a Chromium browser via CDP: navigate, click, type, screenshot, read page content, execute JS, scroll, save/load cookies for session persistence. Each instance can use its own browser port for multi-instance isolation
+- **Browser Relay** — `browser_relay` custom tool controls the user's real local Chrome browser via a Chrome extension + WebSocket relay server, bypassing headless detection. Supports navigate, click (CSS selector or text matching), type (including contenteditable elements), screenshot, get page content, evaluate JS, and scroll. Uses CDP mouse events for realistic interactions
 - **Image messaging** — `send_message` supports sending images as attachments on both Feishu and Discord. Combined with `browser_action screenshot`, the assistant can capture web pages and send them directly to users
 - **Generalized agent** — 26 built-in tools covering memory, calendar, messaging, web search, browser automation, code execution, file I/O, drift detection, and Claude Code delegation
 - **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
@@ -411,6 +412,7 @@ Edit `HEARTBEAT.md` to define your assistant's autonomous behavior:
 | Tool | Description |
 |------|-------------|
 | `browser_action` | Control a Chromium browser via CDP — navigate, click, type, screenshot, get page content, execute JS, scroll, wait for elements, save/load cookies |
+| `browser_relay` | Control the user's real local Chrome browser via relay — navigate, click (selector/text), type (including contenteditable), screenshot, get content, evaluate JS, scroll. Bypasses headless detection using Chrome extension + WebSocket relay |
 | `vision_analyze` | Analyze image content via vision model (local path, URL, or base64) |
 
 **Code & File Execution**
@@ -711,6 +713,8 @@ src/lq/
 │   ├── runtime_tools.py  # Python execution + file I/O + self-stats
 │   ├── browser_tools.py  # Browser automation via Playwright CDP
 │   └── vision_mcp.py     # Image analysis via vision model
+├── tools/
+│   └── browser_relay.py  # Browser Relay custom tool (Chrome extension + WebSocket relay)
 ├── rl.py               # Natural Language RL engine (reward, value, PPO, Thompson Sampling)
 ├── prompts/            # Prompt templates organized by category
 │   ├── __init__.py    # Unified re-exports for backward compatibility
