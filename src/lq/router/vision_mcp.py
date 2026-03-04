@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,11 +30,21 @@ class VisionMCPMixin:
         if not api_key:
             return {"success": False, "error": "未配置 Z_AI_API_KEY"}
 
-        # 判断是 URL 还是 base64
+        # 判断图片来源类型
         if image_source.startswith("http://") or image_source.startswith("https://"):
             image_url = image_source
+        elif image_source.startswith("data:"):
+            image_url = image_source
+        elif Path(image_source).is_file():
+            # 本地文件路径 → 读取并转 base64
+            raw = Path(image_source).read_bytes()
+            suffix = Path(image_source).suffix.lower()
+            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "gif": "image/gif", "webp": "image/webp"}.get(suffix.lstrip("."), "image/png")
+            b64 = base64.b64encode(raw).decode()
+            image_url = f"data:{mime};base64,{b64}"
         else:
-            # 当作 base64，包装成 data URL
+            # fallback: 当作 base64
             image_url = f"data:image/jpeg;base64,{image_source}"
 
         try:
