@@ -76,7 +76,7 @@ function connect() {
       // 截图前激活 tab，防止黑屏
       if (method === 'Page.captureScreenshot') {
         await chrome.tabs.update(tabId, { active: true });
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 300));
       }
 
       // Attach debugger if not already attached
@@ -86,7 +86,14 @@ function connect() {
         // Already attached, ignore
       }
 
-      const result = await chrome.debugger.sendCommand({ tabId }, method, params || {});
+      // 给 CDP 命令加超时保护（截图 10s，其他 25s）
+      const timeout = method === 'Page.captureScreenshot' ? 10000 : 25000;
+      const result = await Promise.race([
+        chrome.debugger.sendCommand({ tabId }, method, params || {}),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`CDP command "${method}" timed out after ${timeout}ms`)), timeout)
+        ),
+      ]);
 
       // navigate 时自动锁定该 tab
       if (method === 'Page.navigate') {
