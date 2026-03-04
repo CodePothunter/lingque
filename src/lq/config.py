@@ -39,6 +39,7 @@ class APIConfig:
     api_key: str = ""
     proxy: str = ""  # HTTP/SOCKS 代理（如 socks5://127.0.0.1:1080）
     mcp_key: str = ""  # 智谱 MCP API Key（联网搜索等），默认复用 api_key
+    api_format: str = "anthropic"  # API 格式: "anthropic" | "openai" | "responses"
 
 
 @dataclass
@@ -128,6 +129,7 @@ class LQConfig:
             api_key=api_key,
             proxy=api.get("proxy", ""),
             mcp_key=api.get("mcp_key", "") or api_key,
+            api_format=api.get("api_format", "anthropic"),
         )
 
         fs = d.get("feishu", {})
@@ -195,8 +197,14 @@ def load_from_env(env_path: Path) -> LQConfig:
     """从 .env 文件读取凭证（开发模式）"""
     vals = dotenv_values(env_path)
     cfg = LQConfig()
-    cfg.api.api_key = vals.get("ANTHROPIC_AUTH_TOKEN", "")
+    cfg.api.api_key = (
+        vals.get("ANTHROPIC_AUTH_TOKEN")
+        or vals.get("OPENAI_API_KEY")
+        or vals.get("GEMINI_API_KEY")
+        or ""
+    )
     cfg.api.base_url = vals.get("ANTHROPIC_BASE_URL", cfg.api.base_url)
+    cfg.api.api_format = vals.get("API_FORMAT", "anthropic")
     cfg.api.proxy = (
         vals.get("HTTPS_PROXY")
         or vals.get("HTTP_PROXY")

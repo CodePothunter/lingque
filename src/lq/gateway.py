@@ -20,7 +20,7 @@ from lq.backup import BackupManager
 from lq.config import LQConfig
 from lq.evolution import EvolutionEngine
 from lq.rl import ReinforcementLearner
-from lq.executor.api import DirectAPIExecutor
+from lq.executor.api import DirectAPIExecutor, OpenAIExecutor, create_executor
 from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
 from lq.executor.cc_experience import CCExperienceStore
 from lq.executor.cc_session import ClaudeCodeSession
@@ -231,7 +231,7 @@ class AssistantGateway:
         self._adapter = adapter
 
         # 初始化核心组件
-        executor = DirectAPIExecutor(self.config.api, self.config.model)
+        executor = create_executor(self.config.api, self.config.model)
         cc_executor = ClaudeCodeExecutor(self.home, self.config.api)
         stats = StatsTracker(self.home)
         executor.stats = stats  # 注入统计跟踪
