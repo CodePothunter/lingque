@@ -449,7 +449,11 @@ class OpenAIExecutor:
 
     async def reply(self, system: str, user_message: str) -> str:
         if self._use_responses:
-            kwargs: dict[str, Any] = {"model": self.model, "input": user_message}
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "input": user_message,
+                "max_output_tokens": 4096,
+            }
             if system:
                 kwargs["instructions"] = system
             resp = await _retry_openai_call(self.client.responses.create, **kwargs)
