@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 
 
@@ -211,3 +212,84 @@ WantedBy=default.target
         encoding="utf-8",
     )
     return service_path
+
+
+def write_launchd_plist(name: str, project_dir: str | None = None) -> Path:
+    """生成 macOS launchd plist 文件
+
+    launchd 是 macOS 的服务管理系统，类似于 Linux 的 systemd。
+    plist 文件位于 ~/Library/LaunchAgents/ 用于用户级服务。
+    """
+    import shutil
+    import platform
+
+    uv_path = shutil.which("uv") or "uv"
+    if project_dir is None:
+        # 尝试从当前工作目录推断项目目录
+        cwd = Path.cwd()
+        if (cwd / "pyproject.toml").exists():
+            project_dir = str(cwd)
+        else:
+            project_dir = str(Path(__file__).resolve().parents[2])
+
+    # macOS launchd 使用 ~/Library/LaunchAgents/ 存放用户级服务
+    plist_dir = Path.home() / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True, exist_ok=True)
+
+    # 使用反向域名格式的标识符
+    bundle_id = f"ai.lingque.{name}"
+    plist_path = plist_dir / f"{bundle_id}.plist"
+
+    plist_content = f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{bundle_id}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{uv_path}</string>
+        <string>run</string>
+        <string>lq</string>
+        <string>start</string>
+        <string>@{name}</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{project_dir}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/lq-{name}.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/lq-{name}.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/local/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
+"""
+    plist_path.write_text(plist_content, encoding="utf-8")
+    return plist_path
+
+
+def write_service_config(name: str, project_dir: str | None = None) -> tuple[Path, str]:
+    """根据平台生成服务配置文件
+
+    Returns:
+        (配置文件路径, 服务管理器类型)
+        服务管理器类型为 "systemd" 或 "launchd"
+    """
+    if platform.system() == "Darwin":
+        return write_launchd_plist(name, project_dir), "launchd"
+    else:
+        return write_systemd_service(name, project_dir), "systemd"
