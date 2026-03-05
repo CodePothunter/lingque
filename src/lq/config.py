@@ -57,6 +57,13 @@ class DiscordConfig:
 
 
 @dataclass
+class TelegramConfig:
+    bot_token: str = ""
+    bot_id: str = ""  # 启动时自动获取
+    owner_chat_id: str = ""
+
+
+@dataclass
 class GroupConfig:
     chat_id: str = ""
     note: str = ""  # 群描述/用途，用于 LLM 介入判断
@@ -70,6 +77,7 @@ class LQConfig:
     api: APIConfig = field(default_factory=APIConfig)
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
     model: str = "glm-5"
     heartbeat_interval: int = 3600  # 秒
     active_hours: tuple[int, int] = (8, 23)  # 活跃时段
@@ -145,6 +153,13 @@ class LQConfig:
             bot_id=dc.get("bot_id", ""),
         )
 
+        tg = d.get("telegram", {})
+        cfg.telegram = TelegramConfig(
+            bot_token=tg.get("bot_token", ""),
+            bot_id=tg.get("bot_id", ""),
+            owner_chat_id=tg.get("owner_chat_id", ""),
+        )
+
         cfg.groups = [GroupConfig(**g) for g in d.get("groups", [])]
 
         # 兼容旧配置：没有 slug 字段时自动生成
@@ -210,4 +225,5 @@ def load_from_env(env_path: Path) -> LQConfig:
     cfg.feishu.app_id = vals.get("FEISHU_APP_ID", "")
     cfg.feishu.app_secret = vals.get("FEISHU_APP_SECRET", "")
     cfg.discord.bot_token = vals.get("DISCORD_BOT_TOKEN", "")
+    cfg.telegram.bot_token = vals.get("TELEGRAM_BOT_TOKEN", "")
     return cfg

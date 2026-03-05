@@ -36,7 +36,7 @@ from lq.tools import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
-KNOWN_ADAPTERS = {"feishu", "local", "discord"}
+KNOWN_ADAPTERS = {"feishu", "local", "discord", "telegram"}
 
 
 class AssistantGateway:
@@ -49,7 +49,12 @@ class AssistantGateway:
 
     @property
     def _owner_chat_id(self) -> str | None:
-        """解析主人 chat_id，优先 Discord，回退飞书。"""
+        """解析主人 chat_id，优先 Telegram，回退 Discord，再回退飞书。"""
+        telegram_cfg = getattr(self.config, "telegram", None)
+        if telegram_cfg:
+            val = getattr(telegram_cfg, "owner_chat_id", None)
+            if val:
+                return val
         discord_cfg = getattr(self.config, "discord", None)
         if discord_cfg:
             val = getattr(discord_cfg, "owner_chat_id", None)
@@ -62,11 +67,13 @@ class AssistantGateway:
 
     @staticmethod
     def _detect_chat_id_platform(chat_id: str) -> str | None:
-        """判断 chat_id 的平台格式：'feishu'、'discord' 或 None（未知）。"""
+        """判断 chat_id 的平台格式：'feishu'、'discord'、'telegram' 或 None（未知）。"""
         if chat_id.startswith(("oc_", "ou_", "on_")):
             return "feishu"
-        if chat_id.isdigit():
-            return "discord"
+        # Telegram chat_id 可为负数（群组）
+        stripped = chat_id.lstrip("-")
+        if stripped.isdigit():
+            return "telegram"
         return None
 
     def _check_config_consistency(self, adapter_types: list[str]) -> None:
@@ -89,6 +96,13 @@ class AssistantGateway:
             if discord_owner:
                 checks.append(("discord.owner_chat_id", discord_owner))
 
+        # telegram.owner_chat_id（如果存在）
+        telegram_cfg = getattr(self.config, "telegram", None)
+        if telegram_cfg:
+            telegram_owner = getattr(telegram_cfg, "owner_chat_id", "")
+            if telegram_owner:
+                checks.append(("telegram.owner_chat_id", telegram_owner))
+
         # groups[].chat_id
         for i, group in enumerate(self.config.groups):
             if group.chat_id:
@@ -98,7 +112,8 @@ class AssistantGateway:
             platform = self._detect_chat_id_platform(chat_id)
             if platform and platform not in active:
                 truncated = chat_id[:20] + "..." if len(chat_id) > 20 else chat_id
-                platform_label = "飞书" if platform == "feishu" else "Discord"
+                platform_labels = {"feishu": "飞书", "discord": "Discord", "telegram": "Telegram"}
+                platform_label = platform_labels.get(platform, platform)
                 logger.warning(
                     "配置一致性警告: %s='%s' 是%s格式，但未启用%s适配器。当前启用: %s",
                     field_name, truncated, platform_label, platform_label,
@@ -136,6 +151,7 @@ class AssistantGateway:
         has_feishu = "feishu" in self.adapter_types
         has_local = "local" in self.adapter_types
         has_discord = "discord" in self.adapter_types
+        has_telegram = "telegram" in self.adapter_types
 
         # 凭证校验 + 提醒
         if has_feishu:
@@ -214,6 +230,44 @@ class AssistantGateway:
             if primary is None:
                 primary = local_adapter
             logger.info("本地适配器已加载（gateway 模式）")
+
+        if has_telegram:
+            if not self.config.telegram.bot_token:
+                if len(self.adapter_types) > 1:
+                    logger.warning("Telegram 凭证未配置，跳过 Telegram 适配器")
+                    self.adapter_types = [t for t in self.adapter_types if t != "telegram"]
+                    has_telegram = False
+                else:
+                    raise RuntimeError("Telegram 凭证未配置（bot_token 为空），无法启动 Telegram 适配器")
+
+        if has_telegram:
+            from lq.telegram.adapter import TelegramAdapter
+            telegram_adapter = TelegramAdapter(
+                self.config.telegram.bot_token,
+                self.home,
+            )
+            try:
+                identity = await telegram_adapter.get_identity()
+            except Exception as exc:
+                if len(self.adapter_types) > 1:
+                    logger.warning("Telegram 身份获取失败，跳过 Telegram 适配器: %s", exc)
+                    self.adapter_types = [t for t in self.adapter_types if t != "telegram"]
+                    has_telegram = False
+                else:
+                    raise RuntimeError(
+                        f"Telegram 身份获取失败（请检查 bot_token 是否有效）: {exc}"
+                    ) from exc
+        if has_telegram:
+            if identity.bot_id:
+                self.config.telegram.bot_id = identity.bot_id
+            if not primary:
+                bot_open_id = identity.bot_id
+                bot_name = identity.bot_name or self.config.name
+            logger.info("Telegram 适配器: id=%s name=%s",
+                        identity.bot_id, identity.bot_name)
+            adapters.append(telegram_adapter)
+            if primary is None:
+                primary = telegram_adapter
 
         if not adapters:
             raise RuntimeError("没有可用的适配器，无法启动")

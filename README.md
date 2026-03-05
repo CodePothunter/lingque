@@ -114,6 +114,7 @@ These "personas" are not gimmicks — they're defined in `SOUL.md` and directly 
 - *(Optional)* Platform credentials — only needed for the adapter(s) you want to use:
   - **Feishu**: A Feishu custom app (with IM + Calendar permissions)
   - **Discord**: A Discord bot application with Message Content Intent enabled
+  - **Telegram**: A Telegram bot token from @BotFather
 
 ### Install
 
@@ -142,6 +143,7 @@ ANTHROPIC_AUTH_TOKEN=xxxxx
 FEISHU_APP_ID=cli_xxxxx
 FEISHU_APP_SECRET=xxxxx
 DISCORD_BOT_TOKEN=xxxxx
+TELEGRAM_BOT_TOKEN=xxxxx
 ```
 
 ### Initialize an Instance
@@ -188,13 +190,18 @@ uv run lq start @奶油
 # Discord mode
 uv run lq start @奶油 --adapter discord
 
+# Telegram mode
+uv run lq start @奶油 --adapter telegram
+
 # Local-only mode (no platform credentials needed)
 uv run lq start @奶油 --adapter local
 
 # Multi-platform mode (combine any adapters)
 uv run lq start @奶油 --adapter feishu,local
 uv run lq start @奶油 --adapter discord,local
+uv run lq start @奶油 --adapter telegram,local
 uv run lq start @奶油 --adapter feishu,discord,local
+uv run lq start @奶油 --adapter feishu,telegram,local
 
 # Enable tool call and thinking process output
 uv run lq start @奶油 --show-thinking
@@ -219,7 +226,7 @@ uv run lq stop @奶油            # stop
 | Command | Description |
 |---------|-------------|
 | `uv run lq init --name NAME [--from-env .env]` | Initialize instance |
-| `uv run lq start @NAME [--adapter TYPE] [--show-thinking]` | Start (TYPE: `feishu`, `discord`, `local`, or comma-separated like `discord,local`). `--show-thinking` is a flag (off by default) that enables tool call and thinking process output |
+| `uv run lq start @NAME [--adapter TYPE] [--show-thinking]` | Start (TYPE: `feishu`, `discord`, `telegram`, `local`, or comma-separated like `discord,local`). `--show-thinking` is a flag (off by default) that enables tool call and thinking process output |
 | `uv run lq stop @NAME` | Stop |
 | `uv run lq restart @NAME [--adapter TYPE]` | Restart |
 | `uv run lq list` | List all instances |
@@ -237,7 +244,7 @@ uv run lq stop @奶油            # stop
 
 ## Platform Adapter Setup
 
-LingQue supports three platform adapters. You can use any combination simultaneously via `--adapter`.
+LingQue supports four platform adapters. You can use any combination simultaneously via `--adapter`.
 
 ### Local (terminal)
 
@@ -278,6 +285,23 @@ No setup required. Use `--adapter local` or `lq chat @NAME` for interactive term
 
 In Discord, DM the bot or @mention it in a channel to chat.
 
+### Telegram
+
+1. Open [@BotFather](https://t.me/botfather) on Telegram
+2. Send `/newbot` to create a new bot
+3. Follow the prompts to set a name and username for your bot
+4. BotFather will provide a token (format: `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
+5. Add the token to `.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+   ```
+6. Start with `--adapter telegram`:
+   ```bash
+   uv run lq start @NAME --adapter telegram
+   ```
+
+In Telegram, DM the bot or @mention it in a group to chat.
+
 ---
 
 ## Full Feature List
@@ -285,8 +309,8 @@ In Discord, DM the bot or @mention it in a channel to chat.
 <details>
 <summary><strong>Expand to see all features</strong></summary>
 
-- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Telegram, Slack, etc.) requires only one adapter file
-- **Pluggable adapters** — Ships with Feishu (Lark), Discord, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
+- **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Slack, etc.) requires only one adapter file
+- **Pluggable adapters** — Ships with Feishu (Lark), Discord, Telegram, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
 - **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
 - **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log)
@@ -652,6 +676,10 @@ Edit `~/.lq-{slug}/config.json`:
     "bot_token": "xxxxx",
     "bot_id": ""
   },
+  "telegram": {
+    "bot_token": "xxxxx",
+    "bot_id": ""
+  },
   "heartbeat_interval": 3600,
   "active_hours": [8, 23],
   "cost_alert_daily": 5.0,
@@ -675,6 +703,7 @@ Edit `~/.lq-{slug}/config.json`:
 | `api.proxy` | HTTP proxy (used by both httpx and discord.py) |
 | `feishu.app_id` / `app_secret` | Feishu app credentials |
 | `discord.bot_token` | Discord bot token (`bot_id` is auto-populated on first start) |
+| `telegram.bot_token` | Telegram bot token from @BotFather (`bot_id` is auto-populated on first start) |
 | `heartbeat_interval` | Heartbeat interval (seconds) |
 | `active_hours` | Active hours `[start, end)` |
 | `cost_alert_daily` | Daily cost alert threshold (USD) |
