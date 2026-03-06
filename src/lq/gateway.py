@@ -245,6 +245,7 @@ class AssistantGateway:
             telegram_adapter = TelegramAdapter(
                 self.config.telegram.bot_token,
                 self.home,
+                proxy=self.config.api.proxy,
             )
             try:
                 identity = await telegram_adapter.get_identity()

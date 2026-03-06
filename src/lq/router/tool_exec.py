@@ -141,9 +141,12 @@ class ToolExecMixin:
                     target = chat_id  # LLM 给了无效或截断的 ID，回退到当前会话
                 text_to_send = input_data.get("text", "")
                 image_path = input_data.get("image_path", "")
+                file_path = input_data.get("file_path", "")
                 msg = OutgoingMessage(target, text_to_send)
                 if image_path:
                     msg.image_path = image_path
+                if file_path:
+                    msg.file_path = file_path
                 msg_id = await self.adapter.send(msg)
                 if msg_id:
                     return {"success": True, "message_id": msg_id}
@@ -294,11 +297,13 @@ class ToolExecMixin:
                     import httpx
                     
                     # 构建可调用函数包装，供自定义工具使用
-                    async def _ctx_send_message(chat_id: str, text: str = "", image_path: str = "") -> dict:
+                    async def _ctx_send_message(chat_id: str, text: str = "", image_path: str = "", file_path: str = "") -> dict:
                         from lq.platform import OutgoingMessage
                         msg = OutgoingMessage(chat_id, text)
                         if image_path:
                             msg.image_path = image_path
+                        if file_path:
+                            msg.file_path = file_path
                         msg_id = await self.adapter.send(msg)
                         return {"success": bool(msg_id), "message_id": msg_id}
 

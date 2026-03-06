@@ -104,8 +104,7 @@ class ToolLoopMixin:
                 if show_thinking and resp.text and resp.text.strip():
                     intermediate = self._CLEAN_RE.sub("", resp.text).strip()
                     if intermediate:
-                        styled = "*" + intermediate.replace("\n", "*\n*") + "*"
-                        await self._send_reply(styled, chat_id, reply_to_message_id)
+                        await self._send_reply(intermediate, chat_id, reply_to_message_id)
 
                 # LLM 调用了工具 → 执行并继续
                 # ── 发送工具执行通知卡片 ──

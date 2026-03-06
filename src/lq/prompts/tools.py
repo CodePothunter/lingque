@@ -58,8 +58,9 @@ TOOL_DESC_DELETE_CUSTOM_TOOL = "删除一个自定义工具。"
 TOOL_DESC_TOGGLE_CUSTOM_TOOL = "启用或禁用一个自定义工具。"
 
 TOOL_DESC_SEND_MESSAGE = (
-    "主动发送消息到指定会话（chat_id）。支持纯文本或图片。"
+    "主动发送消息到指定会话（chat_id）。支持纯文本、图片或文件。"
     "发送图片时设置 image_path 为本地图片文件路径（如截图路径），text 可选作为图片说明。"
+    "发送文件时设置 file_path 为本地文件路径（如 .txt/.md/.json 等），text 可选作为文件说明。"
 )
 
 TOOL_DESC_SCHEDULE_MESSAGE = (
@@ -155,6 +156,7 @@ TOOL_FIELD_TOGGLE_ENABLED = "true=启用, false=禁用"
 TOOL_FIELD_CHAT_ID = "目标会话 ID（用户私聊或群聊的 chat_id）"
 TOOL_FIELD_TEXT = "要发送的文本内容（发送图片时可选，作为图片说明）"
 TOOL_FIELD_IMAGE_PATH = "本地图片文件路径（可选，设置后发送图片消息）"
+TOOL_FIELD_FILE_PATH_SEND = "本地文件路径（可选，如 .txt/.md/.json 等文本文件，发送时作为文档附件）"
 TOOL_FIELD_SCHEDULE_TEXT = "定时任务的指令——描述到时间后你要做什么（不会原文发送，而是由你执行）"
 TOOL_FIELD_SEND_AT = "计划发送时间，ISO 8601 格式且包含时区，如 2026-02-13T15:05:00+08:00"
 TOOL_FIELD_CC_PROMPT = "要执行的任务描述，尽量详细具体。Claude Code 会自主完成这个任务。"

@@ -32,6 +32,7 @@ from lq.prompts import (
     TOOL_FIELD_VALIDATE_CODE, TOOL_FIELD_DELETE_NAME,
     TOOL_FIELD_TOGGLE_NAME, TOOL_FIELD_TOGGLE_ENABLED,
     TOOL_FIELD_CHAT_ID, TOOL_FIELD_TEXT, TOOL_FIELD_IMAGE_PATH,
+    TOOL_FIELD_FILE_PATH_SEND,
     TOOL_FIELD_SCHEDULE_TEXT, TOOL_FIELD_SEND_AT,
     TOOL_FIELD_CC_PROMPT, TOOL_FIELD_WORKING_DIR, TOOL_FIELD_CC_TIMEOUT,
     TOOL_FIELD_CC_RESUME_SESSION, TOOL_FIELD_CC_MAX_BUDGET,
@@ -248,6 +249,10 @@ TOOLS: list[dict] = [
                 "image_path": {
                     "type": "string",
                     "description": TOOL_FIELD_IMAGE_PATH,
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": TOOL_FIELD_FILE_PATH_SEND,
                 },
             },
             "required": ["chat_id"],

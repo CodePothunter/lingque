@@ -79,10 +79,12 @@ class TelegramSender:
     - 自动重试（429 Flood Control）
     - MarkdownV2 转义处理
     - 长消息自动分段
+    - 代理支持（HTTP/SOCKS）
     """
 
-    def __init__(self, bot_token: str) -> None:
+    def __init__(self, bot_token: str, proxy: str = "") -> None:
         self._bot_token = bot_token
+        self._proxy = proxy
         self._base_url = TELEGRAM_API_BASE.format(token=bot_token, method="")
         self._http: httpx.AsyncClient | None = None
         self._bot_id: str = ""
@@ -90,7 +92,7 @@ class TelegramSender:
 
     async def __aenter__(self) -> TelegramSender:
         # 超时设置为 40 秒，大于 getUpdates 的 30 秒长轮询超时
-        self._http = httpx.AsyncClient(timeout=40.0)
+        self._http = httpx.AsyncClient(proxy=self._proxy or None, timeout=40.0)
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -104,6 +106,7 @@ class TelegramSender:
         params: dict | None = None,
         files: dict | None = None,
         max_retries: int = 3,
+        _allow_400: bool = False,
     ) -> dict | None:
         """发送 POST 请求到 Telegram Bot API，带自动重试。
 
@@ -113,7 +116,7 @@ class TelegramSender:
                         3 = 首次 + 最多重试 3 次（共 4 次）
         """
         if not self._http:
-            self._http = httpx.AsyncClient(timeout=40.0)
+            self._http = httpx.AsyncClient(proxy=self._proxy or None, timeout=40.0)
 
         url = f"{self._base_url}{method}"
         attempt = 0  # 尝试次数（从 1 开始）
@@ -168,7 +171,23 @@ class TelegramSender:
                 continue
 
             except httpx.HTTPStatusError as e:
-                logger.error("HTTP 错误: %s status=%d", method, e.response.status_code)
+                # 尝试读取错误响应内容
+                error_detail = ""
+                try:
+                    error_json = e.response.json()
+                    error_detail = f" desc={error_json.get('description', '')}"
+                except Exception:
+                    pass
+
+                status = e.response.status_code
+
+                # 对于允许 400 的方法（如 reaction），使用 DEBUG 级别
+                # 因为部分私聊不支持 reactions 是正常现象
+                if _allow_400 and status == 400:
+                    logger.debug("HTTP 400（预期内）: %s%s", method, error_detail)
+                else:
+                    logger.error("HTTP 错误: %s status=%d%s", method, status, error_detail)
+
                 # getUpdates 的 HTTP 错误不应该终止轮询，返回空列表继续
                 if method == "getUpdates":
                     return []
@@ -338,6 +357,57 @@ class TelegramSender:
 
         return await self._request("sendPhoto", data=data)
 
+    async def send_document(
+        self,
+        chat_id: str | int,
+        file_path: str,
+        caption: str = "",
+        parse_mode: str = "MarkdownV2",
+        reply_to_message_id: str | int | None = None,
+    ) -> dict | None:
+        """发送文档文件（POST /sendDocument，multipart/form-data）。
+
+        Args:
+            chat_id: 目标聊天 ID
+            file_path: 本地文件路径
+            caption: 文件说明（可选）
+            parse_mode: 说明文本解析模式
+            reply_to_message_id: 回复的消息 ID
+        """
+        import os
+
+        if not self._http:
+            self._http = httpx.AsyncClient(timeout=40.0)
+
+        url = f"{self._base_url}sendDocument"
+        filename = os.path.basename(file_path)
+
+        data: dict[str, Any] = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption
+            data["parse_mode"] = parse_mode
+        if reply_to_message_id:
+            data["reply_to_message_id"] = str(reply_to_message_id)
+
+        try:
+            with open(file_path, "rb") as f:
+                files = {"document": (filename, f)}
+                resp = await self._http.post(url, data=data, files=files)
+                resp.raise_for_status()
+                result = resp.json()
+
+            if not result.get("ok"):
+                logger.error(
+                    "sendDocument 失败: %s",
+                    result.get("description", ""),
+                )
+                return None
+
+            return result.get("result")
+        except Exception:
+            logger.exception("发送文档失败: %s", file_path)
+            return None
+
     async def edit_message_text(
         self,
         chat_id: str | int,
@@ -376,6 +446,10 @@ class TelegramSender:
 
         仅支持单个 emoji 反应。
         emoji 为空字符串时清除所有 reactions。
+
+        Note:
+            Telegram 部分私聊不支持 reactions，会返回 400 错误。
+            此方法会静默失败，不影响主流程。
         """
         # 清除 reaction 时发送空数组
         if not emoji:
@@ -390,8 +464,77 @@ class TelegramSender:
                 "message_id": message_id,
                 "reaction": [{"type": "emoji", "emoji": emoji}],
             }
-        result = await self._request("setMessageReaction", data=data)
+        result = await self._request("setMessageReaction", data=data, _allow_400=True)
         return result is not None
+
+    async def send_chat_action(
+        self,
+        chat_id: str | int,
+        action: str = "typing",
+    ) -> bool:
+        """发送聊天动作（POST /sendChatAction）。
+
+        action 默认为 "typing"，在用户端显示"正在输入…"指示器，
+        持续约 5 秒或直到 bot 发送消息。
+        """
+        result = await self._request(
+            "sendChatAction",
+            data={"chat_id": chat_id, "action": action},
+            _allow_400=True,
+        )
+        return result is not None
+
+    async def send_photo_local(
+        self,
+        chat_id: str | int,
+        file_path: str,
+        caption: str = "",
+        parse_mode: str = "MarkdownV2",
+        reply_to_message_id: str | int | None = None,
+    ) -> dict | None:
+        """上传本地图片并发送（multipart/form-data）。
+
+        Args:
+            chat_id: 目标聊天 ID
+            file_path: 本地图片路径
+            caption: 图片说明（支持 MarkdownV2）
+            reply_to_message_id: 回复的消息 ID
+        """
+        import os
+
+        url = f"{self._base_url}sendPhoto"
+        filename = os.path.basename(file_path)
+
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        mime_map = {"png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+        mime_type = mime_map.get(ext, "image/jpeg")
+
+        form_data: dict[str, str] = {
+            "chat_id": str(chat_id),
+            "parse_mode": parse_mode,
+        }
+        if caption:
+            form_data["caption"] = caption
+        if reply_to_message_id:
+            form_data["reply_to_message_id"] = str(reply_to_message_id)
+
+        try:
+            if not self._http:
+                self._http = httpx.AsyncClient(timeout=60.0)
+
+            with open(file_path, "rb") as f:
+                files = {"photo": (filename, f, mime_type)}
+                resp = await self._http.post(url, data=form_data, files=files)
+
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("ok"):
+                return result.get("result")
+            logger.error("Telegram sendPhoto 失败: %s", result.get("description", ""))
+            return None
+        except Exception:
+            logger.exception("上传本地图片失败: %s", file_path)
+            return None
 
     async def get_file(self, file_id: str) -> dict | None:
         """获取文件信息（POST /getFile）。
@@ -412,7 +555,7 @@ class TelegramSender:
         url = f"https://api.telegram.org/file/bot{self._bot_token}/{file_path}"
         try:
             if not self._http:
-                self._http = httpx.AsyncClient(timeout=30.0)
+                self._http = httpx.AsyncClient(proxy=self._proxy or None, timeout=30.0)
             resp = await self._http.get(url)
             resp.raise_for_status()
             return resp.content

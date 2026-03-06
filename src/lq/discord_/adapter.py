@@ -29,6 +29,43 @@ logger = logging.getLogger(__name__)
 # Discord 消息长度限制
 DISCORD_MAX_LEN = 2000
 
+# 可识别为文本文件的 MIME 前缀/类型
+_TEXT_MIME_PREFIXES = ("text/",)
+_TEXT_MIME_TYPES = frozenset({
+    "application/json", "application/xml", "application/javascript",
+    "application/x-python", "application/x-sh", "application/x-shellscript",
+    "application/yaml", "application/x-yaml", "application/toml",
+    "application/sql", "application/xhtml+xml", "application/ld+json",
+})
+_TEXT_EXTENSIONS = frozenset({
+    ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv",
+    ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".xml", ".html", ".htm", ".css", ".js", ".ts", ".jsx", ".tsx",
+    ".py", ".pyi", ".rb", ".pl", ".lua", ".sh", ".bash", ".zsh",
+    ".c", ".h", ".cpp", ".hpp", ".java", ".kt", ".go", ".rs", ".swift",
+    ".sql", ".r", ".m", ".tex", ".log",
+    ".env", ".gitignore", ".dockerignore", ".editorconfig",
+})
+
+
+def _is_text_attachment(content_type: str, filename: str) -> bool:
+    """判断附件是否为文本类文件。"""
+    ct = content_type.lower()
+    for prefix in _TEXT_MIME_PREFIXES:
+        if ct.startswith(prefix):
+            return True
+    if ct in _TEXT_MIME_TYPES:
+        return True
+    if filename:
+        import os
+        _, ext = os.path.splitext(filename.lower())
+        if ext in _TEXT_EXTENSIONS:
+            return True
+        basename = os.path.basename(filename.lower())
+        if basename in ("makefile", "dockerfile", "vagrantfile", "gemfile"):
+            return True
+    return False
+
 
 class DiscordAdapter(PlatformAdapter):
     """Discord 平台适配器。
@@ -204,6 +241,15 @@ class DiscordAdapter(PlatformAdapter):
             return await self._sender.send_message_with_file(
                 message.chat_id,
                 message.image_path,
+                content=text,
+                reply_to=message.reply_to,
+            )
+
+        # 文件附件：同样走 multipart file upload
+        if message.file_path:
+            return await self._sender.send_message_with_file(
+                message.chat_id,
+                message.file_path,
                 content=text,
                 reply_to=message.reply_to,
             )
@@ -458,27 +504,27 @@ class DiscordAdapter(PlatformAdapter):
             text = text.replace(f"<#{channel.id}>", f"#{channel.name}")
         text = text.strip()
 
-        # 判断消息类型 + 提取图片 + 读取 txt 附件
+        # 判断消息类型 + 提取图片 + 读取文本附件
         image_keys: list[str] = []
         msg_type = MessageType.TEXT
         txt_parts: list[str] = []
         for attachment in message.attachments:
             content_type = attachment.content_type or ""
+            filename = attachment.filename or ""
             if content_type.startswith("image/"):
                 image_keys.append(attachment.url)
                 msg_type = MessageType.IMAGE
-            elif (
-                content_type.startswith("text/plain")
-                or (attachment.filename or "").endswith(".txt")
-            ):
-                # Discord 大段文本自动转成 .txt 附件，下载还原为文本
+            elif _is_text_attachment(content_type, filename):
+                # 文本类附件：下载内容并合并到消息文本
                 result = await self._sender.download_attachment(attachment.url)
                 if result:
                     raw_bytes, _ = result
                     try:
-                        txt_parts.append(raw_bytes.decode("utf-8"))
+                        content = raw_bytes.decode("utf-8")
                     except UnicodeDecodeError:
-                        txt_parts.append(raw_bytes.decode("utf-8", errors="replace"))
+                        content = raw_bytes.decode("utf-8", errors="replace")
+                    header = f"📎 文件: {filename}" if filename else "📎 文件"
+                    txt_parts.append(f"{header}\n```\n{content}\n```")
         if txt_parts:
             text = "\n".join(filter(None, [text] + txt_parts))
 
