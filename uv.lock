@@ -879,12 +879,13 @@ wheels = [
 
 [[package]]
 name = "lingque"
-version = "1.1.0"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "claude-agent-sdk" },
     { name = "click" },
+    { name = "cryptography" },
     { name = "httpx", extra = ["socks"] },
     { name = "json-repair" },
     { name = "lark-oapi" },
@@ -910,6 +911,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "claude-agent-sdk", specifier = ">=0.1" },
     { name = "click", specifier = ">=8.1" },
+    { name = "cryptography", specifier = ">=42.0" },
     { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.3" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
     { name = "json-repair", specifier = ">=0.58.0" },
