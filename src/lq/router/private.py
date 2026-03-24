@@ -61,6 +61,7 @@ class PrivateChatMixin:
                 "texts": [text] if text else [],
                 "message_id": msg.message_id,
                 "sender_name": sender_name,
+                "platform": msg.platform,
                 "timer": None,
             }
             if has_images:
@@ -82,6 +83,7 @@ class PrivateChatMixin:
         combined_text = "\n".join(pending["texts"]) if pending["texts"] else ""
         message_id = pending["message_id"]
         sender_name = pending["sender_name"]
+        platform = pending.get("platform", "")
 
         # 构建多模态内容：下载图片并组装 content blocks
         image_msgs: list[IncomingMessage] = pending.get("image_msgs", [])
@@ -96,7 +98,7 @@ class PrivateChatMixin:
         # 主人身份自动发现
         self._try_discover_owner(chat_id, sender_name)
 
-        system = self._build_private_system(chat_id)
+        system = self._build_private_system(chat_id, platform=platform)
 
         # 使用会话管理器维护上下文
         if self.session_mgr:
@@ -150,11 +152,16 @@ class PrivateChatMixin:
 
     # ── 私聊系统 prompt 构建 ──
 
-    def _build_private_system(self, chat_id: str, has_queued: bool = False) -> str:
+    def _build_private_system(self, chat_id: str, has_queued: bool = False, platform: str = "") -> str:
         """构建私聊系统 prompt"""
         system = self.memory.build_context(chat_id=chat_id)
+        platform_label = {
+            "feishu": "飞书", "discord": "Discord", "telegram": "Telegram",
+            "wechat": "微信", "local": "本地终端",
+        }.get(platform, "")
+        platform_hint = f"（平台: {platform_label}）" if platform_label else ""
         system += (
-            f"\n\n你正在和用户私聊。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
+            f"\n\n你正在和用户私聊{platform_hint}。当前会话 chat_id={chat_id}。请直接、简洁地回复。"
             "如果用户要求记住什么，使用 write_memory 工具。"
             "如果涉及日程，使用 calendar 工具。"
             "如果用户询问你的配置或要求你修改自己（如人格、记忆），使用 read_self_file / write_self_file 工具。"

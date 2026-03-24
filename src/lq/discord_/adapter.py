@@ -553,6 +553,7 @@ class DiscordAdapter(PlatformAdapter):
             image_keys=image_keys,
             reply_to_id=reply_to_id,
             timestamp=int(message.created_at.timestamp() * 1000),
+            platform="discord",
             raw=message,
         )
 

@@ -51,6 +51,7 @@ class IncomingMessage:
     image_keys: list[str] = field(default_factory=list)
     reply_to_id: str = ""
     timestamp: int = 0                    # Unix 毫秒
+    platform: str = ""                    # 来源平台标识: feishu/discord/telegram/wechat/local
     raw: Any = None                       # 内核不访问
 
 

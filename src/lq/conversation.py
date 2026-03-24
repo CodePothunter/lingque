@@ -118,6 +118,7 @@ class LocalAdapter(PlatformAdapter):
                 sender_name="用户",
                 message_type=MessageType.TEXT,
                 text=user_input,
+                platform="local",
             )
             self._turn_done.clear()
             await self._queue.put({"event_type": "message", "message": msg})
@@ -159,6 +160,7 @@ class LocalAdapter(PlatformAdapter):
                         sender_name="用户",
                         message_type=MessageType.TEXT,
                         text=line,
+                        platform="local",
                     )
                     await self._queue.put({"event_type": "message", "message": msg})
             except asyncio.CancelledError:
@@ -441,6 +443,7 @@ async def _dispatch_and_wait(
         sender_name="用户",
         message_type=MessageType.TEXT,
         text=text,
+        platform="local",
     )
     adapter._turn_done.clear()
 

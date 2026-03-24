@@ -1154,6 +1154,7 @@ class AssistantGateway:
                         sender_name="用户",
                         message_type=MessageType.TEXT,
                         text=line,
+                        platform="local",
                     )
                     await self.queue.put({"event_type": "message", "message": msg})
             except asyncio.CancelledError:

@@ -402,6 +402,7 @@ class FeishuAdapter(PlatformAdapter):
             image_keys=image_keys,
             reply_to_id=parent_id,
             timestamp=int(time.time() * 1000),
+            platform="feishu",
             raw=message,
         )
 
@@ -637,6 +638,7 @@ class FeishuAdapter(PlatformAdapter):
                             text=msg.get("text", ""),
                             reply_to_id=msg.get("parent_id", ""),
                             timestamp=int(msg.get("create_time", "0") or "0"),
+                            platform="feishu",
                         )
                         self._queue.put_nowait({"event_type": "message", "message": polled_msg})
 

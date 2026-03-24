@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from pathlib import Path
@@ -17,7 +18,7 @@ from lq.platform.types import (
     OutgoingMessage,
     SenderType,
 )
-from lq.wechat.auth import ensure_credentials, load_credentials, save_credentials
+from lq.wechat.auth import ensure_credentials
 from lq.wechat.ilink import (
     ITEM_TYPE_IMAGE,
     ITEM_TYPE_TEXT,
@@ -39,12 +40,15 @@ class WechatAdapter(PlatformAdapter):
     - 首次启动自动 QR 码登录
     - 凭证持久化，重启免登
     - "正在输入..." 状态支持
+    - 图片收发（CDN AES-128-ECB 加解密）
     - 长轮询自动重连（指数退避）
     """
 
     def __init__(self, home: Path) -> None:
         self._home = home
         self._client: ILinkClient | None = None
+        self._bot_token = ""
+        self._base_url = ""
         self._queue: asyncio.Queue | None = None
         self._raw_queue: asyncio.Queue = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
@@ -78,6 +82,8 @@ class WechatAdapter(PlatformAdapter):
             return self._identity
 
         creds = await ensure_credentials(self._home)
+        self._bot_token = creds.bot_token
+        self._base_url = creds.base_url
         self._client = ILinkClient(creds.bot_token, creds.bot_id, creds.base_url)
         self._identity = BotIdentity(bot_id=creds.bot_id, bot_name="WeChat Bot")
         return self._identity
@@ -106,26 +112,89 @@ class WechatAdapter(PlatformAdapter):
         logger.info("微信适配器已停止")
 
     async def send(self, message: OutgoingMessage) -> str | None:
-        """发送文本消息。"""
+        """发送消息（文本或图片）。"""
         if not self._client:
             return None
 
-        # Extract user_id from chat_id (format: user_id@im.wechat)
+        # iLink 的 user_id 已经包含 @im.wechat 后缀，直接使用
         user_id = message.chat_id
-        if user_id.endswith("@im.wechat"):
-            user_id = user_id[: -len("@im.wechat")]
 
+        context_token = self._context_tokens.get(user_id, "")
+
+        # 发送图片
+        if message.image_path:
+            return await self._send_image(user_id, message.text, message.image_path, context_token)
+
+        # 发送文本
         text = message.text
         if message.card:
             text = self._convert_card_to_text(message.card)
 
-        context_token = self._context_tokens.get(user_id, "")
         success = await self._client.send_message(user_id, text, context_token)
-
         if success:
             self._msg_counter += 1
             return f"wechat_{self._msg_counter}"
         return None
+
+    async def _send_image(
+        self, user_id: str, caption: str, image_path: str, context_token: str,
+    ) -> str | None:
+        """加密上传图片到 CDN 并发送图片消息。"""
+        try:
+            from lq.wechat.cdn import upload_image
+
+            file_data = Path(image_path).read_bytes()
+            uploaded = await upload_image(
+                file_data=file_data,
+                to_user_id=user_id,
+                bot_token=self._bot_token,
+                base_url=self._base_url,
+            )
+
+            # 构造图片消息 item
+            image_item = {
+                "type": ITEM_TYPE_IMAGE,
+                "image_item": {
+                    "media": {
+                        "encrypt_query_param": uploaded["encrypt_query_param"],
+                        "aes_key": uploaded["aes_key_b64"],
+                        "encrypt_type": 1,
+                    },
+                    "mid_size": uploaded["ciphertext_size"],
+                },
+            }
+
+            # 如果有文字说明，先发文字再发图片
+            items = []
+            if caption:
+                items.append({"type": ITEM_TYPE_TEXT, "text_item": {"text": caption}})
+            items.append(image_item)
+
+            # 每个 item 单独发送（与官方实现一致）
+            import uuid
+            for item in items:
+                payload = {
+                    "msg": {
+                        "from_user_id": "",
+                        "to_user_id": user_id,
+                        "client_id": str(uuid.uuid4()),
+                        "message_type": 2,  # BOT
+                        "message_state": 2,  # FINISH
+                        "item_list": [item],
+                        "context_token": context_token,
+                    },
+                    "base_info": {},
+                }
+                await self._client._client.post(
+                    "/ilink/bot/sendmessage", json=payload,
+                )
+
+            self._msg_counter += 1
+            logger.info("微信图片发送成功: %s", image_path)
+            return f"wechat_{self._msg_counter}"
+        except Exception:
+            logger.exception("微信图片发送失败: %s", image_path)
+            return None
 
     async def start_thinking(self, message_id: str) -> str | None:
         """发送 "正在输入..." 状态。"""
@@ -169,8 +238,37 @@ class WechatAdapter(PlatformAdapter):
     async def fetch_media(
         self, message_id: str, resource_key: str
     ) -> tuple[str, str] | None:
-        """暂不支持媒体获取。"""
-        return None
+        """下载并解密微信 CDN 图片。
+
+        resource_key 是 JSON 字符串: {"encrypt_query_param": "...", "aes_key": "..."}
+        返回 (base64_data, mime_type)。
+        """
+        try:
+            from lq.wechat.cdn import download_and_decrypt
+
+            ref = json.loads(resource_key)
+            encrypt_query_param = ref.get("encrypt_query_param", "")
+            aes_key = ref.get("aes_key", "")
+            if not encrypt_query_param or not aes_key:
+                logger.warning("fetch_media: 缺少 CDN 参数")
+                return None
+
+            decrypted = await download_and_decrypt(encrypt_query_param, aes_key)
+            b64 = base64.b64encode(decrypted).decode()
+
+            # 简单检测 MIME 类型
+            mime = "image/jpeg"
+            if decrypted[:8] == b"\x89PNG\r\n\x1a\n":
+                mime = "image/png"
+            elif decrypted[:4] == b"GIF8":
+                mime = "image/gif"
+            elif decrypted[:4] == b"RIFF" and decrypted[8:12] == b"WEBP":
+                mime = "image/webp"
+
+            return b64, mime
+        except Exception:
+            logger.exception("fetch_media 失败: %s", resource_key[:60])
+            return None
 
     async def resolve_name(self, user_id: str) -> str:
         """解析用户名。"""
@@ -291,8 +389,12 @@ class WechatAdapter(PlatformAdapter):
                             text_parts.append(text_item["text"])
                     elif item_type == ITEM_TYPE_IMAGE:
                         image_item = item.get("image_item")
-                        if image_item and image_item.get("url"):
-                            image_keys.append(image_item["url"])
+                        if image_item:
+                            # 将 CDN 引用信息序列化为 JSON 作为 image_key
+                            # fetch_media 时解析并下载解密
+                            cdn_ref = self._extract_cdn_ref(image_item)
+                            if cdn_ref:
+                                image_keys.append(cdn_ref)
 
                 text = "\n".join(text_parts)
                 if not text and not image_keys:
@@ -302,8 +404,8 @@ class WechatAdapter(PlatformAdapter):
                 self._msg_counter += 1
                 msg_id = f"wechat_{self._msg_counter}"
 
-                # Use user_id@im.wechat as chat_id
-                chat_id = f"{from_user}@im.wechat"
+                # from_user_id 已包含 @im.wechat 后缀，直接用作 chat_id
+                chat_id = from_user
 
                 # Record mapping for typing
                 self._msg_user_map[msg_id] = from_user
@@ -326,6 +428,7 @@ class WechatAdapter(PlatformAdapter):
                     text=text.strip(),
                     image_keys=image_keys,
                     is_mention_bot=True,  # private chat = always mentioned
+                    platform="wechat",
                     raw=msg,
                 )
 
@@ -339,6 +442,28 @@ class WechatAdapter(PlatformAdapter):
     # ------------------------------------------------------------------
     # Internal: helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_cdn_ref(image_item: dict) -> str:
+        """从 ImageItem 提取 CDN 引用信息，序列化为 JSON 字符串。
+
+        用于 image_keys，后续 fetch_media 时解析下载。
+        """
+        media = image_item.get("media", {})
+        encrypt_query_param = media.get("encrypt_query_param", "")
+        aes_key = media.get("aes_key", "") or image_item.get("aeskey", "")
+
+        if not encrypt_query_param or not aes_key:
+            # fallback: 尝试直接 URL
+            url = image_item.get("url", "")
+            if url:
+                return json.dumps({"url": url})
+            return ""
+
+        return json.dumps({
+            "encrypt_query_param": encrypt_query_param,
+            "aes_key": aes_key,
+        })
 
     def _load_sync_buf(self) -> str:
         """Load sync buf from disk."""
