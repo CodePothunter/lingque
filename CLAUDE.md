@@ -39,6 +39,7 @@ The codebase is split into a platform-agnostic core and platform-specific adapte
   - `multi.py`: `MultiAdapter` — composite adapter that wraps multiple adapters for multi-platform mode; routes outgoing messages back to the originating adapter based on chat_id tracking
 - **`feishu/adapter.py`** — `FeishuAdapter` implementing `PlatformAdapter`. Wraps `FeishuSender` + `FeishuListener` internally; handles event conversion, @mention resolution, bot message polling, and standard card → Feishu card conversion.
 - **`conversation.py`** — `LocalAdapter` implementing `PlatformAdapter` for terminal-based local chat mode. Two modes: **gateway mode** (`home` set) starts `_read_stdin()` and `_watch_inbox()` event sources that push to queue; **chat mode** (`home=None`) uses passive connect with direct `router.handle()` calls.
+- **`wechat/adapter.py`** — `WechatAdapter` implementing `PlatformAdapter`. Uses iLink API (`ilinkai.weixin.qq.com`) for WeChat bot messaging: long-poll for receiving, HTTP for sending, typing indicator support. QR code login on first use, credentials auto-persisted.
 
 The core (router, gateway, memory) only depends on `PlatformAdapter` and standard types — never on Feishu SDK directly.
 
@@ -49,6 +50,7 @@ All adapters produce standard events through the same unified path:
 ```
 Event sources (per adapter):
   FeishuAdapter:  Feishu WS → _event_converter → queue.put()
+  WechatAdapter:  iLink long-poll → _event_converter → queue.put()
   LocalAdapter:   stdin → _read_stdin → queue.put()  |  inbox.txt → _watch_inbox → queue.put()
 
 Unified pipeline:
@@ -73,6 +75,7 @@ Unified pipeline:
 - **intent.py + subagent.py** — Post-processing pipeline: detects missed tool calls in LLM responses, uses lightweight LLM call to extract parameters, then executes the tool.
 - **buffer.py** — Group chat message accumulator with threshold/timeout triggers.
 - **feishu/** — Feishu integration (internal to FeishuAdapter): `sender.py` (REST API calls), `listener.py` (WebSocket events), `calendar.py` (event CRUD), `cards.py` (card builder).
+- **wechat/** — WeChat integration (internal to WechatAdapter): `ilink.py` (iLink HTTP API client), `auth.py` (QR code login + credential management).
 
 ### Instance Workspace
 

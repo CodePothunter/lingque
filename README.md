@@ -115,6 +115,7 @@ These "personas" are not gimmicks — they're defined in `SOUL.md` and directly 
   - **Feishu**: A Feishu custom app (with IM + Calendar permissions)
   - **Discord**: A Discord bot application with Message Content Intent enabled
   - **Telegram**: A Telegram bot token from @BotFather
+  - **WeChat**: A WeChat account (first-time use requires QR code scan login)
 
 ### Install
 
@@ -144,6 +145,7 @@ FEISHU_APP_ID=cli_xxxxx
 FEISHU_APP_SECRET=xxxxx
 DISCORD_BOT_TOKEN=xxxxx
 TELEGRAM_BOT_TOKEN=xxxxx
+WECHAT_BOT_TOKEN=xxxxx  # (optional — auto-saved after QR login)
 ```
 
 ### Initialize an Instance
@@ -193,6 +195,9 @@ uv run lq start @奶油 --adapter discord
 # Telegram mode
 uv run lq start @奶油 --adapter telegram
 
+# WeChat mode
+uv run lq start @奶油 --adapter wechat
+
 # Local-only mode (no platform credentials needed)
 uv run lq start @奶油 --adapter local
 
@@ -200,6 +205,7 @@ uv run lq start @奶油 --adapter local
 uv run lq start @奶油 --adapter feishu,local
 uv run lq start @奶油 --adapter discord,local
 uv run lq start @奶油 --adapter telegram,local
+uv run lq start @奶油 --adapter wechat,local
 uv run lq start @奶油 --adapter feishu,discord,local
 uv run lq start @奶油 --adapter feishu,telegram,local
 
@@ -226,7 +232,7 @@ uv run lq stop @奶油            # stop
 | Command | Description |
 |---------|-------------|
 | `uv run lq init --name NAME [--from-env .env]` | Initialize instance |
-| `uv run lq start @NAME [--adapter TYPE] [--show-thinking]` | Start (TYPE: `feishu`, `discord`, `telegram`, `local`, or comma-separated like `discord,local`). `--show-thinking` is a flag (off by default) that enables tool call and thinking process output |
+| `uv run lq start @NAME [--adapter TYPE] [--show-thinking]` | Start (TYPE: `feishu`, `discord`, `telegram`, `wechat`, `local`, or comma-separated like `discord,local`). `--show-thinking` is a flag (off by default) that enables tool call and thinking process output |
 | `uv run lq stop @NAME` | Stop |
 | `uv run lq restart @NAME [--adapter TYPE]` | Restart |
 | `uv run lq list` | List all instances |
@@ -302,6 +308,21 @@ In Discord, DM the bot or @mention it in a channel to chat.
 
 In Telegram, DM the bot or @mention it in a group to chat.
 
+### WeChat (微信)
+
+1. Start with `--adapter wechat`:
+   ```bash
+   uv run lq start @NAME --adapter wechat
+   ```
+2. On first run, a login link will be displayed:
+   - **Foreground**: link printed to terminal
+   - **Daemon/background**: check `~/.lq-{slug}/wechat_qr.txt` or `lq logs @NAME`
+3. Open the link on your phone and confirm login in WeChat
+4. Credentials are saved automatically — subsequent starts skip login. The link file is cleaned up after success.
+5. Features: text messaging, "typing..." indicator support
+
+DM the bot's WeChat account to chat. All conversations are private (1:1).
+
 ---
 
 ## Full Feature List
@@ -310,7 +331,7 @@ In Telegram, DM the bot or @mention it in a group to chat.
 <summary><strong>Expand to see all features</strong></summary>
 
 - **Platform-agnostic core** — `PlatformAdapter` ABC decouples the entire engine from any specific chat platform; the router, memory, session, and tool systems have zero platform-specific imports. Adding a new platform (Slack, etc.) requires only one adapter file
-- **Pluggable adapters** — Ships with Feishu (Lark), Discord, Telegram, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
+- **Pluggable adapters** — Ships with Feishu (Lark), Discord, Telegram, WeChat, and local terminal adapters; all go through the same unified event pipeline. Run on any single platform or combine multiple simultaneously
 - **Local chat mode** — `lq chat @name` launches an interactive terminal conversation with full tool support, no external chat platform credentials required
 - **Long-term memory** — SOUL.md persona + MEMORY.md global memory + per-chat memory + daily journals
 - **Self-evolution system** — Five interlocking config files enable autonomous growth: `SOUL.md` (persona/behavioral rules), `MEMORY.md` (long-term knowledge), `HEARTBEAT.md` (scheduled task templates), `CURIOSITY.md` (curiosity log), `EVOLUTION.md` (evolution log)
@@ -617,6 +638,7 @@ platform/
 
 feishu/adapter.py    — FeishuAdapter (wraps sender + listener internally)
 discord_/adapter.py  — DiscordAdapter (wraps sender + discord.py client in daemon thread)
+wechat/adapter.py    — WechatAdapter (iLink long-poll + HTTP send)
 conversation.py      — LocalAdapter (terminal mode, two modes: gateway with stdin/inbox event sources, chat with passive connect)
 ```
 
@@ -630,6 +652,7 @@ All adapters produce standard events through the same unified path:
 Event sources (per adapter):
   FeishuAdapter:   Feishu WS → _event_converter → queue.put()
   DiscordAdapter:  discord.py WS (daemon thread) → _event_converter → queue.put()
+  WechatAdapter:   iLink long-poll → _event_converter → queue.put()
   LocalAdapter:    stdin → _read_stdin → queue.put()
                    inbox.txt → _watch_inbox → queue.put()
 
@@ -646,6 +669,7 @@ Output:
   router → adapter.start_thinking() → adapter.send(OutgoingMessage) → adapter.stop_thinking()
     FeishuAdapter:   OnIt emoji → REST API → remove emoji
     DiscordAdapter:  typing indicator (8s refresh) → REST API (auto-chunk at 2000 chars) → cancel typing
+    WechatAdapter:   sendtyping(typing) → sendmessage → sendtyping(cancel)
     LocalAdapter:    ⏳ thinking indicator → terminal card/text → clear indicator
 ```
 
@@ -680,6 +704,12 @@ Edit `~/.lq-{slug}/config.json`:
     "bot_token": "xxxxx",
     "bot_id": ""
   },
+  "wechat": {
+    "bot_token": "",
+    "bot_id": "",
+    "base_url": "",
+    "owner_chat_id": ""
+  },
   "heartbeat_interval": 3600,
   "active_hours": [8, 23],
   "cost_alert_daily": 5.0,
@@ -704,6 +734,7 @@ Edit `~/.lq-{slug}/config.json`:
 | `feishu.app_id` / `app_secret` | Feishu app credentials |
 | `discord.bot_token` | Discord bot token (`bot_id` is auto-populated on first start) |
 | `telegram.bot_token` | Telegram bot token from @BotFather (`bot_id` is auto-populated on first start) |
+| `wechat.bot_token` | WeChat iLink bot token (auto-saved after QR login) |
 | `heartbeat_interval` | Heartbeat interval (seconds) |
 | `active_hours` | Active hours `[start, end)` |
 | `cost_alert_daily` | Daily cost alert threshold (USD) |
@@ -782,9 +813,13 @@ src/lq/
 │   ├── sender.py       # REST API calls (internal to adapter)
 │   ├── calendar.py     # Calendar API
 │   └── cards.py        # Card builder
-└── discord_/
-    ├── adapter.py      # DiscordAdapter (PlatformAdapter impl, wraps sender + discord.py client)
-    └── sender.py       # Discord REST API calls via httpx (internal to adapter)
+├── discord_/
+│   ├── adapter.py      # DiscordAdapter (PlatformAdapter impl, wraps sender + discord.py client)
+│   └── sender.py       # Discord REST API calls via httpx (internal to adapter)
+└── wechat/
+    ├── adapter.py      # WechatAdapter (PlatformAdapter impl, iLink long-poll)
+    ├── ilink.py        # iLink HTTP API client (internal to adapter)
+    └── auth.py         # QR code login + credential management
 
 tests/
 ├── test_platform.py        # Platform abstraction unit tests (pytest)

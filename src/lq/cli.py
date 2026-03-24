@@ -208,6 +208,8 @@ def start(instance: str, adapter_str: str, show_thinking: bool) -> None:
     from lq.gateway import AssistantGateway
     gw = AssistantGateway(config, home, adapter_types=adapter_types)
     asyncio.run(gw.run())
+    # 强制退出：避免第三方库残留线程/连接池导致进程挂起
+    raise SystemExit(0)
 
 
 @cli.command()
@@ -269,6 +271,8 @@ def restart(instance: str, adapter_str: str) -> None:
     from lq.gateway import AssistantGateway
     gw = AssistantGateway(config, home, adapter_types=adapter_types)
     asyncio.run(gw.run())
+    # 强制退出：避免第三方库残留线程/连接池导致进程挂起
+    raise SystemExit(0)
 
 
 @cli.command("list")

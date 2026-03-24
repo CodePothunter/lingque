@@ -64,6 +64,14 @@ class TelegramConfig:
 
 
 @dataclass
+class WechatConfig:
+    bot_token: str = ""      # iLink bot_token（QR 登录后获取）
+    bot_id: str = ""         # iLink bot_id（启动时自动获取）
+    base_url: str = ""       # iLink API base URL
+    owner_chat_id: str = ""  # 主人的 iLink user_id
+
+
+@dataclass
 class GroupConfig:
     chat_id: str = ""
     note: str = ""  # 群描述/用途，用于 LLM 介入判断
@@ -78,6 +86,7 @@ class LQConfig:
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    wechat: WechatConfig = field(default_factory=WechatConfig)
     model: str = "glm-5"
     heartbeat_interval: int = 3600  # 秒
     active_hours: tuple[int, int] = (8, 23)  # 活跃时段
@@ -160,6 +169,14 @@ class LQConfig:
             owner_chat_id=tg.get("owner_chat_id", ""),
         )
 
+        wc = d.get("wechat", {})
+        cfg.wechat = WechatConfig(
+            bot_token=wc.get("bot_token", ""),
+            bot_id=wc.get("bot_id", ""),
+            base_url=wc.get("base_url", ""),
+            owner_chat_id=wc.get("owner_chat_id", ""),
+        )
+
         cfg.groups = [GroupConfig(**g) for g in d.get("groups", [])]
 
         # 兼容旧配置：没有 slug 字段时自动生成
@@ -226,4 +243,5 @@ def load_from_env(env_path: Path) -> LQConfig:
     cfg.feishu.app_secret = vals.get("FEISHU_APP_SECRET", "")
     cfg.discord.bot_token = vals.get("DISCORD_BOT_TOKEN", "")
     cfg.telegram.bot_token = vals.get("TELEGRAM_BOT_TOKEN", "")
+    cfg.wechat.bot_token = vals.get("WECHAT_BOT_TOKEN", "")
     return cfg

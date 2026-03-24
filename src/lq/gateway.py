@@ -36,7 +36,7 @@ from lq.tools import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
-KNOWN_ADAPTERS = {"feishu", "local", "discord", "telegram"}
+KNOWN_ADAPTERS = {"feishu", "local", "discord", "telegram", "wechat"}
 
 
 class AssistantGateway:
@@ -49,7 +49,7 @@ class AssistantGateway:
 
     @property
     def _owner_chat_id(self) -> str | None:
-        """解析主人 chat_id，优先 Telegram，回退 Discord，再回退飞书。"""
+        """解析主人 chat_id，优先 Telegram，回退 Discord，再回退微信，最后飞书。"""
         telegram_cfg = getattr(self.config, "telegram", None)
         if telegram_cfg:
             val = getattr(telegram_cfg, "owner_chat_id", None)
@@ -60,6 +60,11 @@ class AssistantGateway:
             val = getattr(discord_cfg, "owner_chat_id", None)
             if val:
                 return val
+        wechat_cfg = getattr(self.config, "wechat", None)
+        if wechat_cfg:
+            val = getattr(wechat_cfg, "owner_chat_id", None)
+            if val:
+                return val
         feishu_cfg = getattr(self.config, "feishu", None)
         if feishu_cfg:
             return getattr(feishu_cfg, "owner_chat_id", None)
@@ -67,9 +72,11 @@ class AssistantGateway:
 
     @staticmethod
     def _detect_chat_id_platform(chat_id: str) -> str | None:
-        """判断 chat_id 的平台格式：'feishu'、'discord'、'telegram' 或 None（未知）。"""
+        """判断 chat_id 的平台格式：'feishu'、'discord'、'telegram'、'wechat' 或 None（未知）。"""
         if chat_id.startswith(("oc_", "ou_", "on_")):
             return "feishu"
+        if chat_id.endswith("@im.wechat"):
+            return "wechat"
         # Telegram chat_id 可为负数（群组）
         stripped = chat_id.lstrip("-")
         if stripped.isdigit():
@@ -103,6 +110,13 @@ class AssistantGateway:
             if telegram_owner:
                 checks.append(("telegram.owner_chat_id", telegram_owner))
 
+        # wechat.owner_chat_id（如果存在）
+        wechat_cfg = getattr(self.config, "wechat", None)
+        if wechat_cfg:
+            wechat_owner = getattr(wechat_cfg, "owner_chat_id", "")
+            if wechat_owner:
+                checks.append(("wechat.owner_chat_id", wechat_owner))
+
         # groups[].chat_id
         for i, group in enumerate(self.config.groups):
             if group.chat_id:
@@ -112,7 +126,7 @@ class AssistantGateway:
             platform = self._detect_chat_id_platform(chat_id)
             if platform and platform not in active:
                 truncated = chat_id[:20] + "..." if len(chat_id) > 20 else chat_id
-                platform_labels = {"feishu": "飞书", "discord": "Discord", "telegram": "Telegram"}
+                platform_labels = {"feishu": "飞书", "discord": "Discord", "telegram": "Telegram", "wechat": "微信"}
                 platform_label = platform_labels.get(platform, platform)
                 logger.warning(
                     "配置一致性警告: %s='%s' 是%s格式，但未启用%s适配器。当前启用: %s",
@@ -152,6 +166,7 @@ class AssistantGateway:
         has_local = "local" in self.adapter_types
         has_discord = "discord" in self.adapter_types
         has_telegram = "telegram" in self.adapter_types
+        has_wechat = "wechat" in self.adapter_types
 
         # 凭证校验 + 提醒
         if has_feishu:
@@ -269,6 +284,32 @@ class AssistantGateway:
             adapters.append(telegram_adapter)
             if primary is None:
                 primary = telegram_adapter
+
+        if has_wechat:
+            from lq.wechat.adapter import WechatAdapter
+            wechat_adapter = WechatAdapter(self.home)
+            try:
+                identity = await wechat_adapter.get_identity()
+            except Exception as exc:
+                if len(self.adapter_types) > 1:
+                    logger.warning("微信身份获取失败，跳过微信适配器: %s", exc)
+                    self.adapter_types = [t for t in self.adapter_types if t != "wechat"]
+                    has_wechat = False
+                else:
+                    raise RuntimeError(
+                        f"微信身份获取失败（请检查凭证或重新扫码登录）: {exc}"
+                    ) from exc
+        if has_wechat:
+            if identity.bot_id:
+                self.config.wechat.bot_id = identity.bot_id
+            if not primary:
+                bot_open_id = identity.bot_id
+                bot_name = identity.bot_name or self.config.name
+            logger.info("微信适配器: id=%s name=%s",
+                        identity.bot_id, identity.bot_name)
+            adapters.append(wechat_adapter)
+            if primary is None:
+                primary = wechat_adapter
 
         if not adapters:
             raise RuntimeError("没有可用的适配器，无法启动")
