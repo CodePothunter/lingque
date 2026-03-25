@@ -176,10 +176,11 @@ class ILinkClient:
             resp = await self._client.post("/ilink/bot/sendmessage", json=payload)
             resp.raise_for_status()
             data: dict = resp.json()
-            if data.get("ret", -1) != 0:
+            ret = data.get("ret")
+            if ret is not None and ret != 0:
                 logger.warning(
                     "send_message failed: ret=%s errmsg=%s",
-                    data.get("ret"),
+                    ret,
                     data.get("errmsg", ""),
                 )
                 return False
