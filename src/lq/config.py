@@ -72,6 +72,18 @@ class WechatConfig:
 
 
 @dataclass
+class VoiceConfig:
+    stt_base_url: str = ""      # STT API 地址，如 "https://api.openai.com/v1"
+    stt_api_key: str = ""
+    stt_model: str = "whisper-1"
+    tts_base_url: str = ""      # TTS API 地址，如 "https://api.openai.com/v1"
+    tts_api_key: str = ""
+    tts_model: str = "tts-1"
+    tts_voice: str = "alloy"
+    tts_reply: bool = False     # True = 语音输入时回复文字+音频；False = 仅文字
+
+
+@dataclass
 class GroupConfig:
     chat_id: str = ""
     note: str = ""  # 群描述/用途，用于 LLM 介入判断
@@ -87,6 +99,7 @@ class LQConfig:
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     wechat: WechatConfig = field(default_factory=WechatConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
     model: str = "glm-5"
     heartbeat_interval: int = 3600  # 秒
     active_hours: tuple[int, int] = (8, 23)  # 活跃时段
@@ -177,6 +190,18 @@ class LQConfig:
             owner_chat_id=wc.get("owner_chat_id", ""),
         )
 
+        vc = d.get("voice", {})
+        cfg.voice = VoiceConfig(
+            stt_base_url=vc.get("stt_base_url", ""),
+            stt_api_key=vc.get("stt_api_key", ""),
+            stt_model=vc.get("stt_model", "whisper-1"),
+            tts_base_url=vc.get("tts_base_url", ""),
+            tts_api_key=vc.get("tts_api_key", ""),
+            tts_model=vc.get("tts_model", "tts-1"),
+            tts_voice=vc.get("tts_voice", "alloy"),
+            tts_reply=vc.get("tts_reply", False),
+        )
+
         cfg.groups = [GroupConfig(**g) for g in d.get("groups", [])]
 
         # 兼容旧配置：没有 slug 字段时自动生成
@@ -244,4 +269,16 @@ def load_from_env(env_path: Path) -> LQConfig:
     cfg.discord.bot_token = vals.get("DISCORD_BOT_TOKEN", "")
     cfg.telegram.bot_token = vals.get("TELEGRAM_BOT_TOKEN", "")
     cfg.wechat.bot_token = vals.get("WECHAT_BOT_TOKEN", "")
+
+    cfg.voice.stt_base_url = vals.get("VOICE_STT_BASE_URL", "")
+    cfg.voice.stt_api_key = vals.get("VOICE_STT_API_KEY", "")
+    cfg.voice.stt_model = vals.get("VOICE_STT_MODEL", "") or cfg.voice.stt_model
+    cfg.voice.tts_base_url = vals.get("VOICE_TTS_BASE_URL", "")
+    cfg.voice.tts_api_key = vals.get("VOICE_TTS_API_KEY", "")
+    cfg.voice.tts_model = vals.get("VOICE_TTS_MODEL", "") or cfg.voice.tts_model
+    cfg.voice.tts_voice = vals.get("VOICE_TTS_VOICE", "") or cfg.voice.tts_voice
+    tts_reply = vals.get("VOICE_TTS_REPLY", "").lower()
+    if tts_reply in ("true", "1", "yes"):
+        cfg.voice.tts_reply = True
+
     return cfg

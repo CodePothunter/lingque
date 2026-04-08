@@ -484,3 +484,63 @@ class ToolExecMixin:
             blocks.append({"type": "text", "text": "（用户发送了图片）"})
 
         return blocks
+
+    # ── 语音转文字 ──
+
+    async def _transcribe_audio(self, msg: IncomingMessage) -> str:
+        """下载语音消息并调用 STT 转写为文本。
+
+        返回 "[语音转文字] {text}"，失败时返回空字符串。
+        """
+        if not self.voice or not self.voice.stt_enabled:
+            return ""
+        if not msg.audio_keys:
+            return ""
+
+        import base64 as _b64
+
+        key = msg.audio_keys[0]
+        result = await self.adapter.fetch_media(msg.message_id, key)
+        if not result:
+            logger.warning("语音下载失败: msg=%s key=%s", msg.message_id, key[:40])
+            return ""
+
+        b64_data, mime_type = result
+        audio_bytes = _b64.b64decode(b64_data)
+
+        try:
+            text = await self.voice.transcribe(audio_bytes, mime_type)
+            if text:
+                logger.info("语音转文字成功: %s", text[:80])
+                return f"[语音转文字] {text}"
+        except Exception:
+            logger.exception("语音转文字失败")
+        return ""
+
+    async def _send_audio_reply(
+        self, text: str, chat_id: str, reply_to: str = "",
+    ) -> None:
+        """将文本合成为语音并发送。静默失败（降级为纯文本已在调用方完成）。"""
+        if not self.voice or not self.voice.tts_reply:
+            return
+
+        import os
+        import tempfile
+
+        try:
+            audio_bytes, mime_type = await self.voice.synthesize(text)
+            suffix = ".mp3" if "mpeg" in mime_type else ".ogg"
+            fd, temp_path = tempfile.mkstemp(suffix=suffix)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(audio_bytes)
+                await self.adapter.send(OutgoingMessage(
+                    chat_id, audio_path=temp_path, reply_to=reply_to,
+                ))
+            finally:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+        except Exception:
+            logger.debug("TTS 发送失败，降级为纯文本", exc_info=True)

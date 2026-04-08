@@ -22,6 +22,7 @@ from lq.wechat.auth import ensure_credentials
 from lq.wechat.ilink import (
     ITEM_TYPE_IMAGE,
     ITEM_TYPE_TEXT,
+    ITEM_TYPE_VOICE,
     MSG_STATE_FINISH,
     MSG_TYPE_USER,
     TYPING_STATUS_CANCEL,
@@ -378,9 +379,10 @@ class WechatAdapter(PlatformAdapter):
                         oldest = next(iter(self._context_tokens))
                         del self._context_tokens[oldest]
 
-                # Extract text and images
+                # Extract text, images, and voice
                 text_parts: list[str] = []
                 image_keys: list[str] = []
+                audio_keys: list[str] = []
                 for item in msg.get("item_list", []):
                     item_type = item.get("type", 0)
                     if item_type == ITEM_TYPE_TEXT:
@@ -390,14 +392,18 @@ class WechatAdapter(PlatformAdapter):
                     elif item_type == ITEM_TYPE_IMAGE:
                         image_item = item.get("image_item")
                         if image_item:
-                            # 将 CDN 引用信息序列化为 JSON 作为 image_key
-                            # fetch_media 时解析并下载解密
                             cdn_ref = self._extract_cdn_ref(image_item)
                             if cdn_ref:
                                 image_keys.append(cdn_ref)
+                    elif item_type == ITEM_TYPE_VOICE:
+                        voice_item = item.get("voice_item")
+                        if voice_item:
+                            cdn_ref = self._extract_cdn_ref(voice_item)
+                            if cdn_ref:
+                                audio_keys.append(cdn_ref)
 
                 text = "\n".join(text_parts)
-                if not text and not image_keys:
+                if not text and not image_keys and not audio_keys:
                     continue
 
                 # Generate message ID
@@ -424,9 +430,14 @@ class WechatAdapter(PlatformAdapter):
                         from_user,
                         from_user[-8:] if len(from_user) > 8 else from_user,
                     ),
-                    message_type=MessageType.IMAGE if image_keys else MessageType.TEXT,
+                    message_type=(
+                        MessageType.AUDIO if audio_keys
+                        else MessageType.IMAGE if image_keys
+                        else MessageType.TEXT
+                    ),
                     text=text.strip(),
                     image_keys=image_keys,
+                    audio_keys=audio_keys,
                     is_mention_bot=True,  # private chat = always mentioned
                     platform="wechat",
                     raw=msg,

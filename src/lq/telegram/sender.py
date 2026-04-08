@@ -408,6 +408,41 @@ class TelegramSender:
             logger.exception("发送文档失败: %s", file_path)
             return None
 
+    async def send_voice(
+        self,
+        chat_id: str | int,
+        file_path: str,
+        reply_to_message_id: str | int | None = None,
+    ) -> dict | None:
+        """发送语音消息（POST /sendVoice，multipart/form-data）。"""
+        import os
+
+        if not self._http:
+            self._http = httpx.AsyncClient(timeout=40.0)
+
+        url = f"{self._base_url}sendVoice"
+        filename = os.path.basename(file_path)
+
+        data: dict[str, Any] = {"chat_id": str(chat_id)}
+        if reply_to_message_id:
+            data["reply_to_message_id"] = str(reply_to_message_id)
+
+        try:
+            with open(file_path, "rb") as f:
+                files = {"voice": (filename, f)}
+                resp = await self._http.post(url, data=data, files=files)
+                resp.raise_for_status()
+                result = resp.json()
+
+            if not result.get("ok"):
+                logger.error("sendVoice 失败: %s", result.get("description", ""))
+                return None
+
+            return result.get("result")
+        except Exception:
+            logger.exception("发送语音失败: %s", file_path)
+            return None
+
     async def edit_message_text(
         self,
         chat_id: str | int,

@@ -76,6 +76,7 @@ Unified pipeline:
 - **buffer.py** — Group chat message accumulator with threshold/timeout triggers.
 - **feishu/** — Feishu integration (internal to FeishuAdapter): `sender.py` (REST API calls), `listener.py` (WebSocket events), `calendar.py` (event CRUD), `cards.py` (card builder).
 - **wechat/** — WeChat integration (internal to WechatAdapter): `ilink.py` (iLink HTTP API client), `auth.py` (QR code login + credential management).
+- **voice.py** — `VoiceService` wrapping OpenAI-compatible STT (`/audio/transcriptions`) and TTS (`/audio/speech`) endpoints via httpx. Injected into router by gateway; adapters pass `audio_keys` through `IncomingMessage` and `audio_path` through `OutgoingMessage`.
 
 ### Instance Workspace
 

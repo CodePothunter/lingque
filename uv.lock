@@ -879,7 +879,7 @@ wheels = [
 
 [[package]]
 name = "lingque"
-version = "1.2.0"
+version = "1.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -905,6 +905,9 @@ dev = [
 discord = [
     { name = "discord-py" },
 ]
+wechat-voice = [
+    { name = "pilk" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -916,6 +919,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
     { name = "json-repair", specifier = ">=0.58.0" },
     { name = "lark-oapi", specifier = ">=1.4" },
+    { name = "pilk", marker = "extra == 'wechat-voice'", specifier = ">=0.2" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.40" },
     { name = "pypinyin", specifier = ">=0.55.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -923,7 +927,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "telegramify-markdown", specifier = ">=0.1" },
 ]
-provides-extras = ["discord", "browser", "dev"]
+provides-extras = ["discord", "wechat-voice", "browser", "dev"]
 
 [[package]]
 name = "mcp"
@@ -1083,6 +1087,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
+]
+
+[[package]]
+name = "pilk"
+version = "0.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/bb/938dd697b6bc2d851ffec4ffe82ed20078e58bd0ef049e84f4d038d6f991/pilk-0.2.4.tar.gz", hash = "sha256:d4a1bcf93dc6ef5e95e0cfd728ed4ef4d49f9c0476d70816fecbe456cc762e7f", size = 226451, upload-time = "2023-05-26T03:32:34.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ff/06/80cac61bc7f791bcaae552ba90fb868f7af7503ef1c74e423cc20fca1a53/pilk-0.2.4-cp311-cp311-win_amd64.whl", hash = "sha256:a6692096607e8d77d348aeec00df633788c85b527aa83cbd803ddf508936db7f", size = 127024, upload-time = "2023-05-26T03:32:24.524Z" },
 ]
 
 [[package]]

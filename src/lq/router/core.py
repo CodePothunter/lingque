@@ -109,6 +109,7 @@ class MessageRouter(
         self.tool_registry: Any = None
         self.post_processor: Any = None
         self.config: Any = None  # LQConfig, 由 gateway 注入
+        self.voice: Any = None   # VoiceService, 由 gateway 注入
 
     # ── 事件入口 ──
 

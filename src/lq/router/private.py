@@ -25,9 +25,19 @@ class PrivateChatMixin:
         """处理私聊消息（带防抖：短时间连发多条会合并后统一处理）"""
         text = msg.text
         has_images = bool(msg.image_keys)
+        has_audio = bool(msg.audio_keys)
 
-        if not text and not has_images:
-            if msg.message_type not in (MessageType.TEXT, MessageType.RICH_TEXT, MessageType.IMAGE):
+        # 纯语音消息但 STT 未配置 → 提示不支持
+        if has_audio and not text and not has_images:
+            if not self.voice or not self.voice.stt_enabled:
+                await self.adapter.send(OutgoingMessage(
+                    msg.chat_id, "语音转文字功能未配置，请发文字消息给我。",
+                    reply_to=msg.message_id,
+                ))
+                return
+
+        if not text and not has_images and not has_audio:
+            if msg.message_type not in (MessageType.TEXT, MessageType.RICH_TEXT, MessageType.IMAGE, MessageType.AUDIO):
                 await self.adapter.send(OutgoingMessage(
                     msg.chat_id, NON_TEXT_REPLY_PRIVATE, reply_to=msg.message_id,
                 ))
@@ -35,7 +45,7 @@ class PrivateChatMixin:
 
         chat_id = msg.chat_id
         sender_name = msg.sender_name
-        log_preview = text[:80] if text else "[图片]"
+        log_preview = text[:80] if text else ("[语音]" if has_audio else "[图片]")
         logger.info("收到私聊 [%s]: %s", sender_name, log_preview)
 
         # 防抖：收集连续消息，延迟后统一处理
@@ -45,6 +55,8 @@ class PrivateChatMixin:
                 pending["texts"].append(text)
             if has_images:
                 pending.setdefault("image_msgs", []).append(msg)
+            if has_audio:
+                pending.setdefault("audio_msgs", []).append(msg)
             if pending.get("timer"):
                 pending["timer"].cancel()
             # 通知适配器：消息正在排队
@@ -66,6 +78,8 @@ class PrivateChatMixin:
             }
             if has_images:
                 entry["image_msgs"] = [msg]
+            if has_audio:
+                entry["audio_msgs"] = [msg]
             self._private_pending[chat_id] = entry
             loop = asyncio.get_running_loop()
             self._private_pending[chat_id]["timer"] = loop.call_later(
@@ -84,6 +98,13 @@ class PrivateChatMixin:
         message_id = pending["message_id"]
         sender_name = pending["sender_name"]
         platform = pending.get("platform", "")
+
+        # 语音转文字
+        audio_msgs: list[IncomingMessage] = pending.get("audio_msgs", [])
+        for amsg in audio_msgs:
+            transcribed = await self._transcribe_audio(amsg)
+            if transcribed:
+                combined_text = f"{combined_text}\n{transcribed}" if combined_text else transcribed
 
         # 构建多模态内容：下载图片并组装 content blocks
         image_msgs: list[IncomingMessage] = pending.get("image_msgs", [])
@@ -142,8 +163,12 @@ class PrivateChatMixin:
             if session.should_compact():
                 await self._compact_session(session)
 
+        # 语音输入时，可选发送 TTS 音频回复
+        if reply_text and audio_msgs:
+            await self._send_audio_reply(reply_text, chat_id, message_id)
+
         # 记录日志
-        log_preview = combined_text[:50] if combined_text else "[图片]"
+        log_preview = combined_text[:50] if combined_text else ("[语音]" if audio_msgs else "[图片]")
         self.memory.append_daily(f"- 私聊 [{sender_name}]: {log_preview}... → {'已回复' if reply_text else '回复失败'}\n", chat_id=chat_id)
 
         # 异步自我反思（fire-and-forget，不阻塞回复）

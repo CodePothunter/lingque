@@ -118,9 +118,22 @@ class GroupChatMixin:
         """处理群聊 @at 消息 — 必须回复"""
         text = msg.text
         has_images = bool(msg.image_keys)
+        has_audio = bool(msg.audio_keys)
 
-        if not text and not has_images:
-            if msg.message_type not in (MessageType.TEXT, MessageType.RICH_TEXT, MessageType.IMAGE):
+        # 语音转文字
+        if has_audio and not text:
+            if not self.voice or not self.voice.stt_enabled:
+                await self.adapter.send(OutgoingMessage(
+                    msg.chat_id, "语音转文字功能未配置，请发文字消息。",
+                    reply_to=msg.message_id,
+                ))
+                return
+            transcribed = await self._transcribe_audio(msg)
+            if transcribed:
+                text = transcribed
+
+        if not text and not has_images and not has_audio:
+            if msg.message_type not in (MessageType.TEXT, MessageType.RICH_TEXT, MessageType.IMAGE, MessageType.AUDIO):
                 await self.adapter.send(OutgoingMessage(
                     msg.chat_id, NON_TEXT_REPLY_GROUP, reply_to=msg.message_id,
                 ))

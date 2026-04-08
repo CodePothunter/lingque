@@ -239,6 +239,17 @@ class TelegramAdapter(PlatformAdapter):
                 return str(result.get("message_id", ""))
             return None
 
+        # 本地音频上传
+        if message.audio_path:
+            result = await self._sender.send_voice(
+                message.chat_id,
+                message.audio_path,
+                reply_to_message_id=reply_to,
+            )
+            if result:
+                return str(result.get("message_id", ""))
+            return None
+
         # 本地文件上传
         if message.file_path:
             caption = self._escape_for_markdown(text) if text else ""
@@ -581,6 +592,7 @@ class TelegramAdapter(PlatformAdapter):
         # 提取文本和图片
         text = msg.get("text", "") or ""
         image_keys: list[str] = []
+        audio_keys: list[str] = []
 
         # 处理图片
         if "photo" in msg:
@@ -648,6 +660,14 @@ class TelegramAdapter(PlatformAdapter):
             msg_type = MessageType.TEXT if doc_text_parts else MessageType.FILE
         elif "voice" in msg:
             msg_type = MessageType.AUDIO
+            voice_file_id = msg["voice"].get("file_id", "")
+            if voice_file_id:
+                audio_keys.append(voice_file_id)
+        elif "audio" in msg:
+            msg_type = MessageType.AUDIO
+            audio_file_id = msg["audio"].get("file_id", "")
+            if audio_file_id:
+                audio_keys.append(audio_file_id)
         elif "video" in msg:
             msg_type = MessageType.VIDEO
 
@@ -666,6 +686,7 @@ class TelegramAdapter(PlatformAdapter):
             mentions=mentions,
             is_mention_bot=is_mention_bot,
             image_keys=image_keys,
+            audio_keys=audio_keys,
             reply_to_id=reply_to_id,
             timestamp=timestamp,
             platform="telegram",

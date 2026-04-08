@@ -7,8 +7,8 @@ from __future__ import annotations
 # UI / User-Facing Messages
 # =====================================================================
 
-NON_TEXT_REPLY_PRIVATE = "目前只能处理文字、图片和文本文件（txt/md/json 等），语音什么的还处理不了。有事直接打字、发图或发文件给我就好。"
-NON_TEXT_REPLY_GROUP = "目前只能处理文字、图片和文本文件（txt/md/json 等），语音什么的还处理不了。有事打字、发图或发文件说就好。"
+NON_TEXT_REPLY_PRIVATE = "目前只能处理文字、图片、语音和文本文件（txt/md/json 等），视频什么的还处理不了。有事直接打字、发图、发语音或发文件给我就好。"
+NON_TEXT_REPLY_GROUP = "目前只能处理文字、图片、语音和文本文件（txt/md/json 等），视频什么的还处理不了。有事打字、发图、发语音或发文件说就好。"
 EMPTY_AT_FALLBACK = "（@了我但没说具体内容）"
 
 

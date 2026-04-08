@@ -32,7 +32,7 @@ from lq.platform.types import (
 logger = logging.getLogger(__name__)
 
 # 飞书不支持的消息类型
-_NON_TEXT_TYPES = {"file", "audio", "media", "sticker", "share_chat", "share_user"}
+_NON_TEXT_TYPES = {"file", "media", "sticker", "share_chat", "share_user"}
 
 # 飞书 MessageType 字符串 → 标准枚举映射
 _MSG_TYPE_MAP: dict[str, MessageType] = {
@@ -160,6 +160,10 @@ class FeishuAdapter(PlatformAdapter):
         if message.image_path:
             return await self._sender.send_image(message.chat_id, message.image_path)
 
+        # 音频附件：上传并发送文件消息
+        if message.audio_path:
+            return await self._sender.send_file(message.chat_id, message.audio_path, file_type="opus")
+
         if message.card:
             card_json = self._convert_standard_card(message.card)
             if message.reply_to:
@@ -183,6 +187,9 @@ class FeishuAdapter(PlatformAdapter):
     async def fetch_media(
         self, message_id: str, resource_key: str,
     ) -> tuple[str, str] | None:
+        if resource_key.startswith("audio:"):
+            file_key = resource_key[6:]
+            return await self._sender.download_file(message_id, file_key)
         return await self._sender.download_image(message_id, resource_key)
 
     # ── 认知 ──
@@ -336,6 +343,8 @@ class FeishuAdapter(PlatformAdapter):
         text = self._extract_text(message)
         # 提取图片 key
         image_keys = self._extract_image_keys(message)
+        # 提取音频 key
+        audio_keys = self._extract_audio_keys(message, msg_type_str)
 
         # 解析 @提及
         raw_mentions = getattr(message, "mentions", None)
@@ -400,6 +409,7 @@ class FeishuAdapter(PlatformAdapter):
             mentions=mentions,
             is_mention_bot=is_mention_bot,
             image_keys=image_keys,
+            audio_keys=audio_keys,
             reply_to_id=parent_id,
             timestamp=int(time.time() * 1000),
             platform="feishu",
@@ -562,6 +572,18 @@ class FeishuAdapter(PlatformAdapter):
                     if key:
                         keys.append(key)
         return keys
+
+    @staticmethod
+    def _extract_audio_keys(message: Any, msg_type_str: str) -> list[str]:
+        """从飞书音频消息中提取 file_key。"""
+        if msg_type_str != "audio":
+            return []
+        try:
+            content = json.loads(message.content)
+            file_key = content.get("file_key", "")
+            return [f"audio:{file_key}"] if file_key else []
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     # ── 内部：bot 消息轮询（飞书补偿） ──
 

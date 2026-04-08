@@ -254,6 +254,15 @@ class DiscordAdapter(PlatformAdapter):
                 reply_to=message.reply_to,
             )
 
+        # 音频附件：走 multipart file upload
+        if message.audio_path:
+            return await self._sender.send_message_with_file(
+                message.chat_id,
+                message.audio_path,
+                content=text,
+                reply_to=message.reply_to,
+            )
+
         # card → Discord Embed
         embed = None
         if message.card:
@@ -504,8 +513,9 @@ class DiscordAdapter(PlatformAdapter):
             text = text.replace(f"<#{channel.id}>", f"#{channel.name}")
         text = text.strip()
 
-        # 判断消息类型 + 提取图片 + 读取文本附件
+        # 判断消息类型 + 提取图片/音频 + 读取文本附件
         image_keys: list[str] = []
+        audio_keys: list[str] = []
         msg_type = MessageType.TEXT
         txt_parts: list[str] = []
         for attachment in message.attachments:
@@ -514,6 +524,9 @@ class DiscordAdapter(PlatformAdapter):
             if content_type.startswith("image/"):
                 image_keys.append(attachment.url)
                 msg_type = MessageType.IMAGE
+            elif content_type.startswith("audio/"):
+                audio_keys.append(attachment.url)
+                msg_type = MessageType.AUDIO
             elif _is_text_attachment(content_type, filename):
                 # 文本类附件：下载内容并合并到消息文本
                 result = await self._sender.download_attachment(attachment.url)
@@ -536,8 +549,13 @@ class DiscordAdapter(PlatformAdapter):
         # sender_type
         sender_type = SenderType.BOT if message.author.bot else SenderType.USER
 
-        # message_type：纯图片用 IMAGE，有文本时用 TEXT（图片通过 image_keys 传递）
-        final_msg_type = msg_type if (not text and image_keys) else MessageType.TEXT
+        # message_type：纯图片用 IMAGE，纯音频用 AUDIO，有文本时用 TEXT
+        if not text and audio_keys:
+            final_msg_type = MessageType.AUDIO
+        elif not text and image_keys:
+            final_msg_type = MessageType.IMAGE
+        else:
+            final_msg_type = MessageType.TEXT
 
         msg = IncomingMessage(
             message_id=msg_id,
@@ -551,6 +569,7 @@ class DiscordAdapter(PlatformAdapter):
             mentions=mentions,
             is_mention_bot=is_mention_bot,
             image_keys=image_keys,
+            audio_keys=audio_keys,
             reply_to_id=reply_to_id,
             timestamp=int(message.created_at.timestamp() * 1000),
             platform="discord",

@@ -49,6 +49,7 @@ class IncomingMessage:
     mentions: list[Mention] = field(default_factory=list)
     is_mention_bot: bool = False
     image_keys: list[str] = field(default_factory=list)
+    audio_keys: list[str] = field(default_factory=list)
     reply_to_id: str = ""
     timestamp: int = 0                    # Unix 毫秒
     platform: str = ""                    # 来源平台标识: feishu/discord/telegram/wechat/local
@@ -64,6 +65,7 @@ class OutgoingMessage:
     card: dict | None = None
     image_path: str = ""  # 本地图片文件路径，发送时作为附件
     file_path: str = ""   # 本地文件路径（txt/md/json 等），发送时作为文档附件
+    audio_path: str = ""  # 本地音频文件路径，发送时作为语音附件
 
 
 @dataclass

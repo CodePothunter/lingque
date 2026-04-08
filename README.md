@@ -146,7 +146,19 @@ FEISHU_APP_SECRET=xxxxx
 DISCORD_BOT_TOKEN=xxxxx
 TELEGRAM_BOT_TOKEN=xxxxx
 WECHAT_BOT_TOKEN=xxxxx  # (optional — auto-saved after QR login)
+
+# Optional — Voice STT/TTS (OpenAI-compatible endpoints)
+VOICE_STT_BASE_URL=https://api.openai.com/v1
+VOICE_STT_API_KEY=sk-xxxxx
+VOICE_STT_MODEL=whisper-1
+VOICE_TTS_BASE_URL=https://api.openai.com/v1
+VOICE_TTS_API_KEY=sk-xxxxx
+VOICE_TTS_MODEL=tts-1
+VOICE_TTS_VOICE=alloy
+VOICE_TTS_REPLY=false  # true = text + audio reply; false = text only
 ```
+
+See [`.env.example`](.env.example) for a complete template.
 
 ### Initialize an Instance
 
@@ -323,6 +335,40 @@ In Telegram, DM the bot or @mention it in a group to chat.
 
 DM the bot's WeChat account to chat. All conversations are private (1:1).
 
+### Voice Recognition & Synthesis (语音识别与合成)
+
+LingQue supports receiving voice messages and optionally replying with audio, using OpenAI-compatible STT/TTS API endpoints.
+
+**How it works:**
+1. User sends a voice message on any supported platform (Discord, Feishu, Telegram, WeChat)
+2. The adapter downloads the audio and passes it to the STT service for transcription
+3. The transcribed text is prefixed with `[语音转文字]` and sent to the LLM
+4. The LLM replies with text as usual
+5. If `VOICE_TTS_REPLY=true`, the text reply is also synthesized into audio and sent back
+
+**Configuration** — Add these to your `.env` (see [`.env.example`](.env.example)):
+
+| Variable | Description |
+|----------|-------------|
+| `VOICE_STT_BASE_URL` | STT API base URL (e.g. `https://api.openai.com/v1`) |
+| `VOICE_STT_API_KEY` | STT API key |
+| `VOICE_STT_MODEL` | STT model (default: `whisper-1`) |
+| `VOICE_TTS_BASE_URL` | TTS API base URL (e.g. `https://api.openai.com/v1`) |
+| `VOICE_TTS_API_KEY` | TTS API key |
+| `VOICE_TTS_MODEL` | TTS model (default: `tts-1`) |
+| `VOICE_TTS_VOICE` | TTS voice name (default: `alloy`) |
+| `VOICE_TTS_REPLY` | `true` = reply with text + audio; `false` = text only (default) |
+
+STT and TTS can use different providers — configure them independently.
+
+**WeChat voice note:** WeChat voice messages use Silk codec which Whisper doesn't support natively. LingQue auto-converts Silk → OGG/Opus before STT. This requires:
+```bash
+uv pip install -e '.[wechat-voice]'  # pilk (Silk decoder)
+sudo apt install ffmpeg               # PCM → OGG encoder
+```
+
+**Graceful degradation:** If voice config is not set, voice messages are ignored with a friendly "not supported" hint. If STT succeeds but TTS fails, the text reply still goes through.
+
 ---
 
 ## Full Feature List
@@ -344,6 +390,7 @@ DM the bot's WeChat account to chat. All conversations are private (1:1).
 - **Runtime tool creation** — The assistant can write, validate, and load new tool plugins during conversations
 - **Browser automation** — Built-in `browser_action` tool controls a Chromium browser via CDP: navigate, click, type, screenshot, read page content, execute JS, scroll, save/load cookies for session persistence. Each instance can use its own browser port for multi-instance isolation
 - **Browser Relay** — `browser_relay` custom tool controls the user's real local Chrome browser via a Chrome extension + WebSocket relay server, bypassing headless detection. Supports navigate, click (CSS selector or text matching), type (including contenteditable elements), screenshot, get page content, evaluate JS, and scroll. Uses CDP mouse events for realistic interactions
+- **Voice recognition & synthesis** — Incoming voice messages are automatically transcribed (STT) and fed to the LLM. Optionally replies with both text and audio (TTS). Uses OpenAI-compatible API endpoints, so it works with OpenAI, Azure, Groq, or any self-hosted Whisper/TTS server. Supported on Discord, Feishu, Telegram, and WeChat
 - **Image messaging** — `send_message` supports sending images as attachments on both Feishu and Discord. Combined with `browser_action screenshot`, the assistant can capture web pages and send them directly to users
 - **Generalized agent** — 26 built-in tools covering memory, calendar, messaging, web search, browser automation, code execution, file I/O, drift detection, and Claude Code delegation
 - **Multi-bot group collaboration** — Multiple independent bots coexist in the same group chat, auto-detect neighbors, avoid answering when not addressed, and autonomously infer each other's identities from message context
@@ -710,6 +757,16 @@ Edit `~/.lq-{slug}/config.json`:
     "base_url": "",
     "owner_chat_id": ""
   },
+  "voice": {
+    "stt_base_url": "https://api.openai.com/v1",
+    "stt_api_key": "",
+    "stt_model": "whisper-1",
+    "tts_base_url": "https://api.openai.com/v1",
+    "tts_api_key": "",
+    "tts_model": "tts-1",
+    "tts_voice": "alloy",
+    "tts_reply": false
+  },
   "heartbeat_interval": 3600,
   "active_hours": [8, 23],
   "cost_alert_daily": 5.0,
@@ -735,6 +792,9 @@ Edit `~/.lq-{slug}/config.json`:
 | `discord.bot_token` | Discord bot token (`bot_id` is auto-populated on first start) |
 | `telegram.bot_token` | Telegram bot token from @BotFather (`bot_id` is auto-populated on first start) |
 | `wechat.bot_token` | WeChat iLink bot token (auto-saved after QR login) |
+| `voice.stt_base_url` / `stt_api_key` | STT endpoint + key (OpenAI-compatible) |
+| `voice.tts_base_url` / `tts_api_key` | TTS endpoint + key (OpenAI-compatible) |
+| `voice.tts_reply` | `true` = reply voice input with text + audio |
 | `heartbeat_interval` | Heartbeat interval (seconds) |
 | `active_hours` | Active hours `[start, end)` |
 | `cost_alert_daily` | Daily cost alert threshold (USD) |

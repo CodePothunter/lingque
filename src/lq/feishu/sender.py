@@ -650,6 +650,80 @@ class FeishuSender:
         b64 = base64.b64encode(raw_bytes).decode("ascii")
         return b64, media_type
 
+    async def download_file(
+        self, message_id: str, file_key: str,
+    ) -> tuple[str, str] | None:
+        """下载飞书消息中的文件资源（音频等），返回 (base64_data, media_type) 或 None。"""
+        try:
+            token = await self._get_tenant_token()
+        except Exception:
+            logger.error("下载文件失败（获取 token 异常）: msg=%s key=%s", message_id[-8:], file_key[:8], exc_info=True)
+            return None
+
+        try:
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}",
+                    params={"type": "file"},
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+        except httpx.TimeoutException:
+            logger.warning("下载文件超时: msg=%s key=%s", message_id[-8:], file_key[:8])
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.warning("下载文件 HTTP 错误: msg=%s key=%s status=%d", message_id[-8:], file_key[:8], e.response.status_code)
+            return None
+        except httpx.RequestError as e:
+            logger.warning("下载文件网络错误: msg=%s key=%s error=%s", message_id[-8:], file_key[:8], e)
+            return None
+
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        b64 = base64.b64encode(resp.content).decode("ascii")
+        logger.info("下载文件成功: msg=%s key=%s size=%d type=%s", message_id[-8:], file_key[:8], len(resp.content), content_type)
+        return b64, content_type
+
+    async def send_file(self, chat_id: str, file_path: str, file_type: str = "opus") -> str | None:
+        """上传本地文件到飞书并发送为文件消息，返回 message_id。"""
+        try:
+            token = await self._get_tenant_token()
+            async with httpx.AsyncClient(timeout=30.0) as http:
+                with open(file_path, "rb") as f:
+                    resp = await http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/files",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"file_type": file_type, "file_name": Path(file_path).name},
+                        files={"file": f},
+                    )
+                    resp.raise_for_status()
+                    file_key = resp.json().get("data", {}).get("file_key", "")
+        except Exception:
+            logger.exception("上传文件失败: %s", file_path)
+            return None
+
+        if not file_key:
+            return None
+
+        id_type = _infer_receive_id_type(chat_id)
+        req = (
+            CreateMessageRequest.builder()
+            .receive_id_type(id_type)
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("file")
+                .content(json.dumps({"file_key": file_key}))
+                .build()
+            )
+            .build()
+        )
+        resp = await self.client.im.v1.message.acreate(req)
+        if resp.code != 0:
+            logger.error("发送文件消息失败: code=%d msg=%s", resp.code, resp.msg)
+            return None
+        return resp.data.message_id
+
     @staticmethod
     def _compress_image(
         raw_bytes: bytes, media_type: str, max_bytes: int = 10 * 1024 * 1024,

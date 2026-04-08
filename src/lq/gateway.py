@@ -436,6 +436,15 @@ class AssistantGateway:
         router.cc_executor = cc_executor
         router.bash_executor = bash_executor
 
+        # 初始化语音服务
+        from lq.voice import VoiceService
+        voice_service = VoiceService(self.config.voice)
+        router.voice = voice_service
+        if voice_service.stt_enabled:
+            logger.info("语音转文字 (STT) 已启用: %s", self.config.voice.stt_base_url)
+        if voice_service.tts_enabled:
+            logger.info("文字转语音 (TTS) 已启用: %s", self.config.voice.tts_base_url)
+
         # 初始化 CC SDK 交互式执行器
         try:
             import claude_agent_sdk  # noqa: F401
