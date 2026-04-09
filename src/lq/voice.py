@@ -76,7 +76,7 @@ def _convert_silk_to_ogg(silk_data: bytes, sample_rate: int = 24000) -> bytes:
             f.write(silk_data)
 
         # silk → pcm
-        pilk.decode(silk_path, pcm_path, sample_rate=sample_rate)
+        pilk.decode(silk_path, pcm_path, pcm_rate=sample_rate)
 
         # pcm → ogg/opus via ffmpeg
         result = subprocess.run(
