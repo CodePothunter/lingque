@@ -110,7 +110,7 @@ These "personas" are not gimmicks — they're defined in `SOUL.md` and directly 
 
 - Python >= 3.11
 - [uv](https://docs.astral.sh/uv/)
-- Any Anthropic-compatible API endpoint (e.g. cloud provider proxies, self-hosted gateways)
+- An LLM API endpoint — supports **Anthropic** (native), **OpenAI** (Chat Completions / Responses API), or **Gemini** (via OpenAI-compatible proxy)
 - *(Optional)* Platform credentials — only needed for the adapter(s) you want to use:
   - **Feishu**: A Feishu custom app (with IM + Calendar permissions)
   - **Discord**: A Discord bot application with Message Content Intent enabled
@@ -136,9 +136,13 @@ uv run playwright install chromium
 Create a `.env` file in the project root (for multiple agents, use `.env.agent1`, `.env.agent2`, etc.):
 
 ```
-# Required — LLM API
+# Required — LLM API (pick one)
 ANTHROPIC_BASE_URL=https://your-provider.com/api/anthropic
 ANTHROPIC_AUTH_TOKEN=xxxxx
+# Or use OpenAI / Gemini:
+# OPENAI_API_KEY=sk-xxxxx
+# GEMINI_API_KEY=xxxxx
+API_FORMAT=anthropic  # "anthropic" | "openai" | "responses"
 
 # Optional — only needed for the adapters you use
 FEISHU_APP_ID=cli_xxxxx
@@ -151,10 +155,12 @@ WECHAT_BOT_TOKEN=xxxxx  # (optional — auto-saved after QR login)
 VOICE_STT_BASE_URL=https://api.openai.com/v1
 VOICE_STT_API_KEY=sk-xxxxx
 VOICE_STT_MODEL=whisper-1
+VOICE_STT_LANGUAGE=           # leave empty for auto-detect
 VOICE_TTS_BASE_URL=https://api.openai.com/v1
 VOICE_TTS_API_KEY=sk-xxxxx
 VOICE_TTS_MODEL=tts-1
 VOICE_TTS_VOICE=alloy
+VOICE_TTS_FORMAT=opus         # opus/mp3/wav/aac/flac/pcm
 VOICE_TTS_REPLY=false  # true = text + audio reply; false = text only
 ```
 
@@ -353,10 +359,12 @@ LingQue supports receiving voice messages and optionally replying with audio, us
 | `VOICE_STT_BASE_URL` | STT API base URL (e.g. `https://api.openai.com/v1`) |
 | `VOICE_STT_API_KEY` | STT API key |
 | `VOICE_STT_MODEL` | STT model (default: `whisper-1`) |
+| `VOICE_STT_LANGUAGE` | Language hint for STT (e.g. `zh`, `en`). Empty = auto-detect |
 | `VOICE_TTS_BASE_URL` | TTS API base URL (e.g. `https://api.openai.com/v1`) |
 | `VOICE_TTS_API_KEY` | TTS API key |
 | `VOICE_TTS_MODEL` | TTS model (default: `tts-1`) |
 | `VOICE_TTS_VOICE` | TTS voice name (default: `alloy`) |
+| `VOICE_TTS_FORMAT` | TTS output format: `opus`/`mp3`/`wav`/`aac`/`flac`/`pcm` (default: `opus`) |
 | `VOICE_TTS_REPLY` | `true` = reply with text + audio; `false` = text only (default) |
 
 STT and TTS can use different providers — configure them independently.
@@ -737,7 +745,8 @@ Edit `~/.lq-{slug}/config.json`:
   "api": {
     "base_url": "https://your-provider.com/api/anthropic",
     "api_key": "xxxxx",
-    "proxy": "http://127.0.0.1:7890"
+    "proxy": "http://127.0.0.1:7890",
+    "api_format": "anthropic"
   },
   "feishu": {
     "app_id": "cli_xxxxx",
@@ -761,10 +770,12 @@ Edit `~/.lq-{slug}/config.json`:
     "stt_base_url": "https://api.openai.com/v1",
     "stt_api_key": "",
     "stt_model": "whisper-1",
+    "stt_language": "",
     "tts_base_url": "https://api.openai.com/v1",
     "tts_api_key": "",
     "tts_model": "tts-1",
     "tts_voice": "alloy",
+    "tts_format": "opus",
     "tts_reply": false
   },
   "heartbeat_interval": 3600,
@@ -786,7 +797,8 @@ Edit `~/.lq-{slug}/config.json`:
 | `name` | Display name (supports Chinese) |
 | `slug` | Directory name (auto-generated pinyin) |
 | `model` | LLM model name |
-| `api.base_url` | Anthropic-compatible API endpoint |
+| `api.base_url` | LLM API endpoint |
+| `api.api_format` | API format: `anthropic` (default), `openai` (Chat Completions), or `responses` (OpenAI Responses API) |
 | `api.proxy` | HTTP proxy (used by both httpx and discord.py) |
 | `feishu.app_id` / `app_secret` | Feishu app credentials |
 | `discord.bot_token` | Discord bot token (`bot_id` is auto-populated on first start) |
@@ -794,6 +806,8 @@ Edit `~/.lq-{slug}/config.json`:
 | `wechat.bot_token` | WeChat iLink bot token (auto-saved after QR login) |
 | `voice.stt_base_url` / `stt_api_key` | STT endpoint + key (OpenAI-compatible) |
 | `voice.tts_base_url` / `tts_api_key` | TTS endpoint + key (OpenAI-compatible) |
+| `voice.stt_language` | Language hint for STT (empty = auto-detect) |
+| `voice.tts_format` | TTS output format (default: `opus`) |
 | `voice.tts_reply` | `true` = reply voice input with text + audio |
 | `heartbeat_interval` | Heartbeat interval (seconds) |
 | `active_hours` | Active hours `[start, end)` |
@@ -863,7 +877,7 @@ src/lq/
 │   ├── adapter.py      # PlatformAdapter ABC (abstract interface for all adapters)
 │   └── multi.py        # MultiAdapter (composite adapter for multi-platform mode)
 ├── executor/
-│   ├── api.py          # Anthropic API (with retry + tool use)
+│   ├── api.py          # LLM API — Anthropic / OpenAI / Responses (with retry + tool use)
 │   ├── claude_code.py  # Claude Code subprocess (legacy fallback)
 │   ├── cc_session.py   # Claude Code Agent SDK session (interactive execution + tiered approval)
 │   └── cc_experience.py # CC execution experience store (JSONL persistence + similarity search)

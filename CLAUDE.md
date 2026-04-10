@@ -70,7 +70,7 @@ Unified pipeline:
 - **memory.py** — Builds LLM system prompt from SOUL.md (persona), MEMORY.md (long-term memory), current time (CST/UTC+8), and self-awareness capabilities list.
 - **session.py** — Per-chat-id message history with auto-compaction at 50 messages (summarize + keep last 10).
 - **tools.py** — Runtime custom tool plugin system. Loads `.py` files from `tools/` directory, validates via AST (blocks dangerous modules: os, subprocess, shutil, sys, socket, ctypes, signal, multiprocessing, threading).
-- **executor/api.py** — Anthropic SDK wrapper with exponential backoff retry (status 429, 500, 502, 503, 529), `<think>` tag cleanup, model pricing table for cost tracking.
+- **executor/api.py** — LLM API executor supporting Anthropic (native), OpenAI (Chat Completions), and OpenAI Responses API formats. Includes exponential backoff retry (status 429, 500, 502, 503, 529), `<think>` tag cleanup, model pricing table for cost tracking. Format selected via `api.api_format` config field.
 - **executor/claude_code.py** — Claude Code subprocess executor (alternative to direct API).
 - **intent.py + subagent.py** — Post-processing pipeline: detects missed tool calls in LLM responses, uses lightweight LLM call to extract parameters, then executes the tool.
 - **buffer.py** — Group chat message accumulator with threshold/timeout triggers.
