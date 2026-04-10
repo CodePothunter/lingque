@@ -13,7 +13,11 @@ CST = timezone(timedelta(hours=8))
 logger = logging.getLogger(__name__)
 
 # 备份时排除的目录和文件
-EXCLUDE_NAMES = {"logs", ".tmp", "__pycache__", "gateway.pid"}
+EXCLUDE_NAMES = {
+    "logs", ".tmp", "__pycache__", "gateway.pid",
+    "node_modules", "output", "workspace", ".git",
+    "data",  # AppWorld 等评测基准数据，可重新下载
+}
 
 # 用于 mtime 变化检测的关键文件
 KEY_FILES = [
