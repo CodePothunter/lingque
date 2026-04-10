@@ -317,7 +317,7 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     )
 
     # 初始化核心组件
-    from lq.executor.api import DirectAPIExecutor
+    from lq.executor.api import create_executor
     from lq.executor.claude_code import BashExecutor, ClaudeCodeExecutor
     from lq.memory import MemoryManager
     from lq.session import SessionManager
@@ -329,7 +329,7 @@ async def run_conversation(home: Path, config: LQConfig, single_message: str = "
     await adapter.connect(queue)
 
     memory = MemoryManager(home, config=config)
-    executor = DirectAPIExecutor(config.api, config.model)
+    executor = create_executor(config.api, config.model)
     stats = StatsTracker(home)
     executor.stats = stats
     session_mgr = SessionManager(home)

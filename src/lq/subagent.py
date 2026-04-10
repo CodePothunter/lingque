@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from lq.executor.api import DirectAPIExecutor
+from lq.executor.api import DirectAPIExecutor, OpenAIExecutor
 from lq.prompts import EXTRACTION_PROMPTS, SUBAGENT_SYSTEM, SUBAGENT_CONTEXT_USER, SUBAGENT_CONTEXT_ASSISTANT
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class SubAgent:
     """轻量 SubAgent：用最小 LLM 调用提取工具参数"""
 
-    def __init__(self, executor: DirectAPIExecutor) -> None:
+    def __init__(self, executor: DirectAPIExecutor | OpenAIExecutor) -> None:
         self.executor = executor
 
     async def extract_params(

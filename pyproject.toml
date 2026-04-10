@@ -7,6 +7,7 @@ dependencies = [
     "click>=8.1",
     "lark-oapi>=1.4",
     "anthropic>=0.40",
+    "openai>=1.0",
     "python-dotenv>=1.0",
     "httpx[socks]>=0.27",
     "pypinyin>=0.55.0",

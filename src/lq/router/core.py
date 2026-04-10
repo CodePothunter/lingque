@@ -9,7 +9,7 @@ from collections import OrderedDict
 from typing import Any
 
 from lq.buffer import MessageBuffer
-from lq.executor.api import DirectAPIExecutor
+from lq.executor.api import DirectAPIExecutor, OpenAIExecutor
 from lq.memory import MemoryManager
 from lq.platform import (
     PlatformAdapter, IncomingMessage, OutgoingMessage,
@@ -56,7 +56,7 @@ class MessageRouter(
 
     def __init__(
         self,
-        executor: DirectAPIExecutor,
+        executor: DirectAPIExecutor | OpenAIExecutor,
         memory: MemoryManager,
         adapter: PlatformAdapter,
         bot_id: str,

@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from lq.executor.api import DirectAPIExecutor
+    from lq.executor.api import DirectAPIExecutor, OpenAIExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -632,7 +632,7 @@ class ReinforcementLearner:
     def __init__(
         self,
         workspace: Path,
-        executor: DirectAPIExecutor | None = None,
+        executor: DirectAPIExecutor | OpenAIExecutor | None = None,
     ) -> None:
         self.workspace = workspace
         self.executor = executor
