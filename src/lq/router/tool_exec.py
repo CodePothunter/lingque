@@ -529,7 +529,12 @@ class ToolExecMixin:
 
         try:
             audio_bytes, mime_type = await self.voice.synthesize(text)
-            suffix = ".mp3" if "mpeg" in mime_type else ".ogg"
+            if "mpeg" in mime_type or "mp3" in mime_type:
+                suffix = ".mp3"
+            elif "wav" in mime_type:
+                suffix = ".wav"
+            else:
+                suffix = ".ogg"
             fd, temp_path = tempfile.mkstemp(suffix=suffix)
             try:
                 with os.fdopen(fd, "wb") as f:

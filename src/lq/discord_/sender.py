@@ -122,6 +122,8 @@ class DiscordSender:
         url = f"{BASE_URL}/channels/{channel_id}/messages"
         filename = os.path.basename(file_path)
 
+        import json as _json
+
         payload: dict[str, Any] = {}
         if content:
             payload["content"] = content
@@ -131,11 +133,14 @@ class DiscordSender:
         try:
             async with httpx.AsyncClient(timeout=60.0) as http:
                 with open(file_path, "rb") as f:
-                    files = {"file": (filename, f)}
-                    # multipart 时不能用 Content-Type: application/json
+                    # Discord multipart 需要用 payload_json 传复杂结构
+                    files = {
+                        "file": (filename, f),
+                        "payload_json": (None, _json.dumps(payload), "application/json"),
+                    }
                     headers = {"Authorization": f"Bot {self._token}"}
                     resp = await http.post(
-                        url, headers=headers, data=payload, files=files,
+                        url, headers=headers, files=files,
                     )
                 resp.raise_for_status()
                 data = resp.json()

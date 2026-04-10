@@ -177,10 +177,12 @@ class VoiceService:
         self._stt_base_url = config.stt_base_url.rstrip("/")
         self._stt_api_key = config.stt_api_key
         self._stt_model = config.stt_model
+        self._stt_language = config.stt_language
         self._tts_base_url = config.tts_base_url.rstrip("/")
         self._tts_api_key = config.tts_api_key
         self._tts_model = config.tts_model
         self._tts_voice = config.tts_voice
+        self._tts_format = config.tts_format
         self._tts_reply = config.tts_reply
 
     @property
@@ -226,7 +228,12 @@ class VoiceService:
                         url,
                         headers=headers,
                         files={"file": (upload_filename, audio_data, mime_type)},
-                        data={"model": self._stt_model},
+                        data={
+                            k: v for k, v in {
+                                "model": self._stt_model,
+                                "language": self._stt_language,
+                            }.items() if v
+                        },
                     )
                 if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
                     delay = _BASE_DELAY * (2 ** attempt)
@@ -266,11 +273,13 @@ class VoiceService:
             "Authorization": f"Bearer {self._tts_api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, str] = {
             "model": self._tts_model,
             "voice": self._tts_voice,
             "input": text,
         }
+        if self._tts_format:
+            payload["response_format"] = self._tts_format
 
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):

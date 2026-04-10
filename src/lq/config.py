@@ -77,10 +77,12 @@ class VoiceConfig:
     stt_base_url: str = ""      # STT API 地址，如 "https://api.openai.com/v1"
     stt_api_key: str = ""
     stt_model: str = "whisper-1"
+    stt_language: str = ""      # STT 语言提示，如 "zh"(OpenAI) / "zh-CN"(tengen)，为空则自动检测
     tts_base_url: str = ""      # TTS API 地址，如 "https://api.openai.com/v1"
     tts_api_key: str = ""
     tts_model: str = "tts-1"
-    tts_voice: str = "alloy"
+    tts_voice: str = "alloy"    # TTS voice，如 "alloy"(OpenAI) / "zh-CN-XiaoxiaoNeural"(tengen)
+    tts_format: str = "opus"   # TTS 输出格式: opus/mp3/wav/aac/flac/pcm（推荐 opus，体积最小）
     tts_reply: bool = False     # True = 语音输入时回复文字+音频；False = 仅文字
 
 
@@ -197,10 +199,12 @@ class LQConfig:
             stt_base_url=vc.get("stt_base_url", ""),
             stt_api_key=vc.get("stt_api_key", ""),
             stt_model=vc.get("stt_model", "whisper-1"),
+            stt_language=vc.get("stt_language", ""),
             tts_base_url=vc.get("tts_base_url", ""),
             tts_api_key=vc.get("tts_api_key", ""),
             tts_model=vc.get("tts_model", "tts-1"),
             tts_voice=vc.get("tts_voice", "alloy"),
+            tts_format=vc.get("tts_format", "opus"),
             tts_reply=vc.get("tts_reply", False),
         )
 
@@ -281,10 +285,12 @@ def load_from_env(env_path: Path) -> LQConfig:
     cfg.voice.stt_base_url = vals.get("VOICE_STT_BASE_URL", "")
     cfg.voice.stt_api_key = vals.get("VOICE_STT_API_KEY", "")
     cfg.voice.stt_model = vals.get("VOICE_STT_MODEL", "") or cfg.voice.stt_model
+    cfg.voice.stt_language = vals.get("VOICE_STT_LANGUAGE", "")
     cfg.voice.tts_base_url = vals.get("VOICE_TTS_BASE_URL", "")
     cfg.voice.tts_api_key = vals.get("VOICE_TTS_API_KEY", "")
     cfg.voice.tts_model = vals.get("VOICE_TTS_MODEL", "") or cfg.voice.tts_model
     cfg.voice.tts_voice = vals.get("VOICE_TTS_VOICE", "") or cfg.voice.tts_voice
+    cfg.voice.tts_format = vals.get("VOICE_TTS_FORMAT", "") or cfg.voice.tts_format
     tts_reply = vals.get("VOICE_TTS_REPLY", "").lower()
     if tts_reply in ("true", "1", "yes"):
         cfg.voice.tts_reply = True
