@@ -54,7 +54,8 @@ class FeishuConfig:
 class DiscordConfig:
     bot_token: str = ""
     bot_id: str = ""  # 启动时自动获取
-    owner_chat_id: str = ""
+    owner_chat_id: str = ""   # guild text channel id（可选）
+    owner_user_id: str = ""   # 主人 Discord User ID → 运行时解析成 DM channel
 
 
 @dataclass
@@ -175,6 +176,7 @@ class LQConfig:
         dc = d.get("discord", {})
         cfg.discord = DiscordConfig(
             owner_chat_id=dc.get("owner_chat_id", ""),
+            owner_user_id=dc.get("owner_user_id", ""),
             bot_token=dc.get("bot_token", ""),
             bot_id=dc.get("bot_id", ""),
         )

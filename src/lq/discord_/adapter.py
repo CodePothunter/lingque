@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import threading
+from dataclasses import replace
 from typing import Any
 
 import discord
@@ -81,9 +82,15 @@ class DiscordAdapter(PlatformAdapter):
           ← send / react / typing 等出站操作
     """
 
-    def __init__(self, bot_token: str, proxy: str = "") -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        proxy: str = "",
+        owner_user_id: str = "",
+    ) -> None:
         self._bot_token = bot_token
         self._proxy = proxy
+        self._owner_user_id = owner_user_id
         self._sender = DiscordSender(bot_token)
         self._queue: asyncio.Queue | None = None
         self._raw_queue: asyncio.Queue = asyncio.Queue()
@@ -97,6 +104,11 @@ class DiscordAdapter(PlatformAdapter):
 
         # 缓存：user_id → display_name
         self._name_cache: dict[str, str] = {}
+
+        # 缓存：user_id → DM channel_id（bot 主动发 DM 时需要）
+        # 两条来源：(a) connect() 时对 owner_user_id 主动 POST /users/@me/channels
+        #          (b) _convert_message 里看到入站 DM 时顺手记录
+        self._user_dm_channels: dict[str, str] = {}
 
         # message_id → channel_id 映射（用于 react/edit/unsend）
         self._msg_channel_map: dict[str, str] = {}
@@ -191,6 +203,27 @@ class DiscordAdapter(PlatformAdapter):
             asyncio.create_task(self._event_converter(), name="discord-converter")
         )
 
+        # 预解析主人 DM channel（bot 主动私聊需要）
+        if self._owner_user_id:
+            try:
+                dm_channel_id = await self._sender.create_dm_channel(self._owner_user_id)
+                if dm_channel_id:
+                    self._user_dm_channels[self._owner_user_id] = dm_channel_id
+                    logger.info(
+                        "Discord 主人 DM channel 已解析: user=%s channel=%s",
+                        self._owner_user_id, dm_channel_id,
+                    )
+                else:
+                    logger.warning(
+                        "Discord 主人 DM channel 解析返回空: user=%s",
+                        self._owner_user_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "解析主人 DM channel 失败 user=%s — bot 与该用户可能无共同服务器",
+                    self._owner_user_id,
+                )
+
     async def disconnect(self) -> None:
         self._shutdown.set()
         # 取消 typing tasks
@@ -222,6 +255,27 @@ class DiscordAdapter(PlatformAdapter):
     # 飞书 chat_id 前缀：oc_（群聊）、ou_（用户）、on_（通知群）
     _FEISHU_PREFIXES = ("oc_", "ou_", "on_")
 
+    async def _resolve_send_target(self, chat_id: str) -> str:
+        """把"发给 user X"翻译成"发到 X 的 DM channel"。保守策略：只认白名单。
+
+        1. 缓存命中（connect 时预解析 + 入站 DM 时学到的）→ 返回缓存 channel_id
+        2. chat_id == owner_user_id 但缓存未命中 → 按需调 API 建 DM channel
+        3. 其他 → pass-through
+        """
+        cached = self._user_dm_channels.get(chat_id)
+        if cached:
+            return cached
+        if chat_id and chat_id == self._owner_user_id:
+            try:
+                dm_channel_id = await self._sender.create_dm_channel(chat_id)
+            except Exception:
+                logger.exception("即时解析 DM channel 失败 user=%s，回退 pass-through", chat_id)
+                return chat_id
+            if dm_channel_id:
+                self._user_dm_channels[chat_id] = dm_channel_id
+                return dm_channel_id
+        return chat_id
+
     async def send(self, message: OutgoingMessage) -> str | None:
         # 防御性校验：拒绝飞书格式的 chat_id
         if message.chat_id and message.chat_id.startswith(self._FEISHU_PREFIXES):
@@ -229,6 +283,12 @@ class DiscordAdapter(PlatformAdapter):
                 f"Discord adapter 收到飞书格式 chat_id: {message.chat_id[:20]}，"
                 "请检查路由逻辑是否将消息发送到了错误的平台"
             )
+
+        # user_id → DM channel_id 重写
+        if message.chat_id:
+            resolved = await self._resolve_send_target(message.chat_id)
+            if resolved != message.chat_id:
+                message = replace(message, chat_id=resolved)
 
         # 发消息前先取消该频道的 typing task，
         # 避免 send 后 typing 再次触发导致"正在输入"残留
@@ -466,6 +526,10 @@ class DiscordAdapter(PlatformAdapter):
         channel_id = str(message.channel.id)
         sender_id = str(message.author.id)
         msg_id = str(message.id)
+
+        # 顺手记录 DM channel 映射：以后 bot 主动发给该用户就不用再调 API
+        if chat_type == ChatType.PRIVATE:
+            self._user_dm_channels[sender_id] = channel_id
 
         # 记录 msg_id → channel_id
         self._record_msg_channel(msg_id, channel_id)

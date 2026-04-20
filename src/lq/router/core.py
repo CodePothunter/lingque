@@ -362,7 +362,10 @@ class MessageRouter(
             return None
         discord_cfg = getattr(self.config, "discord", None)
         if discord_cfg:
-            val = getattr(discord_cfg, "owner_chat_id", None)
+            val = (
+                getattr(discord_cfg, "owner_user_id", None)
+                or getattr(discord_cfg, "owner_chat_id", None)
+            )
             if val:
                 return val
         feishu_cfg = getattr(self.config, "feishu", None)

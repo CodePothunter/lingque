@@ -319,13 +319,19 @@ No setup required. Use `--adapter local` or `lq chat @NAME` for interactive term
    ```
    DISCORD_BOT_TOKEN=xxxxx
    ```
-5. Install the optional dependency and start:
+5. (Optional, required for autonomous DM) Get your own Discord **User ID** so the bot can proactively DM you (morning report, heartbeat-driven proactive messages, autonomous actions):
+   - In Discord, open **Settings → Advanced** and enable **Developer Mode**
+   - Right-click your own avatar → **Copy User ID**
+   - Write it into `~/.lq-{slug}/config.json` under `discord.owner_user_id`
+   - Make sure the bot and you share at least one guild (DM channels can only be opened between users with a mutual server)
+   - Leave `discord.owner_chat_id` empty unless you specifically want the bot to post to a guild text channel
+6. Install the optional dependency and start:
    ```bash
    uv pip install -e '.[discord]'
    uv run lq start @NAME --adapter discord
    ```
 
-In Discord, DM the bot or @mention it in a channel to chat.
+In Discord, DM the bot or @mention it in a channel to chat. For autonomous outbound DMs the adapter resolves `owner_user_id` → DM channel on connect via `POST /users/@me/channels` (cached for the session); inbound DMs also populate the cache, so any user who has DM'd the bot can be DM'd back.
 
 ### Telegram
 
@@ -772,7 +778,9 @@ Edit `~/.lq-{slug}/config.json`:
   },
   "discord": {
     "bot_token": "xxxxx",
-    "bot_id": ""
+    "bot_id": "",
+    "owner_chat_id": "",
+    "owner_user_id": ""
   },
   "telegram": {
     "bot_token": "xxxxx",
@@ -820,6 +828,8 @@ Edit `~/.lq-{slug}/config.json`:
 | `api.proxy` | HTTP proxy (used by both httpx and discord.py) |
 | `feishu.app_id` / `app_secret` | Feishu app credentials |
 | `discord.bot_token` | Discord bot token (`bot_id` is auto-populated on first start) |
+| `discord.owner_user_id` | Your Discord User ID — adapter resolves it to a DM channel at connect time so autonomous / heartbeat / morning-report messages can DM you. Requires the bot to share a guild with you. Leave empty to disable outbound DM |
+| `discord.owner_chat_id` | Optional guild text channel ID used as the outbound target instead of (or in addition to) DM. Takes lower priority than `owner_user_id` |
 | `telegram.bot_token` | Telegram bot token from @BotFather (`bot_id` is auto-populated on first start) |
 | `wechat.bot_token` | WeChat iLink bot token (auto-saved after QR login) |
 | `voice.stt_base_url` / `stt_api_key` | STT endpoint + key (OpenAI-compatible) |

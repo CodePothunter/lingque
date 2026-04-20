@@ -259,6 +259,19 @@ class DiscordSender:
             )
         return data
 
+    async def create_dm_channel(self, user_id: str) -> str:
+        """POST /users/@me/channels — 创建（或获取已有）与某用户的 DM channel。
+
+        返回 DM channel_id。Discord 对同一对 bot-user 多次调用会返回同一个 channel。
+        """
+        data = await self._request(
+            "POST", "/users/@me/channels",
+            json={"recipient_id": user_id},
+        )
+        if isinstance(data, dict):
+            return data.get("id", "")
+        return ""
+
     async def get_user(self, user_id: str) -> dict:
         """GET /users/{id} — 获取用户信息。"""
         try:

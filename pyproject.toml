@@ -15,6 +15,7 @@ dependencies = [
     "claude-agent-sdk>=0.1",
     "telegramify-markdown>=0.1",
     "cryptography>=42.0",
+    "pymupdf>=1.27.2.2",
 ]
 
 [project.optional-dependencies]

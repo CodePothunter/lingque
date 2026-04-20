@@ -57,7 +57,12 @@ class AssistantGateway:
                 return val
         discord_cfg = getattr(self.config, "discord", None)
         if discord_cfg:
-            val = getattr(discord_cfg, "owner_chat_id", None)
+            # 优先 owner_user_id（adapter 会在 send 时解析成 DM channel），
+            # 回退 owner_chat_id（guild text channel 直发）
+            val = (
+                getattr(discord_cfg, "owner_user_id", None)
+                or getattr(discord_cfg, "owner_chat_id", None)
+            )
             if val:
                 return val
         wechat_cfg = getattr(self.config, "wechat", None)
@@ -214,6 +219,7 @@ class AssistantGateway:
             discord_adapter = DiscordAdapter(
                 self.config.discord.bot_token,
                 proxy=self.config.api.proxy,
+                owner_user_id=getattr(self.config.discord, "owner_user_id", ""),
             )
             try:
                 identity = await discord_adapter.get_identity()
