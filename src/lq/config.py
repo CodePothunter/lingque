@@ -105,7 +105,7 @@ class LQConfig:
     wechat: WechatConfig = field(default_factory=WechatConfig)
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     model: str = "glm-5"
-    heartbeat_interval: int = 3600  # 秒
+    heartbeat_interval: int = 3600  # 秒；<=0 禁用心跳（自主行动循环不会触发）
     active_hours: tuple[int, int] = (8, 23)  # 活跃时段
     groups: list[GroupConfig] = field(default_factory=list)
     cost_alert_daily: float = 5.0  # USD

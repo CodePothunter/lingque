@@ -44,14 +44,23 @@ class HeartbeatRunner:
         
         self._load_state()
 
+    @property
+    def enabled(self) -> bool:
+        """心跳是否启用。base_interval <= 0 视为禁用。"""
+        return self.base_interval > 0
+
     def notify_did_work(self) -> None:
         """自主行动做了有意义的事，缩短下次间隔，重置空闲计数。"""
+        if not self.enabled:
+            return
         self._current_interval = self.min_interval
         self._idle_streak = 0
         logger.info("心跳间隔缩短至 %ds（有自主行动），空闲计数重置", self._current_interval)
 
     def notify_idle(self) -> None:
         """自主行动无事可做，指数退避恢复间隔，增加空闲计数。"""
+        if not self.enabled:
+            return
         self._current_interval = min(
             self._current_interval * 2,
             self.base_interval,
@@ -81,6 +90,16 @@ class HeartbeatRunner:
     async def run_forever(self, shutdown_event: asyncio.Event) -> None:
         """定时循环，检查活跃时段"""
         self._shutdown_event = shutdown_event
+
+        # heartbeat_interval <= 0 → 禁用心跳；仅等待 shutdown 以避免 task 提前退出
+        if not self.enabled:
+            logger.info(
+                "心跳已禁用 (heartbeat_interval=%d)，仅等待 shutdown_event",
+                self.base_interval,
+            )
+            await shutdown_event.wait()
+            return
+
         logger.info(
             "心跳启动: 基准间隔=%ds, 最短间隔=%ds, 活跃时段=%s, 无聊阈值=%d, 抖动比例=±%.0f%%",
             self.base_interval, self.min_interval, self.active_hours, self._bored_threshold,
