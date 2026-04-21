@@ -308,6 +308,21 @@ def _block_attr(block: Any, attr: str, default: Any = None) -> Any:
     return getattr(block, attr, None) or (block.get(attr, default) if isinstance(block, dict) else default)
 
 
+def _image_to_data_uri(block: dict) -> str | None:
+    """Anthropic image block → data URI（供 OpenAI 多模态 content 使用）。无法解析时返回 None。"""
+    source = block.get("source") or {}
+    if source.get("type") == "base64":
+        media = source.get("media_type") or "image/png"
+        data = source.get("data")
+        if data:
+            return f"data:{media};base64,{data}"
+    if source.get("type") == "url":
+        url = source.get("url")
+        if url:
+            return url
+    return None
+
+
 def _messages_to_chat(system: str, messages: list[dict]) -> list[dict]:
     """Anthropic 消息 → Chat Completions 消息格式"""
     oai: list[dict] = []
@@ -320,7 +335,8 @@ def _messages_to_chat(system: str, messages: list[dict]) -> list[dict]:
 
         if role == "user" and isinstance(content, list):
             tool_results = []
-            text_parts = []
+            text_parts: list[str] = []
+            image_urls: list[str] = []
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     tool_results.append({
@@ -330,10 +346,26 @@ def _messages_to_chat(system: str, messages: list[dict]) -> list[dict]:
                     })
                 elif isinstance(block, dict) and block.get("type") == "text":
                     text_parts.append(block["text"])
+                elif isinstance(block, dict) and block.get("type") == "image":
+                    uri = _image_to_data_uri(block)
+                    if uri:
+                        image_urls.append(uri)
+                    else:
+                        logger.warning("无法解析 image block: %s", list((block.get("source") or {}).keys()))
                 elif isinstance(block, str):
                     text_parts.append(block)
+                elif isinstance(block, dict):
+                    logger.warning("_messages_to_chat 未识别的 block 类型: %s", block.get("type"))
             oai.extend(tool_results)
-            if text_parts:
+            if image_urls:
+                # 多模态：user content 必须是列表 [{type:text},{type:image_url},...]
+                parts: list[dict] = []
+                if text_parts:
+                    parts.append({"type": "text", "text": "\n".join(text_parts)})
+                for url in image_urls:
+                    parts.append({"type": "image_url", "image_url": {"url": url}})
+                oai.append({"role": "user", "content": parts})
+            elif text_parts:
                 oai.append({"role": "user", "content": "\n".join(text_parts)})
         elif role == "assistant" and isinstance(content, list):
             text_parts = []
@@ -373,6 +405,10 @@ def _messages_to_responses(messages: list[dict]) -> list[dict]:
         content = msg.get("content")
 
         if role == "user" and isinstance(content, list):
+            # Responses API: 多模态时，单条 user 消息的 content 必须是
+            # [{type:input_text,...},{type:input_image,image_url:"data:..."}] 列表
+            mm_text_parts: list[str] = []
+            mm_image_urls: list[str] = []
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     items.append({
@@ -381,9 +417,27 @@ def _messages_to_responses(messages: list[dict]) -> list[dict]:
                         "output": block.get("content", ""),
                     })
                 elif isinstance(block, dict) and block.get("type") == "text":
-                    items.append({"role": "user", "content": block["text"]})
+                    mm_text_parts.append(block["text"])
+                elif isinstance(block, dict) and block.get("type") == "image":
+                    uri = _image_to_data_uri(block)
+                    if uri:
+                        mm_image_urls.append(uri)
+                    else:
+                        logger.warning("无法解析 image block: %s", list((block.get("source") or {}).keys()))
                 elif isinstance(block, str):
-                    items.append({"role": "user", "content": block})
+                    mm_text_parts.append(block)
+                elif isinstance(block, dict):
+                    logger.warning("_messages_to_responses 未识别的 block 类型: %s", block.get("type"))
+
+            if mm_image_urls:
+                parts: list[dict] = []
+                if mm_text_parts:
+                    parts.append({"type": "input_text", "text": "\n".join(mm_text_parts)})
+                for url in mm_image_urls:
+                    parts.append({"type": "input_image", "image_url": url})
+                items.append({"role": "user", "content": parts})
+            elif mm_text_parts:
+                items.append({"role": "user", "content": "\n".join(mm_text_parts)})
         elif role == "assistant" and isinstance(content, list):
             text_parts = []
             for block in content:
