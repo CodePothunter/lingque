@@ -353,6 +353,7 @@ class ToolExecMixin:
                             "adapter": self.adapter,
                             "memory": self.memory,
                             "calendar": self.calendar,
+                            "session_mgr": self.session_mgr,
                             "http": http_client,
                             "send_message": _ctx_send_message,
                             "run_bash": _ctx_run_bash,
