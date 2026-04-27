@@ -49,6 +49,7 @@ class PrivateChatMixin:
         logger.info("收到私聊 [%s]: %s", sender_name, log_preview)
 
         # 防抖：收集连续消息，延迟后统一处理
+        # 含音频的批次跳过防抖：语音消息单条即完整意图，1.5s 等待对端到端延迟代价大
         pending = self._private_pending.get(chat_id)
         if pending:
             if text:
@@ -64,8 +65,9 @@ class PrivateChatMixin:
             if count > 1:
                 await self.adapter.notify_queued(chat_id, count)
             loop = asyncio.get_running_loop()
+            delay = 0 if pending.get("audio_msgs") else self._private_debounce_seconds
             pending["timer"] = loop.call_later(
-                self._private_debounce_seconds,
+                delay,
                 lambda cid=chat_id: asyncio.ensure_future(self._flush_private(cid)),
             )
         else:
@@ -82,8 +84,9 @@ class PrivateChatMixin:
                 entry["audio_msgs"] = [msg]
             self._private_pending[chat_id] = entry
             loop = asyncio.get_running_loop()
+            delay = 0 if has_audio else self._private_debounce_seconds
             self._private_pending[chat_id]["timer"] = loop.call_later(
-                self._private_debounce_seconds,
+                delay,
                 lambda cid=chat_id: asyncio.ensure_future(self._flush_private(cid)),
             )
 
