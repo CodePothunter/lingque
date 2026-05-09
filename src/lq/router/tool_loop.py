@@ -118,6 +118,7 @@ class ToolLoopMixin:
                     )
 
                 tool_results = []
+                fold_in_flight_images = False  # 任意 tool 设置 _fold_images=True 即触发
                 for tc in resp.tool_calls:
                     tools_called.append(tc["name"])
                     # 记录工具调用到会话历史
@@ -141,6 +142,10 @@ class ToolLoopMixin:
                             target = tc["input"].get("chat_id", "")
                             if not target or target == chat_id:
                                 sent_to_current_chat = True
+                    # 工具发出"折叠图片"指令：本 turn 后续轮次不应再让 LLM 看到图
+                    # （视觉通路反复触发会让 LLM 每轮都重新评判同一张图）
+                    if result.get("_fold_images"):
+                        fold_in_flight_images = True
                     result_str = json.dumps(result, ensure_ascii=False)
                     tool_results.append({
                         "tool_use_id": tc["id"],
@@ -179,6 +184,34 @@ class ToolLoopMixin:
                         "type": "text",
                         "text": f"【用户在你执行工具期间发来了新消息，请充分考虑】\n{injected}",
                     })
+
+                # 应用图片折叠指令：原地修改 in-flight messages 里的所有 image block
+                # 为占位文本，后续 continue_after_tools 看到的 prompt 就没有图了，
+                # LLM 视觉通路不会再被触发，避免它对同一张图反复评判。
+                if fold_in_flight_images:
+                    folded_count = 0
+                    for m in resp.messages:
+                        content = m.get("content")
+                        if not isinstance(content, list):
+                            continue
+                        new_content = []
+                        changed = False
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "image":
+                                new_content.append(
+                                    {"type": "text", "text": "[image already evaluated]"}
+                                )
+                                folded_count += 1
+                                changed = True
+                            else:
+                                new_content.append(block)
+                        if changed:
+                            m["content"] = new_content
+                    if folded_count:
+                        logger.info(
+                            "in-flight 图片已折叠: chat=%s 折叠 %d 个 image block",
+                            chat_id[-8:], folded_count,
+                        )
 
                 resp = await self.executor.continue_after_tools(
                     system, resp.messages, all_tools, tool_results, resp.raw_response
