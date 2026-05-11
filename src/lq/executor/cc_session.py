@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -251,9 +252,12 @@ class ClaudeCodeSession:
         reporter = _ProgressReporter(self.adapter, chat_id)
         cwd = working_dir or str(self.workspace)
 
-        # 构建记忆上下文
+        # 构建记忆上下文 —— 写临时文件而非塞 system_prompt，绕开 argv 128 KiB 限制
         memory_context = self._build_memory_context(chat_id)
-        enriched_prompt = self._build_enriched_prompt(prompt, chat_id, context)
+        memory_path = self._write_memory_tempfile(memory_context)
+        enriched_prompt = self._build_enriched_prompt(
+            prompt, chat_id, context, memory_path=memory_path,
+        )
 
         # 创建权限回调
         async def permission_handler(
@@ -288,14 +292,7 @@ class ClaudeCodeSession:
             logger.debug("CC stderr: %s", line.rstrip())
 
         options = ClaudeAgentOptions(
-            system_prompt={
-                "type": "preset",
-                "preset": "claude_code",
-                "append": memory_context,
-            } if memory_context else {
-                "type": "preset",
-                "preset": "claude_code",
-            },
+            system_prompt={"type": "preset", "preset": "claude_code"},
             permission_mode="acceptEdits",
             cwd=cwd,
             max_budget_usd=max_budget_usd,
@@ -373,6 +370,11 @@ class ClaudeCodeSession:
                 await self.adapter.stop_thinking(chat_id)
             except Exception:
                 pass
+            if memory_path:
+                try:
+                    os.unlink(memory_path)
+                except OSError:
+                    logger.debug("清理记忆临时文件失败: %s", memory_path, exc_info=True)
 
         # 填充追踪信息
         result.tools_used = sorted(trace.tools_used)
@@ -537,9 +539,23 @@ class ClaudeCodeSession:
 
     def _build_enriched_prompt(
         self, prompt: str, chat_id: str, context: str,
+        memory_path: str | None = None,
     ) -> str:
-        """构建包含经验和上下文的任务 prompt"""
+        """构建包含经验和上下文的任务 prompt。
+
+        memory_path 指向调用方写入的临时记忆文件（包含 SOUL/MEMORY.md/聊天记忆），
+        在 prompt 中以路径引用，让 CC 按需用 Read 工具读取，避免塞进 argv。
+        """
         parts: list[str] = []
+
+        # 长期记忆文件引用（按需读取，避免 argv 爆 128 KiB）
+        if memory_path:
+            parts.append(
+                f"## 你的长期记忆\n"
+                f"你的人格设定、全局记忆和与当前对话方的历史记忆，"
+                f"已写入临时文件 `{memory_path}`。\n"
+                f"需要相关上下文时，用 Read 工具读取此文件；任务无关时可忽略。"
+            )
 
         # CC 执行经验
         similar = self.experience.query_similar(prompt, limit=3)
@@ -561,6 +577,27 @@ class ClaudeCodeSession:
         parts.append(f"## 任务\n{prompt}")
 
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _write_memory_tempfile(memory_text: str) -> str | None:
+        """把记忆上下文写到一个临时 .md 文件，返回绝对路径。
+
+        通过文件 + Read 工具传记忆，而不是塞进 system_prompt append（后者作为单个 argv
+        受 Linux MAX_ARG_STRLEN = 128 KiB 限制，MEMORY.md 一旦超过就会让 CC 启动失败）。
+        调用方负责在执行结束后 unlink。
+        """
+        if not memory_text:
+            return None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8",
+                prefix="lq-cc-mem-", suffix=".md", delete=False,
+            ) as f:
+                f.write(memory_text)
+                return f.name
+        except OSError:
+            logger.exception("写记忆临时文件失败，CC 本次调用将无记忆上下文")
+            return None
 
     # ── 经验记录 ──
 
