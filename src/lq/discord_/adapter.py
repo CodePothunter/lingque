@@ -91,7 +91,7 @@ class DiscordAdapter(PlatformAdapter):
         self._bot_token = bot_token
         self._proxy = proxy
         self._owner_user_id = owner_user_id
-        self._sender = DiscordSender(bot_token)
+        self._sender = DiscordSender(bot_token, proxy=proxy)
         self._queue: asyncio.Queue | None = None
         self._raw_queue: asyncio.Queue = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []

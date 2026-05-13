@@ -20,8 +20,9 @@ class DiscordSender:
     包含 429 rate-limit 自动重试（读 Retry-After header + JSON body）。
     """
 
-    def __init__(self, bot_token: str) -> None:
+    def __init__(self, bot_token: str, proxy: str = "") -> None:
         self._token = bot_token
+        self._proxy = proxy
         self._headers = {
             "Authorization": f"Bot {bot_token}",
             "Content-Type": "application/json",
@@ -40,7 +41,9 @@ class DiscordSender:
         resp: httpx.Response | None = None
         for attempt in range(max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=30.0) as http:
+                async with httpx.AsyncClient(
+                    proxy=self._proxy or None, timeout=30.0,
+                ) as http:
                     resp = await http.request(
                         method, url, headers=self._headers, json=json,
                     )
@@ -131,7 +134,9 @@ class DiscordSender:
             payload["message_reference"] = {"message_id": reply_to}
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as http:
+            async with httpx.AsyncClient(
+                proxy=self._proxy or None, timeout=60.0,
+            ) as http:
                 with open(file_path, "rb") as f:
                     # Discord multipart 需要用 payload_json 传复杂结构
                     files = {
@@ -302,7 +307,9 @@ class DiscordSender:
     async def download_attachment(self, url: str) -> tuple[bytes, str] | None:
         """下载附件 URL，返回 (raw_bytes, content_type) 或 None。"""
         try:
-            async with httpx.AsyncClient(timeout=30.0) as http:
+            async with httpx.AsyncClient(
+                proxy=self._proxy or None, timeout=30.0,
+            ) as http:
                 resp = await http.get(url)
                 resp.raise_for_status()
             content_type = resp.headers.get("content-type", "application/octet-stream")
